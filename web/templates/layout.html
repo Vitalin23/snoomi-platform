@@ -57,8 +57,8 @@
                                 <i class="fas fa-cog"></i> Админ
                             </a>
                             <ul class="dropdown-menu">
-                                <li><a class="dropdown-item" href="#"><i class="fas fa-users"></i> Клиенты</a></li>
-                                <li><a class="dropdown-item" href="#"><i class="fas fa-cogs"></i> Настройки</a></li>
+                                <li><a class="dropdown-item" href="{{ url_for('admin_clients') }}"><i class="fas fa-users"></i> Клиенты и подключения</a></li>
+                                <li><a class="dropdown-item" href="{{ url_for('channels') }}"><i class="fas fa-plug"></i> Каналы</a></li>
                                 <li><hr class="dropdown-divider"></li>
                                 <li><a class="dropdown-item" href="/api/system/health" target="_blank">
                                     <i class="fas fa-heartbeat"></i> Здоровье системы
