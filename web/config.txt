@@ -1,0 +1,158 @@
+"""
+Конфигурация приложения Snoomi Platform
+"""
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Загрузка переменных окружения
+load_dotenv()
+
+# Базовые пути
+BASE_DIR = Path(__file__).parent
+
+# Конфигурация Flask
+class Config:
+    """Основная конфигурация приложения"""
+    SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
+    
+    # База данных
+    SQLALCHEMY_DATABASE_URI = os.environ.get(
+        'DATABASE_URL', 
+        f'sqlite:///{BASE_DIR / "database.db"}'
+    )
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
+    
+    # Настройки сессии
+    SESSION_COOKIE_SECURE = os.environ.get('FLASK_ENV') == 'production'
+    SESSION_COOKIE_HTTPONLY = True
+    SESSION_COOKIE_SAMESITE = 'Lax'
+    
+    # Настройки загрузки файлов
+    MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB max file size
+    UPLOAD_FOLDER = BASE_DIR / 'uploads'
+    ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+    
+    # Создать папку для загрузок если не существует
+    UPLOAD_FOLDER.mkdir(exist_ok=True)
+
+# API ключи (загружаются из .env или задаются по умолчанию)
+API_KEYS = {
+    'yandex_gpt': os.environ.get('YANDEX_GPT_API_KEY', ''),
+    'yandex_art': os.environ.get('YANDEX_ART_API_KEY', ''),
+    'vk_token': os.environ.get('VK_API_TOKEN', ''),
+    'telegram_bot': os.environ.get('TELEGRAM_BOT_TOKEN', '')
+}
+
+# Настройки генерации контента
+CONTENT_CONFIG = {
+    'max_text_length': 5000,
+    'default_temperature': 0.7,
+    'max_images_per_day': 50,
+    'default_language': 'ru',
+    'supported_languages': ['ru', 'en']
+}
+
+# Настройки планировщика
+SCHEDULER_CONFIG = {
+    'check_interval': 300,  # 5 минут
+    'max_retries': 3,
+    'retry_delay': 60,  # 1 минута
+    'timezone': 'Europe/Moscow'
+}
+
+# Настройки платформ
+PLATFORM_CONFIG = {
+    'vk': {
+        'max_post_length': 4096,
+        'max_images_per_post': 10,
+        'api_version': '5.199',
+        'rate_limit': 3  # запросов в секунду
+    },
+    'telegram': {
+        'max_message_length': 4096,
+        'max_caption_length': 1024,
+        'max_images_per_post': 10,
+        'rate_limit': 30  # сообщений в секунду
+    }
+}
+
+# Настройки уведомлений
+NOTIFICATION_CONFIG = {
+    'telegram': {
+        'admin_chat_id': os.environ.get('ADMIN_CHAT_ID', ''),
+        'error_notifications': True,
+        'success_notifications': True,
+        'daily_reports': True
+    },
+    'email': {
+        'enabled': False,
+        'smtp_server': '',
+        'smtp_port': 587,
+        'sender_email': '',
+        'sender_password': ''
+    }
+}
+
+# Цвета для UI (по категориям)
+CATEGORY_COLORS = {
+    'матрасы': '#3498db',
+    'интерьер': '#e74c3c',
+    'здоровье': '#2ecc71',
+    'общее': '#95a5a6',
+    'новости': '#f39c12',
+    'советы': '#9b59b6'
+}
+
+# Экспорт конфигурации
+def get_config():
+    """Получение конфигурации приложения"""
+    return Config
+
+def get_api_keys():
+    """Получение API ключей"""
+    return API_KEYS
+
+def get_content_config():
+    """Получение настроек контента"""
+    return CONTENT_CONFIG
+
+def get_platform_config(platform=None):
+    """Получение настроек платформы"""
+    if platform:
+        return PLATFORM_CONFIG.get(platform, {})
+    return PLATFORM_CONFIG
+
+def get_category_color(category):
+    """Получение цвета для категории"""
+    return CATEGORY_COLORS.get(category, CATEGORY_COLORS['общее'])
+
+# Проверка обязательных настроек
+def validate_config():
+    """Проверка конфигурации"""
+    errors = []
+    
+    # Проверка API ключей
+    if not API_KEYS['yandex_gpt']:
+        errors.append("YANDEX_GPT_API_KEY не установлен")
+    if not API_KEYS['yandex_art']:
+        errors.append("YANDEX_ART_API_KEY не установлен")
+    
+    # Проверка пути к базе данных
+    if not os.path.exists(BASE_DIR):
+        errors.append(f"Базовый путь не существует: {BASE_DIR}")
+    
+    return errors
+
+if __name__ == '__main__':
+    print("🔧 Конфигурация Snoomi Platform")
+    print(f"База данных: {Config.SQLALCHEMY_DATABASE_URI}")
+    print(f"API ключи: {list(API_KEYS.keys())}")
+    
+    errors = validate_config()
+    if errors:
+        print("\n⚠️  Предупреждения:")
+        for error in errors:
+            print(f"  - {error}")
+    else:
+        print("\n✅ Конфигурация в порядке")

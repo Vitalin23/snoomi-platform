@@ -1,0 +1,1 @@
+from ..yandex_research_writer import YandexResearchWriter as TextGenerator
