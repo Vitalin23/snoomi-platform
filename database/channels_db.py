@@ -414,6 +414,40 @@ class ChannelsDatabase:
     
     # ===================== УТИЛИТЫ =====================
     
+    def _should_publish_by_frequency(self, publish_frequency, last_published_at):
+        """
+        Проверяет, можно ли публиковать сегодня по частотности.
+
+        Поддерживаемые значения:
+        - daily: каждый день
+        - every_other_day: через день
+        - every_two_days: через 2 дня
+        """
+        if not publish_frequency or publish_frequency == 'daily':
+            return True
+        if publish_frequency == 'manual':
+            return False
+
+        interval_days = {
+            'daily': 1,
+            'every_other_day': 2,
+            'every_two_days': 3,
+            # обратная совместимость
+            'every_2_days': 3,
+            'weekly': 7,
+        }.get(str(publish_frequency).strip().lower(), 1)
+
+        if not last_published_at:
+            return True
+
+        try:
+            last_dt = datetime.fromisoformat(str(last_published_at))
+        except Exception:
+            return True
+
+        elapsed_days = (datetime.now() - last_dt).total_seconds() / 86400
+        return elapsed_days >= interval_days
+
     def get_channels_for_publishing(self, hour=None):
         """Получает каналы, которые нужно опубликовать сейчас"""
         cursor = self.conn.cursor()
@@ -433,10 +467,17 @@ class ChannelsDatabase:
             cs.is_auto_generate,
             cs.use_ai_images,
             cc.client_id as client_id,
-            cl.name as client_name
+            cl.name as client_name,
+            lp.last_published_at
         FROM client_channels cc
         JOIN channel_settings cs ON cc.id = cs.channel_id
         JOIN clients cl ON cc.client_id = cl.id
+        LEFT JOIN (
+            SELECT channel_id, MAX(published_at) as last_published_at
+            FROM channel_posts
+            WHERE success = 1
+            GROUP BY channel_id
+        ) lp ON cc.id = lp.channel_id
         WHERE cc.is_active = 1 
         AND cl.status = 'active'
         AND cs.is_auto_generate = 1
@@ -456,6 +497,12 @@ class ChannelsDatabase:
         channels = []
         for row in rows:
             channel = dict(zip([description[0] for description in cursor.description], row))
+
+            if not self._should_publish_by_frequency(
+                channel.get('publish_frequency'),
+                channel.get('last_published_at')
+            ):
+                continue
             
             # Парсим JSON поля
             if channel.get('topics'):

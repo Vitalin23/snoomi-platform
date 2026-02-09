@@ -121,6 +121,10 @@
                     <input class="form-control" id="clientTelegramId">
                 </div>
                 <div class="mb-2">
+                    <label class="form-label">Telegram для уведомлений</label>
+                    <input class="form-control" id="clientNotificationTelegram" placeholder="@username или ID">
+                </div>
+                <div class="mb-2">
                     <label class="form-label">Телефон</label>
                     <input class="form-control" id="clientPhone">
                 </div>
@@ -128,6 +132,7 @@
                     <div class="col">
                         <label class="form-label">Тариф</label>
                         <select class="form-select" id="clientPlan">
+                            <option value="trial">trial</option>
                             <option value="basic">basic</option>
                             <option value="premium">premium</option>
                             <option value="custom">custom</option>
@@ -141,6 +146,10 @@
                             <option value="cancelled">cancelled</option>
                         </select>
                     </div>
+                </div>
+                <div class="mt-2">
+                    <label class="form-label">Trial дней</label>
+                    <input class="form-control" id="clientTrialDays" type="number" min="1" max="365" value="14">
                 </div>
             </div>
             <div class="modal-footer">
@@ -213,8 +222,6 @@
                     <select class="form-select" id="connectionPlatform">
                         <option value="telegram">telegram</option>
                         <option value="vk">vk</option>
-                        <option value="ok">ok</option>
-                        <option value="dzen">dzen</option>
                     </select>
                 </div>
                 <div class="mb-2">
@@ -228,6 +235,18 @@
                 <div class="mb-2">
                     <label class="form-label">Access token</label>
                     <input class="form-control" id="connectionToken">
+                </div>
+                <div class="mb-2">
+                    <label class="form-label">Частотность</label>
+                    <select class="form-select" id="connectionFrequency">
+                        <option value="daily">каждый день</option>
+                        <option value="every_other_day">через день</option>
+                        <option value="every_two_days">через 2 дня</option>
+                    </select>
+                </div>
+                <div class="mb-2">
+                    <label class="form-label">Описание канала (20+ слов)</label>
+                    <textarea class="form-control" id="connectionDescription" rows="3"></textarea>
                 </div>
                 <div class="form-check mt-2">
                     <input class="form-check-input" type="checkbox" id="connectionIsActive" checked>
@@ -392,9 +411,11 @@ function openClientModal(client = null) {
     document.getElementById('clientName').value = client?.name || '';
     document.getElementById('clientEmail').value = client?.email || '';
     document.getElementById('clientTelegramId').value = client?.telegram_id || '';
+    document.getElementById('clientNotificationTelegram').value = client?.notification_telegram || '';
     document.getElementById('clientPhone').value = client?.phone || '';
     document.getElementById('clientPlan').value = client?.plan || 'basic';
     document.getElementById('clientStatus').value = client?.status || 'active';
+    document.getElementById('clientTrialDays').value = client?.trial_days || 14;
     document.getElementById('clientModalTitle').textContent = client ? 'Редактирование клиента' : 'Новый клиент';
     clientModal.show();
 }
@@ -405,9 +426,11 @@ async function saveClient() {
         name: document.getElementById('clientName').value,
         email: document.getElementById('clientEmail').value,
         telegram_id: document.getElementById('clientTelegramId').value,
+        notification_telegram: document.getElementById('clientNotificationTelegram').value,
         phone: document.getElementById('clientPhone').value,
         plan: document.getElementById('clientPlan').value,
-        status: document.getElementById('clientStatus').value
+        status: document.getElementById('clientStatus').value,
+        trial_days: Number(document.getElementById('clientTrialDays').value || 14)
     };
     try {
         if (id) {
@@ -479,6 +502,8 @@ function openConnectionModal(connection = null) {
     document.getElementById('connectionName').value = connection?.channel_name || '';
     document.getElementById('connectionChannelId').value = connection?.channel_id || '';
     document.getElementById('connectionToken').value = connection?.access_token || '';
+    document.getElementById('connectionFrequency').value = connection?.publish_frequency || 'daily';
+    document.getElementById('connectionDescription').value = connection?.channel_description || '';
     document.getElementById('connectionIsActive').checked = connection ? !!connection.is_active : true;
     document.getElementById('connectionModalTitle').textContent = connection ? 'Редактирование подключения' : 'Новое подключение';
     connectionModal.show();
@@ -492,6 +517,8 @@ async function saveConnection() {
         channel_name: document.getElementById('connectionName').value,
         channel_id: document.getElementById('connectionChannelId').value,
         access_token: document.getElementById('connectionToken').value,
+        publish_frequency: document.getElementById('connectionFrequency').value,
+        channel_description: document.getElementById('connectionDescription').value,
         is_active: document.getElementById('connectionIsActive').checked
     };
     try {

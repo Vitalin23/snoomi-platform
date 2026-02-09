@@ -54,6 +54,37 @@
                             <div class="form-text">Повторите пароль</div>
                         </div>
                     </div>
+
+                    <div class="mb-3">
+                        <label for="client_name" class="form-label">
+                            <i class="fas fa-building me-1"></i> Название клиента/проекта *
+                        </label>
+                        <input type="text" class="form-control" id="client_name" name="client_name" required>
+                        <div class="form-text">Это имя будет использоваться в системе автопостинга</div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="trial_days" class="form-label">
+                                <i class="fas fa-hourglass-half me-1"></i> Тестовый период *
+                            </label>
+                            <select class="form-select" id="trial_days" name="trial_days" required>
+                                <option value="7">7 дней</option>
+                                <option value="14" selected>14 дней</option>
+                                <option value="30">30 дней</option>
+                            </select>
+                            <div class="form-text">Во время trial автопостинг работает без оплаты и подтверждения админом</div>
+                        </div>
+
+                        <div class="col-md-6 mb-3">
+                            <label for="notification_telegram" class="form-label">
+                                <i class="fab fa-telegram me-1"></i> Telegram для уведомлений
+                            </label>
+                            <input type="text" class="form-control" id="notification_telegram" name="notification_telegram"
+                                   placeholder="@username или ID">
+                            <div class="form-text">Опционально: уведомления о работе системы</div>
+                        </div>
+                    </div>
                     
                     <div class="mb-4">
                         <div class="form-check">

@@ -9,6 +9,7 @@
 
 import math
 import os
+import re
 import sys
 import logging
 from datetime import datetime, timedelta
@@ -36,7 +37,10 @@ sys.path.insert(0, str(PROJECT_ROOT / "posting"))
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-secret-key")
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///snoomi.db"
+app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
+    "WEB_DATABASE_URL",
+    f"sqlite:///{(PROJECT_ROOT / 'snoomi_channels.db').as_posix()}",
+)
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
@@ -49,6 +53,10 @@ logger = logging.getLogger(__name__)
 # Временное in-memory хранилище планирования из UI /channels
 SCHEDULED_POSTS = []
 
+SUPPORTED_PLATFORMS = {"telegram", "vk"}
+SUPPORTED_PUBLISH_FREQUENCIES = {"daily", "every_other_day", "every_two_days"}
+TRIAL_OPTIONS_DAYS = {7, 14, 30}
+
 
 class Client(db.Model):
     __tablename__ = "clients"
@@ -58,8 +66,12 @@ class Client(db.Model):
     email = db.Column(db.String(150), nullable=True)
     telegram_id = db.Column(db.String(50), nullable=True)
     phone = db.Column(db.String(50), nullable=True)
+    notification_telegram = db.Column(db.String(100), nullable=True)
     plan = db.Column(db.String(20), default="basic")
     status = db.Column(db.String(20), default="active")
+    trial_days = db.Column(db.Integer, default=14)
+    trial_started_at = db.Column(db.DateTime, nullable=True)
+    trial_ends_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
@@ -93,10 +105,38 @@ class ClientChannel(db.Model):
     channel_id = db.Column(db.String(120), nullable=False)
     channel_name = db.Column(db.String(150), nullable=False)
     access_token = db.Column(db.Text, nullable=True)
+    additional_config = db.Column(db.Text, nullable=True)
     is_active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     client = db.relationship("Client", backref=db.backref("channels", lazy=True))
+
+
+class ChannelSetting(db.Model):
+    __tablename__ = "channel_settings"
+
+    id = db.Column(db.Integer, primary_key=True)
+    channel_id = db.Column(db.Integer, db.ForeignKey("client_channels.id"), nullable=False)
+    publish_hour = db.Column(db.Integer, default=10)
+    publish_frequency = db.Column(db.String(30), default="daily")
+    topics = db.Column(db.Text, nullable=True)
+    hashtags = db.Column(db.Text, nullable=True)
+    max_posts_per_day = db.Column(db.Integer, default=1)
+    is_auto_generate = db.Column(db.Boolean, default=True)
+    use_ai_images = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class ChannelTopic(db.Model):
+    __tablename__ = "channel_topics"
+
+    id = db.Column(db.Integer, primary_key=True)
+    channel_id = db.Column(db.Integer, db.ForeignKey("client_channels.id"), nullable=False)
+    topic = db.Column(db.Text, nullable=False)
+    keywords = db.Column(db.Text, nullable=True)
+    priority = db.Column(db.Integer, default=5)
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
 class ChannelPost(db.Model):
@@ -189,7 +229,179 @@ def _ensure_user_schema():
         )
 
 
+def _ensure_clients_schema():
+    """Миграция legacy-таблицы clients под trial и уведомления."""
+    with db.engine.begin() as conn:
+        table_exists = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='clients'")
+        ).fetchone()
+        if not table_exists:
+            return
+
+        columns = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info('clients')")).fetchall()
+        }
+        additions = {
+            "notification_telegram": "VARCHAR(100)",
+            "trial_days": "INTEGER DEFAULT 14",
+            "trial_started_at": "TIMESTAMP",
+            "trial_ends_at": "TIMESTAMP",
+        }
+        for column_name, ddl in additions.items():
+            if column_name not in columns:
+                conn.execute(text(f"ALTER TABLE clients ADD COLUMN {column_name} {ddl}"))
+
+
+def _ensure_client_channels_schema():
+    """Миграция таблицы client_channels для хранения расширенной конфигурации канала."""
+    with db.engine.begin() as conn:
+        table_exists = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='client_channels'")
+        ).fetchone()
+        if not table_exists:
+            return
+
+        columns = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info('client_channels')")).fetchall()
+        }
+        if "additional_config" not in columns:
+            conn.execute(text("ALTER TABLE client_channels ADD COLUMN additional_config TEXT"))
+
+
+def _count_words(text_value):
+    return len(re.findall(r"[^\W_]+", text_value or "", flags=re.UNICODE))
+
+
+def _extract_keywords(text_value, limit=8):
+    words = re.findall(r"[^\W_]+", (text_value or "").lower(), flags=re.UNICODE)
+    stop_words = {
+        "и", "в", "во", "на", "по", "к", "для", "с", "со", "о", "об", "это", "как",
+        "что", "при", "или", "не", "а", "но", "до", "от", "из", "под", "над", "у",
+    }
+    filtered = []
+    seen = set()
+    for word in words:
+        if len(word) < 4 or word in stop_words:
+            continue
+        if word in seen:
+            continue
+        seen.add(word)
+        filtered.append(word)
+        if len(filtered) >= limit:
+            break
+    return filtered
+
+
+def _frequency_to_human(freq):
+    mapping = {
+        "daily": "каждый день",
+        "every_other_day": "через день",
+        "every_two_days": "через 2 дня",
+    }
+    return mapping.get(freq, freq or "daily")
+
+
+def _normalize_frequency(freq):
+    if not freq:
+        return "daily"
+    normalized = str(freq).strip().lower()
+    aliases = {
+        "через день": "every_other_day",
+        "через 2 дня": "every_two_days",
+        "every_2_days": "every_two_days",
+        "every_3_days": "every_two_days",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in SUPPORTED_PUBLISH_FREQUENCIES:
+        return None
+    return normalized
+
+
+def _channel_extra_config(channel):
+    if not channel.additional_config:
+        return {}
+    try:
+        return json.loads(channel.additional_config)
+    except Exception:
+        return {}
+
+
+def _is_trial_active(client):
+    if not client:
+        return False
+    if client.plan != "trial":
+        return True
+    if not client.trial_ends_at:
+        return True
+    return datetime.utcnow() <= client.trial_ends_at
+
+
+def _ensure_channel_runtime_setup(channel_id, channel_description, publish_frequency, publish_hour=10):
+    """Создает/обновляет настройки и базовые темы канала для планировщика."""
+    if not channel_description or _count_words(channel_description) < 20:
+        channel_description = (
+            "Канал клиента для автопостинга с регулярными экспертными публикациями, ориентированными "
+            "на практическую пользу аудитории, вовлечение подписчиков и развитие бренда клиента."
+        )
+
+    publish_frequency = _normalize_frequency(publish_frequency) or "daily"
+    try:
+        publish_hour = int(publish_hour)
+    except (TypeError, ValueError):
+        publish_hour = 10
+    publish_hour = min(max(publish_hour, 0), 23)
+
+    settings = ChannelSetting.query.filter_by(channel_id=channel_id).first()
+    topics_json = json.dumps([channel_description], ensure_ascii=False)
+    hashtags_json = json.dumps([], ensure_ascii=False)
+    if not settings:
+        settings = ChannelSetting(
+            channel_id=channel_id,
+            publish_hour=publish_hour,
+            publish_frequency=publish_frequency,
+            topics=topics_json,
+            hashtags=hashtags_json,
+            max_posts_per_day=1,
+            is_auto_generate=True,
+            use_ai_images=True,
+        )
+        db.session.add(settings)
+    else:
+        settings.publish_hour = publish_hour
+        settings.publish_frequency = publish_frequency
+        settings.topics = topics_json
+        if not settings.hashtags:
+            settings.hashtags = hashtags_json
+
+    active_topics = ChannelTopic.query.filter_by(channel_id=channel_id, is_active=True).all()
+    if not active_topics:
+        words = re.findall(r"[^\W_]+", channel_description, flags=re.UNICODE)
+        short_topic = " ".join(words[:12]).strip()
+        if not short_topic:
+            short_topic = "Контент по тематике канала"
+
+        topic = ChannelTopic(
+            channel_id=channel_id,
+            topic=short_topic,
+            keywords=json.dumps(_extract_keywords(channel_description), ensure_ascii=False),
+            priority=8,
+            is_active=True,
+        )
+        db.session.add(topic)
+
+
 def _serialize_channel(channel, include_client_name=True):
+    extra = _channel_extra_config(channel)
+    settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
+    publish_frequency = (
+        settings.publish_frequency
+        if settings and settings.publish_frequency
+        else extra.get("publish_frequency", "daily")
+    )
+    publish_hour = settings.publish_hour if settings and settings.publish_hour is not None else 10
+
     payload = {
         "id": channel.id,
         "client_id": channel.client_id,
@@ -198,6 +410,10 @@ def _serialize_channel(channel, include_client_name=True):
         "channel_name": channel.channel_name,
         "access_token": channel.access_token,
         "is_active": bool(channel.is_active),
+        "channel_description": extra.get("channel_description", ""),
+        "publish_frequency": publish_frequency,
+        "publish_frequency_label": _frequency_to_human(publish_frequency),
+        "publish_hour": publish_hour,
         "created_at": channel.created_at.isoformat() if channel.created_at else None,
     }
     if include_client_name:
@@ -206,14 +422,20 @@ def _serialize_channel(channel, include_client_name=True):
 
 
 def _serialize_client(client, include_counts=False):
+    trial_active = _is_trial_active(client)
     payload = {
         "id": client.id,
         "name": client.name,
         "email": client.email,
         "telegram_id": client.telegram_id,
+        "notification_telegram": client.notification_telegram,
         "phone": client.phone,
         "plan": client.plan,
         "status": client.status,
+        "trial_days": client.trial_days,
+        "trial_started_at": client.trial_started_at.isoformat() if client.trial_started_at else None,
+        "trial_ends_at": client.trial_ends_at.isoformat() if client.trial_ends_at else None,
+        "trial_active": trial_active,
         "created_at": client.created_at.isoformat() if client.created_at else None,
     }
     if include_counts:
@@ -299,12 +521,18 @@ def register():
 
     if request.method == "POST":
         username = request.form.get("username", "").strip()
+        client_name = request.form.get("client_name", "").strip() or username
         email = request.form.get("email", "").strip() or None
         password = request.form.get("password", "")
         confirm_password = request.form.get("confirm_password", "")
+        notification_telegram = request.form.get("notification_telegram", "").strip() or None
+        trial_days_raw = request.form.get("trial_days", "14").strip()
 
         if not username:
             flash("Введите имя пользователя", "danger")
+            return render_template("register.html")
+        if not client_name:
+            flash("Введите имя клиента/компании", "danger")
             return render_template("register.html")
         if password != confirm_password:
             flash("Пароли не совпадают", "danger")
@@ -319,13 +547,46 @@ def register():
             flash("Пользователь с таким email уже существует", "danger")
             return render_template("register.html")
 
-        new_user = User(username=username, email=email, role="client", is_active=True)
+        try:
+            trial_days = int(trial_days_raw)
+        except ValueError:
+            trial_days = 14
+        if trial_days not in TRIAL_OPTIONS_DAYS:
+            trial_days = 14
+
+        now = datetime.utcnow()
+        trial_ends_at = now + timedelta(days=trial_days)
+
+        new_client = Client(
+            name=client_name,
+            email=email,
+            notification_telegram=notification_telegram,
+            plan="trial",
+            status="active",
+            trial_days=trial_days,
+            trial_started_at=now,
+            trial_ends_at=trial_ends_at,
+        )
+        db.session.add(new_client)
+        db.session.flush()
+
+        new_user = User(
+            username=username,
+            email=email,
+            role="client",
+            client_id=new_client.id,
+            is_active=True,
+        )
         new_user.set_password(password)
         db.session.add(new_user)
         db.session.commit()
 
-        flash("Регистрация успешна! Теперь войдите.", "success")
-        return redirect(url_for("login"))
+        login_user(new_user)
+        flash(
+            f"Регистрация успешна! Вам активирован бесплатный тестовый период на {trial_days} дней.",
+            "success",
+        )
+        return redirect(url_for("channels"))
 
     return render_template("register.html")
 
@@ -407,22 +668,25 @@ def channels():
     else:
         channels_data = []
 
-    # channels.html использует legacy-поля name/category
-    channels_payload = [
-        {
-            "id": ch.id,
-            "name": ch.channel_name,
-            "category": ch.platform,
-            "platform": ch.platform,
-            "is_active": bool(ch.is_active),
-        }
-        for ch in channels_data
-    ]
+    # channels.html использует legacy-поля name/category, но расширяем payload новыми полями.
+    channels_payload = []
+    for ch in channels_data:
+        serialized = _serialize_channel(ch, include_client_name=True)
+        serialized["name"] = ch.channel_name
+        serialized["category"] = ch.platform
+        channels_payload.append(serialized)
+
+    client_info = None
+    if current_user.client_id:
+        client = Client.query.get(current_user.client_id)
+        client_info = _serialize_client(client) if client else None
+
     return render_template(
         "channels.html",
         channels=channels_payload,
         scheduled_posts=[],
         content_list=[],
+        client_info=client_info,
     )
 
 
@@ -587,14 +851,43 @@ def api_clients():
 @login_required
 def api_add_channel():
     data = request.get_json(silent=True) or {}
-    required_fields = ["platform", "channel_id", "channel_name"]
+    required_fields = ["platform", "channel_id", "channel_name", "access_token", "channel_description", "publish_frequency"]
     if not all(data.get(field) for field in required_fields):
         return jsonify({"success": False, "error": "Не все обязательные поля заполнены"}), 400
+
+    platform = (data.get("platform") or "").strip().lower()
+    if platform not in SUPPORTED_PLATFORMS:
+        return jsonify({"success": False, "error": "Сейчас поддерживаются только Telegram и VK"}), 400
+
+    publish_frequency = _normalize_frequency(data.get("publish_frequency"))
+    if not publish_frequency:
+        return jsonify(
+            {"success": False, "error": "Укажите корректную частоту: каждый день / через день / через 2 дня"}
+        ), 400
+
+    channel_description = (data.get("channel_description") or "").strip()
+    if _count_words(channel_description) < 20:
+        return jsonify(
+            {
+                "success": False,
+                "error": "Опишите специфику канала минимум 20 словами для качественной генерации контента",
+            }
+        ), 400
+
+    try:
+        publish_hour = int(data.get("publish_hour", 10))
+    except (TypeError, ValueError):
+        publish_hour = 10
+    publish_hour = min(max(publish_hour, 0), 23)
 
     if is_admin_user(current_user):
         client_id = data.get("client_id")
         if not client_id:
             return jsonify({"success": False, "error": "Для администратора укажите client_id"}), 400
+        try:
+            client_id = int(client_id)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "Некорректный client_id"}), 400
     else:
         client_id = current_user.client_id
         if not client_id:
@@ -603,25 +896,61 @@ def api_add_channel():
     client = Client.query.get(client_id)
     if not client:
         return jsonify({"success": False, "error": "Клиент не найден"}), 404
+    if not is_admin_user(current_user) and not _is_trial_active(client):
+        return jsonify(
+            {
+                "success": False,
+                "error": "Тестовый период завершен. Обратитесь к администратору для продления/подключения тарифа.",
+            }
+        ), 403
 
+    notification_telegram = (data.get("notification_telegram") or "").strip() or None
+    if notification_telegram:
+        client.notification_telegram = notification_telegram
+
+    additional_config = {
+        "channel_description": channel_description,
+        "publish_frequency": publish_frequency,
+        "source": "web_client_onboarding",
+    }
     channel = ClientChannel(
         client_id=client_id,
-        platform=data["platform"].strip(),
+        platform=platform,
         channel_id=data["channel_id"].strip(),
         channel_name=data["channel_name"].strip(),
         access_token=data.get("access_token"),
+        additional_config=json.dumps(additional_config, ensure_ascii=False),
         is_active=bool(data.get("is_active", True)),
     )
     db.session.add(channel)
+    db.session.flush()
+
+    _ensure_channel_runtime_setup(
+        channel_id=channel.id,
+        channel_description=channel_description,
+        publish_frequency=publish_frequency,
+        publish_hour=publish_hour,
+    )
+
     db.session.commit()
-    return jsonify({"success": True, "channel_id": channel.id})
+    return jsonify(
+        {
+            "success": True,
+            "channel_id": channel.id,
+            "publish_frequency": publish_frequency,
+            "publish_hour": publish_hour,
+        }
+    )
 
 
 @app.route("/api/channels/<int:channel_id>", methods=["GET"])
 @login_required
 def api_get_channel(channel_id):
     channel = _get_accessible_channel(channel_id)
-    return jsonify(_serialize_channel(channel, include_client_name=True))
+    payload = _serialize_channel(channel, include_client_name=True)
+    if channel.client:
+        payload["notification_telegram"] = channel.client.notification_telegram
+    return jsonify(payload)
 
 
 @app.route("/api/channels/<int:channel_id>", methods=["PUT"])
@@ -630,9 +959,71 @@ def api_update_channel(channel_id):
     channel = _get_accessible_channel(channel_id)
     data = request.get_json(silent=True) or {}
 
+    if "publish_frequency" in data:
+        normalized_frequency = _normalize_frequency(data.get("publish_frequency"))
+        if not normalized_frequency:
+            return jsonify({"success": False, "error": "Некорректная частотность автопостинга"}), 400
+    else:
+        normalized_frequency = None
+
+    if "channel_description" in data:
+        channel_description = (data.get("channel_description") or "").strip()
+        if _count_words(channel_description) < 20:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Описание канала должно содержать минимум 20 слов",
+                }
+            ), 400
+    else:
+        channel_description = None
+
     for field in ("channel_name", "access_token", "is_active"):
         if field in data:
             setattr(channel, field, data[field])
+
+    if "platform" in data:
+        platform = (data.get("platform") or "").strip().lower()
+        if platform not in SUPPORTED_PLATFORMS:
+            return jsonify({"success": False, "error": "Сейчас поддерживаются только Telegram и VK"}), 400
+        channel.platform = platform
+
+    if "channel_id" in data:
+        channel.channel_id = (data.get("channel_id") or "").strip()
+
+    extra = _channel_extra_config(channel)
+    if channel_description is not None:
+        extra["channel_description"] = channel_description
+    if normalized_frequency is not None:
+        extra["publish_frequency"] = normalized_frequency
+    channel.additional_config = json.dumps(extra, ensure_ascii=False)
+
+    if "publish_hour" in data:
+        try:
+            publish_hour = int(data.get("publish_hour", 10))
+        except (TypeError, ValueError):
+            publish_hour = 10
+    else:
+        publish_hour = None
+    if publish_hour is not None:
+        publish_hour = min(max(publish_hour, 0), 23)
+
+    if channel_description is not None or normalized_frequency is not None or publish_hour is not None:
+        current_setting = ChannelSetting.query.filter_by(channel_id=channel.id).first()
+        resolved_publish_hour = (
+            publish_hour
+            if publish_hour is not None
+            else (current_setting.publish_hour if current_setting and current_setting.publish_hour is not None else 10)
+        )
+        _ensure_channel_runtime_setup(
+            channel_id=channel.id,
+            channel_description=channel_description or extra.get("channel_description", ""),
+            publish_frequency=normalized_frequency or extra.get("publish_frequency", "daily"),
+            publish_hour=resolved_publish_hour,
+        )
+
+    if "notification_telegram" in data and channel.client:
+        channel.client.notification_telegram = (data.get("notification_telegram") or "").strip() or None
 
     db.session.commit()
     return jsonify({"success": True})
@@ -687,10 +1078,15 @@ def api_admin_create_client():
         name=name,
         email=(data.get("email") or "").strip() or None,
         telegram_id=(data.get("telegram_id") or "").strip() or None,
+        notification_telegram=(data.get("notification_telegram") or "").strip() or None,
         phone=(data.get("phone") or "").strip() or None,
         plan=(data.get("plan") or "basic").strip(),
         status=(data.get("status") or "active").strip(),
+        trial_days=int(data.get("trial_days", 14)) if str(data.get("trial_days", "")).isdigit() else 14,
     )
+    if client.plan == "trial":
+        client.trial_started_at = datetime.utcnow()
+        client.trial_ends_at = client.trial_started_at + timedelta(days=client.trial_days or 14)
     db.session.add(client)
     db.session.commit()
     return jsonify({"success": True, "client": _serialize_client(client, include_counts=True)})
@@ -702,12 +1098,28 @@ def api_admin_update_client(client_id):
     client = Client.query.get_or_404(client_id)
     data = request.get_json(silent=True) or {}
 
-    for field in ("name", "email", "telegram_id", "phone", "plan", "status"):
+    for field in ("name", "email", "telegram_id", "notification_telegram", "phone", "plan", "status"):
         if field in data:
             value = data[field]
             if isinstance(value, str):
                 value = value.strip()
             setattr(client, field, value)
+
+    if "trial_days" in data:
+        try:
+            client.trial_days = int(data.get("trial_days", 14))
+        except (TypeError, ValueError):
+            client.trial_days = 14
+
+    if "trial_ends_at" in data:
+        trial_ends_at = data.get("trial_ends_at")
+        if trial_ends_at:
+            try:
+                client.trial_ends_at = datetime.fromisoformat(str(trial_ends_at))
+            except Exception:
+                pass
+        else:
+            client.trial_ends_at = None
 
     db.session.commit()
     return jsonify({"success": True, "client": _serialize_client(client, include_counts=True)})
@@ -817,9 +1229,34 @@ def api_admin_get_connections():
 @admin_required
 def api_admin_create_connection():
     data = request.get_json(silent=True) or {}
-    required_fields = ["client_id", "platform", "channel_id", "channel_name"]
+    required_fields = [
+        "client_id",
+        "platform",
+        "channel_id",
+        "channel_name",
+        "access_token",
+        "channel_description",
+        "publish_frequency",
+    ]
     if not all(data.get(field) for field in required_fields):
         return jsonify({"success": False, "error": "Не все обязательные поля заполнены"}), 400
+
+    platform = (data.get("platform") or "").strip().lower()
+    if platform not in SUPPORTED_PLATFORMS:
+        return jsonify({"success": False, "error": "Сейчас поддерживаются только Telegram и VK"}), 400
+
+    admin_description = (data.get("channel_description") or "").strip()
+    if _count_words(admin_description) < 20:
+        return jsonify(
+            {
+                "success": False,
+                "error": "Описание канала должно быть минимум 20 слов",
+            }
+        ), 400
+
+    admin_frequency = _normalize_frequency(data.get("publish_frequency"))
+    if not admin_frequency:
+        return jsonify({"success": False, "error": "Некорректная частота публикаций"}), 400
 
     client = Client.query.get(data["client_id"])
     if not client:
@@ -827,13 +1264,30 @@ def api_admin_create_connection():
 
     channel = ClientChannel(
         client_id=data["client_id"],
-        platform=(data["platform"] or "").strip(),
+        platform=platform,
         channel_id=(data["channel_id"] or "").strip(),
         channel_name=(data["channel_name"] or "").strip(),
         access_token=data.get("access_token"),
+        additional_config=json.dumps(
+            {
+                "channel_description": admin_description,
+                "publish_frequency": admin_frequency,
+                "source": "admin_connection_form",
+            },
+            ensure_ascii=False,
+        ),
         is_active=bool(data.get("is_active", True)),
     )
     db.session.add(channel)
+    db.session.flush()
+
+    _ensure_channel_runtime_setup(
+        channel_id=channel.id,
+        channel_description=admin_description,
+        publish_frequency=admin_frequency,
+        publish_hour=data.get("publish_hour", 10),
+    )
+
     db.session.commit()
     return jsonify({"success": True, "connection": _serialize_channel(channel, include_client_name=True)})
 
@@ -844,15 +1298,49 @@ def api_admin_update_connection(connection_id):
     channel = ClientChannel.query.get_or_404(connection_id)
     data = request.get_json(silent=True) or {}
 
-    for field in ("platform", "channel_id", "channel_name", "access_token", "is_active"):
+    for field in ("channel_id", "channel_name", "access_token", "is_active"):
         if field in data:
             setattr(channel, field, data[field])
+
+    if "platform" in data:
+        platform = (data.get("platform") or "").strip().lower()
+        if platform not in SUPPORTED_PLATFORMS:
+            return jsonify({"success": False, "error": "Сейчас поддерживаются только Telegram и VK"}), 400
+        channel.platform = platform
 
     if "client_id" in data:
         client = Client.query.get(data["client_id"])
         if not client:
             return jsonify({"success": False, "error": "Клиент не найден"}), 404
         channel.client_id = client.id
+
+    if "channel_description" in data or "publish_frequency" in data or "publish_hour" in data:
+        extra = _channel_extra_config(channel)
+        if "channel_description" in data:
+            desc_value = (data.get("channel_description") or "").strip()
+            if _count_words(desc_value) < 20:
+                return jsonify({"success": False, "error": "Описание канала должно быть минимум 20 слов"}), 400
+            extra["channel_description"] = desc_value
+        if "publish_frequency" in data:
+            normalized = _normalize_frequency(data.get("publish_frequency"))
+            if not normalized:
+                return jsonify({"success": False, "error": "Некорректная частота публикаций"}), 400
+            extra["publish_frequency"] = normalized
+        channel.additional_config = json.dumps(extra, ensure_ascii=False)
+
+        publish_hour = data.get("publish_hour", 10)
+        try:
+            publish_hour = int(publish_hour)
+        except (TypeError, ValueError):
+            publish_hour = 10
+        publish_hour = min(max(publish_hour, 0), 23)
+
+        _ensure_channel_runtime_setup(
+            channel_id=channel.id,
+            channel_description=extra.get("channel_description", ""),
+            publish_frequency=extra.get("publish_frequency", "daily"),
+            publish_hour=publish_hour,
+        )
 
     db.session.commit()
     return jsonify({"success": True, "connection": _serialize_channel(channel, include_client_name=True)})
@@ -1245,6 +1733,8 @@ def api_statistics_export():
 with app.app_context():
     db.create_all()
     _ensure_user_schema()
+    _ensure_clients_schema()
+    _ensure_client_channels_schema()
 
     admin = User.query.filter_by(username="admin").first()
     if not admin:
