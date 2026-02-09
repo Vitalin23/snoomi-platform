@@ -7,6 +7,7 @@
 3) подключениями клиентов (каналы/группы и токены)
 """
 
+import math
 import os
 import sys
 import logging
@@ -44,6 +45,9 @@ login_manager.login_view = "login"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Временное in-memory хранилище планирования из UI /channels
+SCHEDULED_POSTS = []
 
 
 class Client(db.Model):
@@ -403,8 +407,37 @@ def channels():
     else:
         channels_data = []
 
-    channels_payload = [_serialize_channel(ch, include_client_name=True) for ch in channels_data]
-    return render_template("channels.html", channels=channels_payload)
+    # channels.html использует legacy-поля name/category
+    channels_payload = [
+        {
+            "id": ch.id,
+            "name": ch.channel_name,
+            "category": ch.platform,
+            "platform": ch.platform,
+            "is_active": bool(ch.is_active),
+        }
+        for ch in channels_data
+    ]
+    return render_template(
+        "channels.html",
+        channels=channels_payload,
+        scheduled_posts=[],
+        content_list=[],
+    )
+
+
+@app.route("/content")
+@login_required
+def content():
+    # Legacy URL старой веб-структуры
+    return redirect(url_for("channels"))
+
+
+@app.route("/analytics")
+@login_required
+def analytics():
+    # Legacy URL старой веб-структуры
+    return redirect(url_for("statistics"))
 
 
 @app.route("/admin/clients")
@@ -466,14 +499,59 @@ def generate_text():
     return jsonify({"text": text_gen.generate_for_topic(topic)})
 
 
+@app.route("/api/generate_text", methods=["POST"])
+@login_required
+def generate_text_legacy():
+    data = request.get_json(silent=True) or {}
+    topic = data.get("topic", "").strip()
+    if not topic:
+        return jsonify({"success": False, "error": "Укажите тему"}), 400
+    generated = text_gen.generate_for_topic(topic)
+    return jsonify({"success": True, "text": generated, "content_id": None})
+
+
 @app.route("/api/generate_image", methods=["POST"])
 @login_required
 def generate_image():
     data = request.get_json(silent=True) or {}
     topic = data.get("topic", "").strip()
     if not topic:
-        return jsonify({"error": "Укажите тему"}), 400
-    return jsonify({"image_path": img_gen.create_image_for_article("", topic)})
+        return jsonify({"success": False, "error": "Укажите тему"}), 400
+    image_path = img_gen.create_image_for_article("", topic)
+    return jsonify({"success": True, "image_path": image_path})
+
+
+@app.route("/api/schedule_post", methods=["POST"])
+@login_required
+def schedule_post_legacy():
+    data = request.get_json(silent=True) or {}
+    required = ["text", "channel_id", "publish_time"]
+    if not all(data.get(field) for field in required):
+        return jsonify({"success": False, "error": "Не все обязательные поля заполнены"}), 400
+
+    task_id = f"task-{int(datetime.utcnow().timestamp())}"
+    scheduled_item = {
+        "id": task_id,
+        "topic": (data.get("text") or "Без темы")[:70],
+        "channel": data.get("channel_id"),
+        "scheduled_time": data.get("publish_time"),
+        "status": "scheduled",
+    }
+    SCHEDULED_POSTS.append(scheduled_item)
+    return jsonify(
+        {
+            "success": True,
+            "task_id": task_id,
+            "content_id": data.get("content_id"),
+            "message": f"Публикация запланирована на {data.get('publish_time')}",
+        }
+    )
+
+
+@app.route("/api/scheduled_posts", methods=["GET"])
+@login_required
+def scheduled_posts_legacy():
+    return jsonify({"scheduled_posts": SCHEDULED_POSTS})
 
 
 @app.route("/api/system/health")
@@ -684,6 +762,15 @@ def api_admin_update_user(user_id):
     user = User.query.get_or_404(user_id)
     data = request.get_json(silent=True) or {}
 
+    if "username" in data:
+        username = (data["username"] or "").strip()
+        if not username:
+            return jsonify({"success": False, "error": "Username не может быть пустым"}), 400
+        duplicate = User.query.filter(User.username == username, User.id != user.id).first()
+        if duplicate:
+            return jsonify({"success": False, "error": "Username уже используется"}), 400
+        user.username = username
+
     if "email" in data:
         email = (data["email"] or "").strip() or None
         if email:
@@ -853,6 +940,306 @@ def api_recent_publications():
 def api_topics_stub():
     # Заглушка для текущего UI: сохранение тем будет вынесено в отдельную сущность.
     return jsonify({"success": True})
+
+
+@app.route("/api/publish_now", methods=["POST"])
+@login_required
+def api_publish_now_stub():
+    return jsonify(
+        {
+            "success": False,
+            "error": "Публикация из веб-панели пока не подключена. Используйте планировщик монетизации.",
+        }
+    )
+
+
+@app.route("/api/billing/cancel", methods=["POST"])
+@login_required
+def api_billing_cancel_stub():
+    return jsonify({"success": True})
+
+
+def _range_to_days(range_value):
+    mapping = {"7days": 7, "30days": 30, "90days": 90}
+    return mapping.get(range_value, 30)
+
+
+def _posts_query_for_current_user():
+    query = ChannelPost.query.join(ClientChannel, ChannelPost.channel_id == ClientChannel.id)
+    if is_admin_user(current_user):
+        return query
+    if not current_user.client_id:
+        return query.filter(text("1=0"))
+    return query.filter(ClientChannel.client_id == current_user.client_id)
+
+
+@app.route("/api/statistics/overview")
+@login_required
+def api_statistics_overview():
+    days = _range_to_days(request.args.get("range", "30days"))
+    since_dt = datetime.utcnow() - timedelta(days=days - 1)
+
+    query = _posts_query_for_current_user().filter(ChannelPost.published_at >= since_dt)
+    posts = query.all()
+    total_posts = len(posts)
+    successful = sum(1 for p in posts if p.success)
+    total_views = sum((p.views or 0) for p in posts)
+    total_reactions = sum((p.likes or 0) + (p.shares or 0) + (p.comments or 0) for p in posts)
+    success_rate = round((successful / total_posts) * 100, 1) if total_posts else 0
+    avg_views = round(total_views / total_posts, 1) if total_posts else 0
+    engagement_rate = round((total_reactions / total_views) * 100, 1) if total_views else 0
+
+    daily = (
+        query.with_entities(
+            db.func.date(ChannelPost.published_at).label("day"),
+            db.func.count(ChannelPost.id),
+            db.func.coalesce(db.func.sum(ChannelPost.views), 0),
+        )
+        .group_by("day")
+        .all()
+    )
+    chart_dates = [str(row[0]) for row in daily]
+    chart_posts = [int(row[1] or 0) for row in daily]
+    chart_views = [int(row[2] or 0) for row in daily]
+
+    platforms = (
+        query.with_entities(ClientChannel.platform, db.func.count(ChannelPost.id))
+        .group_by(ClientChannel.platform)
+        .all()
+    )
+    platforms_data = [{"platform": row[0] or "unknown", "count": int(row[1] or 0)} for row in platforms]
+
+    return jsonify(
+        {
+            "total_posts": total_posts,
+            "success_rate": success_rate,
+            "avg_views": avg_views,
+            "engagement_rate": engagement_rate,
+            "chart_data": {"dates": chart_dates, "posts": chart_posts, "views": chart_views},
+            "platforms_data": platforms_data,
+        }
+    )
+
+
+@app.route("/api/statistics/top-publications")
+@login_required
+def api_statistics_top_publications():
+    limit = request.args.get("limit", 10, type=int)
+    posts = (
+        _posts_query_for_current_user()
+        .order_by(ChannelPost.views.desc(), ChannelPost.published_at.desc())
+        .limit(limit)
+        .all()
+    )
+    payload = []
+    for post in posts:
+        payload.append(
+            {
+                "id": post.id,
+                "topic": post.topic or "Без темы",
+                "channel_name": post.channel.channel_name if post.channel else "—",
+                "views": int(post.views or 0),
+                "likes": int(post.likes or 0),
+                "shares": int(post.shares or 0),
+                "comments": int(post.comments or 0),
+            }
+        )
+    return jsonify(payload)
+
+
+@app.route("/api/statistics/publications")
+@login_required
+def api_statistics_publications():
+    page = request.args.get("page", 1, type=int)
+    per_page = request.args.get("per_page", 25, type=int)
+    platform = request.args.get("platform")
+    status = request.args.get("status")
+    search = request.args.get("search", "").strip().lower()
+
+    query = _posts_query_for_current_user()
+    if platform:
+        query = query.filter(ClientChannel.platform == platform)
+    if status == "success":
+        query = query.filter(ChannelPost.success.is_(True))
+    elif status == "failed":
+        query = query.filter(ChannelPost.success.is_(False))
+    if search:
+        query = query.filter(db.func.lower(db.func.coalesce(ChannelPost.topic, "")).like(f"%{search}%"))
+
+    total = query.count()
+    total_pages = max(1, math.ceil(total / per_page)) if per_page else 1
+    items = (
+        query.order_by(ChannelPost.published_at.desc())
+        .offset((max(page, 1) - 1) * per_page)
+        .limit(per_page)
+        .all()
+    )
+    publications = []
+    for post in items:
+        publications.append(
+            {
+                "id": post.id,
+                "published_at": post.published_at.isoformat() if post.published_at else None,
+                "channel_name": post.channel.channel_name if post.channel else "—",
+                "topic": post.topic or "Без темы",
+                "platform": post.channel.platform if post.channel else "unknown",
+                "success": bool(post.success),
+                "views": int(post.views or 0),
+                "likes": int(post.likes or 0),
+                "shares": int(post.shares or 0),
+                "comments": int(post.comments or 0),
+            }
+        )
+
+    return jsonify(
+        {
+            "publications": publications,
+            "page": max(page, 1),
+            "total_pages": total_pages,
+            "total": total,
+        }
+    )
+
+
+@app.route("/api/publications/<int:publication_id>")
+@login_required
+def api_publication_detail(publication_id):
+    post = _posts_query_for_current_user().filter(ChannelPost.id == publication_id).first_or_404()
+    views = int(post.views or 0)
+    reactions = int(post.likes or 0) + int(post.shares or 0) + int(post.comments or 0)
+    er = round((reactions / views) * 100, 2) if views else 0
+    return jsonify(
+        {
+            "id": post.id,
+            "published_at": post.published_at.isoformat() if post.published_at else None,
+            "channel_name": post.channel.channel_name if post.channel else "—",
+            "platform": post.channel.platform if post.channel else "unknown",
+            "topic": post.topic or "Без темы",
+            "content": post.content or "",
+            "success": bool(post.success),
+            "views": views,
+            "likes": int(post.likes or 0),
+            "shares": int(post.shares or 0),
+            "comments": int(post.comments or 0),
+            "er": er,
+            "error_message": post.error_message,
+        }
+    )
+
+
+@app.route("/api/statistics/engagement")
+@login_required
+def api_statistics_engagement():
+    days = _range_to_days(request.args.get("range", "30days"))
+    since_dt = datetime.utcnow() - timedelta(days=days - 1)
+    posts = _posts_query_for_current_user().filter(ChannelPost.published_at >= since_dt).all()
+
+    total_posts = len(posts) or 1
+    avg_likes = round(sum((p.likes or 0) for p in posts) / total_posts, 1) if posts else 0
+    avg_shares = round(sum((p.shares or 0) for p in posts) / total_posts, 1) if posts else 0
+    avg_comments = round(sum((p.comments or 0) for p in posts) / total_posts, 1) if posts else 0
+
+    total_views = sum((p.views or 0) for p in posts)
+    total_reactions = sum((p.likes or 0) + (p.shares or 0) + (p.comments or 0) for p in posts)
+    avg_ctr = round((total_reactions / total_views) * 100, 1) if total_views else 0
+
+    return jsonify(
+        {
+            "avg_likes": avg_likes,
+            "avg_shares": avg_shares,
+            "avg_comments": avg_comments,
+            "avg_ctr": avg_ctr,
+            "time_data": {
+                "hours": [str(i) for i in range(24)],
+                "likes": [0] * 24,
+                "shares": [0] * 24,
+                "comments": [0] * 24,
+            },
+            "content_data": {"types": ["Статьи"], "er": [avg_ctr]},
+        }
+    )
+
+
+@app.route("/api/statistics/channels")
+@login_required
+def api_statistics_channels():
+    channels = (
+        ClientChannel.query.all()
+        if is_admin_user(current_user)
+        else ClientChannel.query.filter_by(client_id=current_user.client_id).all()
+    )
+    performance = []
+    ranking = []
+    for channel in channels:
+        posts = ChannelPost.query.filter_by(channel_id=channel.id).all()
+        views = sum((p.views or 0) for p in posts)
+        likes = sum((p.likes or 0) for p in posts)
+        shares = sum((p.shares or 0) for p in posts)
+        comments = sum((p.comments or 0) for p in posts)
+        reactions = likes + shares + comments
+        er = round((reactions / views) * 100, 2) if views else 0
+        performance.append({"channel_name": channel.channel_name, "er": er, "views": views})
+        ranking.append(
+            {
+                "channel_name": channel.channel_name,
+                "platform": channel.platform,
+                "posts": len(posts),
+                "views": views,
+                "likes": likes,
+                "shares": shares,
+                "er": er,
+                "growth": 0,
+            }
+        )
+    ranking.sort(key=lambda x: x["views"], reverse=True)
+    return jsonify({"performance": performance, "ranking": ranking})
+
+
+@app.route("/api/statistics/clients")
+@admin_required
+def api_statistics_clients():
+    rows = (
+        db.session.query(Client.plan, db.func.count(Client.id))
+        .group_by(Client.plan)
+        .all()
+    )
+    labels = [row[0] or "unknown" for row in rows]
+    data = [int(row[1] or 0) for row in rows]
+    return jsonify({"distribution": {"labels": labels, "data": data}})
+
+
+@app.route("/api/statistics/export")
+@login_required
+def api_statistics_export():
+    posts = _posts_query_for_current_user().order_by(ChannelPost.published_at.desc()).all()
+    lines = ["id,published_at,channel,platform,topic,success,views,likes,shares,comments"]
+    for post in posts:
+        lines.append(
+            ",".join(
+                [
+                    str(post.id),
+                    (post.published_at.isoformat() if post.published_at else ""),
+                    (post.channel.channel_name if post.channel else "").replace(",", " "),
+                    (post.channel.platform if post.channel else ""),
+                    (post.topic or "").replace(",", " "),
+                    str(bool(post.success)),
+                    str(int(post.views or 0)),
+                    str(int(post.likes or 0)),
+                    str(int(post.shares or 0)),
+                    str(int(post.comments or 0)),
+                ]
+            )
+        )
+    csv_payload = "\n".join(lines)
+    filename = f"snoomi_statistics_{datetime.utcnow().date().isoformat()}.csv"
+    return (
+        csv_payload,
+        200,
+        {
+            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
 
 
 with app.app_context():

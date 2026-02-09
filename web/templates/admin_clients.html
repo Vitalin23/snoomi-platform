@@ -246,6 +246,7 @@
 <script>
 let clients = [];
 let users = [];
+let connections = [];
 let selectedClientId = null;
 let selectedClientName = null;
 
@@ -307,7 +308,7 @@ async function loadClients() {
                 <td>${c.channels_count || 0}</td>
                 <td>
                     <button class="btn btn-sm btn-outline-primary" onclick='selectClient(${c.id}, ${JSON.stringify(c.name)})'>Подключения</button>
-                    <button class="btn btn-sm btn-outline-secondary" onclick='openClientModal(${JSON.stringify(c)})'>Ред.</button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick='openClientModalById(${c.id})'>Ред.</button>
                 </td>
             </tr>
         `;
@@ -330,14 +331,14 @@ async function loadUsers() {
                 </td>
                 <td><span class="badge bg-${u.role === 'admin' ? 'warning' : 'primary'}">${u.role}</span></td>
                 <td>${u.client_name || '-'}</td>
-                <td><button class="btn btn-sm btn-outline-secondary" onclick='openUserModal(${JSON.stringify(u)})'>Ред.</button></td>
+                <td><button class="btn btn-sm btn-outline-secondary" onclick='openUserModalById(${u.id})'>Ред.</button></td>
             </tr>
         `;
     });
 }
 
 async function loadConnections(clientId) {
-    const connections = await api(`/api/admin/connections?client_id=${clientId}`);
+    connections = await api(`/api/admin/connections?client_id=${clientId}`);
     const tbody = document.getElementById('connectionsTbody');
     tbody.innerHTML = '';
 
@@ -354,12 +355,27 @@ async function loadConnections(clientId) {
                 <td><code>${conn.channel_id}</code></td>
                 <td><span class="badge bg-${conn.is_active ? 'success' : 'secondary'}">${conn.is_active ? 'active' : 'off'}</span></td>
                 <td>
-                    <button class="btn btn-sm btn-outline-secondary" onclick='openConnectionModal(${JSON.stringify(conn)})'>Ред.</button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick='openConnectionModalById(${conn.id})'>Ред.</button>
                     <button class="btn btn-sm btn-outline-danger" onclick='deleteConnection(${conn.id})'>Удалить</button>
                 </td>
             </tr>
         `;
     });
+}
+
+function openClientModalById(id) {
+    const client = clients.find(c => Number(c.id) === Number(id));
+    openClientModal(client || null);
+}
+
+function openUserModalById(id) {
+    const user = users.find(u => Number(u.id) === Number(id));
+    openUserModal(user || null);
+}
+
+function openConnectionModalById(id) {
+    const connection = connections.find(c => Number(c.id) === Number(id));
+    openConnectionModal(connection || null);
 }
 
 function selectClient(clientId, name) {
