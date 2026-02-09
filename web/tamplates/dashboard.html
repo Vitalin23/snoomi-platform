@@ -1,0 +1,588 @@
+<!-- web/templates/dashboard.html -->
+{% extends "layout.html" %}
+
+{% block title %}Snoomi Platform - Панель управления{% endblock %}
+
+{% block extra_css %}
+<style>
+    .stat-card {
+        transition: transform 0.3s;
+        border-left: 4px solid;
+    }
+    .stat-card:hover {
+        transform: translateY(-5px);
+    }
+    .stat-card.posts { border-left-color: #4e73df; }
+    .stat-card.channels { border-left-color: #1cc88a; }
+    .stat-card.views { border-left-color: #36b9cc; }
+    .stat-card.likes { border-left-color: #f6c23e; }
+    .stat-card.clients { border-left-color: #e74a3b; }
+    .stat-card.users { border-left-color: #858796; }
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- Заголовок -->
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h1 class="h3 mb-0 text-gray-800">
+            <i class="fas fa-tachometer-alt me-2"></i>Панель управления
+        </h1>
+        <p class="mb-0">Добро пожаловать, {{ user.username }}!</p>
+    </div>
+    <div>
+        <button class="btn btn-primary" onclick="publishNow()">
+            <i class="fas fa-paper-plane me-2"></i>Опубликовать сейчас
+        </button>
+    </div>
+</div>
+
+<!-- Карточки статистики -->
+<div class="row mb-4">
+    {% if user.role == 'admin' %}
+    <!-- Админская статистика -->
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card clients shadow h-100">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs fw-bold text-primary mb-1">
+                            Клиентов
+                        </div>
+                        <div class="h5 mb-0 fw-bold">{{ stats.total_clients }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-users fa-2x text-primary"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card channels shadow h-100">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs fw-bold text-success mb-1">
+                            Активных каналов
+                        </div>
+                        <div class="h5 mb-0 fw-bold">{{ stats.active_channels }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-broadcast-tower fa-2x text-success"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card posts shadow h-100">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs fw-bold text-info mb-1">
+                            Публикаций сегодня
+                        </div>
+                        <div class="h5 mb-0 fw-bold">{{ stats.posts_today }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-newspaper fa-2x text-info"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card users shadow h-100">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs fw-bold text-secondary mb-1">
+                            Пользователей
+                        </div>
+                        <div class="h5 mb-0 fw-bold">{{ stats.total_users }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-user-friends fa-2x text-secondary"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <!-- Клиентская статистика -->
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card channels shadow h-100">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs fw-bold text-success mb-1">
+                            Мои каналы
+                        </div>
+                        <div class="h5 mb-0 fw-bold">{{ stats.active_channels }} / {{ stats.total_channels }}</div>
+                        <div class="text-xs text-muted">активно / всего</div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-broadcast-tower fa-2x text-success"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card posts shadow h-100">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs fw-bold text-info mb-1">
+                            Всего публикаций
+                        </div>
+                        <div class="h5 mb-0 fw-bold">{{ stats.total_posts }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-newspaper fa-2x text-info"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card views shadow h-100">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs fw-bold text-warning mb-1">
+                            Просмотров
+                        </div>
+                        <div class="h5 mb-0 fw-bold">{{ stats.total_views }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-eye fa-2x text-warning"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-xl-3 col-md-6 mb-4">
+        <div class="card stat-card likes shadow h-100">
+            <div class="card-body">
+                <div class="row no-gutters align-items-center">
+                    <div class="col mr-2">
+                        <div class="text-xs fw-bold text-danger mb-1">
+                            Лайков
+                        </div>
+                        <div class="h5 mb-0 fw-bold">{{ stats.total_likes }}</div>
+                    </div>
+                    <div class="col-auto">
+                        <i class="fas fa-heart fa-2x text-danger"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Графики и основные разделы -->
+<div class="row">
+    <!-- График публикаций -->
+    <div class="col-xl-8 mb-4">
+        <div class="card shadow h-100">
+            <div class="card-header py-3 d-flex justify-content-between align-items-center">
+                <h6 class="m-0 fw-bold text-primary">
+                    <i class="fas fa-chart-line me-1"></i>Статистика публикаций
+                </h6>
+                <select class="form-select form-select-sm w-auto" onchange="updateChart(this.value)">
+                    <option value="7">7 дней</option>
+                    <option value="30" selected>30 дней</option>
+                    <option value="90">90 дней</option>
+                </select>
+            </div>
+            <div class="card-body">
+                <div class="chart-area">
+                    <canvas id="publicationsChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Быстрые действия -->
+    <div class="col-xl-4 mb-4">
+        <div class="card shadow h-100">
+            <div class="card-header py-3">
+                <h6 class="m-0 fw-bold text-primary">
+                    <i class="fas fa-bolt me-1"></i>Быстрые действия
+                </h6>
+            </div>
+            <div class="card-body">
+                <div class="list-group list-group-flush">
+                    <a href="{{ url_for('channels') }}" class="list-group-item list-group-item-action">
+                        <i class="fas fa-plus-circle text-success me-2"></i>
+                        Добавить канал
+                    </a>
+                    <a href="#" class="list-group-item list-group-item-action" data-bs-toggle="modal" data-bs-target="#addTopicModal">
+                        <i class="fas fa-tags text-info me-2"></i>
+                        Добавить тему
+                    </a>
+                    <a href="#" class="list-group-item list-group-item-action" onclick="publishNow()">
+                        <i class="fas fa-paper-plane text-primary me-2"></i>
+                        Опубликовать сейчас
+                    </a>
+                    <a href="{{ url_for('statistics') }}" class="list-group-item list-group-item-action">
+                        <i class="fas fa-chart-bar text-warning me-2"></i>
+                        Подробная статистика
+                    </a>
+                    <a href="{{ url_for('billing') }}" class="list-group-item list-group-item-action">
+                        <i class="fas fa-credit-card text-danger me-2"></i>
+                        Управление подпиской
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Последние публикации -->
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card shadow">
+            <div class="card-header py-3 d-flex justify-content-between align-items-center">
+                <h6 class="m-0 fw-bold text-primary">
+                    <i class="fas fa-history me-1"></i>Последние публикации
+                </h6>
+                <a href="{{ url_for('statistics') }}" class="btn btn-sm btn-outline-primary">
+                    Все публикации
+                </a>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover" id="recentPublications">
+                        <thead>
+                            <tr>
+                                <th>Дата</th>
+                                <th>Канал</th>
+                                <th>Тема</th>
+                                <th>Платформа</th>
+                                <th>Статус</th>
+                                <th>Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recentPublicationsBody">
+                            <!-- Заполняется через JavaScript -->
+                            <tr>
+                                <td colspan="6" class="text-center">
+                                    <div class="spinner-border spinner-border-sm text-primary" role="status">
+                                        <span class="visually-hidden">Загрузка...</span>
+                                    </div>
+                                    Загрузка данных...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Модальное окно добавления темы -->
+<div class="modal fade" id="addTopicModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-tags me-2"></i>Добавить тему
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="addTopicForm">
+                    <div class="mb-3">
+                        <label for="topicName" class="form-label">Название темы</label>
+                        <input type="text" class="form-control" id="topicName" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="topicKeywords" class="form-label">Ключевые слова</label>
+                        <input type="text" class="form-control" id="topicKeywords" 
+                               placeholder="через запятую: матрасы, сон, здоровье">
+                    </div>
+                    <div class="mb-3">
+                        <label for="topicPriority" class="form-label">Приоритет (1-10)</label>
+                        <input type="number" class="form-control" id="topicPriority" 
+                               min="1" max="10" value="5">
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+                <button type="button" class="btn btn-primary" onclick="addTopic()">
+                    <i class="fas fa-plus me-2"></i>Добавить тему
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Инициализация графика
+let publicationsChart;
+
+function initChart() {
+    const ctx = document.getElementById('publicationsChart').getContext('2d');
+    publicationsChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: [{
+                label: 'Публикации',
+                data: [],
+                borderColor: '#4e73df',
+                backgroundColor: 'rgba(78, 115, 223, 0.05)',
+                tension: 0.4,
+                fill: true
+            }, {
+                label: 'Просмотры',
+                data: [],
+                borderColor: '#1cc88a',
+                backgroundColor: 'rgba(28, 200, 138, 0.05)',
+                tension: 0.4,
+                fill: true
+            }]
+        },
+        options: {
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'top',
+                }
+            },
+            scales: {
+                x: {
+                    grid: {
+                        display: false
+                    }
+                },
+                y: {
+                    beginAtZero: true,
+                    grid: {
+                        borderDash: [2]
+                    }
+                }
+            }
+        }
+    });
+    
+    updateChart(30); // Загружаем данные за 30 дней по умолчанию
+}
+
+function updateChart(days) {
+    fetch(`/api/statistics/daily?days=${days}`)
+        .then(response => response.json())
+        .then(data => {
+            publicationsChart.data.labels = data.dates;
+            publicationsChart.data.datasets[0].data = data.posts;
+            publicationsChart.data.datasets[1].data = data.views;
+            publicationsChart.update();
+        });
+}
+
+// Загрузка последних публикаций
+function loadRecentPublications() {
+    fetch('/api/publications/recent')
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Ошибка загрузки');
+            }
+            return response.json();
+        })
+        .then(data => {
+            const tbody = document.getElementById('recentPublicationsBody');
+            tbody.innerHTML = '';
+            
+            if (data.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="6" class="text-center text-muted">
+                            <i class="fas fa-inbox me-2"></i>Публикаций пока нет
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+            
+            data.forEach(pub => {
+                const date = new Date(pub.published_at);
+                const statusClass = pub.success ? 'success' : 'danger';
+                const statusIcon = pub.success ? 'check-circle' : 'times-circle';
+                const statusText = pub.success ? 'Успешно' : 'Ошибка';
+                
+                tbody.innerHTML += `
+                    <tr>
+                        <td>${date.toLocaleDateString()}</td>
+                        <td>${pub.channel_name}</td>
+                        <td class="text-truncate" style="max-width: 200px;" title="${pub.topic}">
+                            ${pub.topic}
+                        </td>
+                        <td>
+                            <span class="badge bg-${pub.platform === 'telegram' ? 'info' : 'primary'}">
+                                ${pub.platform.toUpperCase()}
+                            </span>
+                        </td>
+                        <td>
+                            <span class="badge bg-${statusClass}">
+                                <i class="fas fa-${statusIcon} me-1"></i>${statusText}
+                            </span>
+                        </td>
+                        <td>
+                            <button class="btn btn-sm btn-outline-primary" onclick="viewPublication(${pub.id})">
+                                <i class="fas fa-eye"></i>
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            });
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            document.getElementById('recentPublicationsBody').innerHTML = `
+                <tr>
+                    <td colspan="6" class="text-center text-danger">
+                        <i class="fas fa-exclamation-triangle me-2"></i>Ошибка загрузки
+                    </td>
+                </tr>
+            `;
+        });
+}
+
+// Немедленная публикация
+function publishNow() {
+    if (!confirm('Запустить публикацию сейчас? Будет создан новый контент и опубликован во все активные каналы.')) {
+        return;
+    }
+    
+    const button = event.target.closest('button');
+    const originalText = button.innerHTML;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Публикую...';
+    button.disabled = true;
+    
+    fetch('/api/publish_now', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({})
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showNotification('success', 
+                `Опубликовано в ${data.successful_posts} каналов!`, 
+                'Новый контент успешно создан и опубликован.'
+            );
+            loadRecentPublications(); // Обновляем список публикаций
+        } else {
+            showNotification('danger', 
+                'Ошибка публикации', 
+                data.error || 'Неизвестная ошибка'
+            );
+        }
+    })
+    .catch(error => {
+        showNotification('danger', 'Ошибка', 'Не удалось выполнить публикацию');
+        console.error('Error:', error);
+    })
+    .finally(() => {
+        button.innerHTML = originalText;
+        button.disabled = false;
+    });
+}
+
+// Добавление темы
+function addTopic() {
+    const topicName = document.getElementById('topicName').value;
+    const keywords = document.getElementById('topicKeywords').value;
+    const priority = document.getElementById('topicPriority').value;
+    
+    if (!topicName.trim()) {
+        showNotification('warning', 'Внимание', 'Введите название темы');
+        return;
+    }
+    
+    fetch('/api/topics', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            topic: topicName,
+            keywords: keywords.split(',').map(k => k.trim()).filter(k => k),
+            priority: parseInt(priority)
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showNotification('success', 'Успех', 'Тема добавлена');
+            document.getElementById('addTopicForm').reset();
+            bootstrap.Modal.getInstance(document.getElementById('addTopicModal')).hide();
+        } else {
+            showNotification('danger', 'Ошибка', data.error || 'Не удалось добавить тему');
+        }
+    })
+    .catch(error => {
+        showNotification('danger', 'Ошибка', 'Не удалось добавить тему');
+        console.error('Error:', error);
+    });
+}
+
+// Просмотр публикации
+function viewPublication(id) {
+    // TODO: Реализовать просмотр деталей публикации
+    showNotification('info', 'Информация', 'Функция в разработке');
+}
+
+// Уведомления
+function showNotification(type, title, message) {
+    const notification = document.createElement('div');
+    notification.className = `alert alert-${type} alert-dismissible fade show position-fixed`;
+    notification.style.cssText = `
+        top: 20px;
+        right: 20px;
+        z-index: 9999;
+        min-width: 300px;
+        box-shadow: 0 0.5rem 1rem rgba(0,0,0,.15);
+    `;
+    notification.innerHTML = `
+        <strong>${title}</strong><br>
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    
+    document.body.appendChild(notification);
+    
+    setTimeout(() => {
+        if (notification.parentNode) {
+            notification.remove();
+        }
+    }, 5000);
+}
+
+// Инициализация при загрузке страницы
+document.addEventListener('DOMContentLoaded', function() {
+    initChart();
+    loadRecentPublications();
+    
+    // Обновляем каждые 5 минут
+    setInterval(loadRecentPublications, 300000);
+});
+</script>
+{% endblock %}

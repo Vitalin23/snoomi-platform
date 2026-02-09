@@ -1,0 +1,425 @@
+<!-- web/templates/billing.html -->
+{% extends "layout.html" %}
+
+{% block title %}Snoomi Platform - Биллинг{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h1 class="h3 mb-0 text-gray-800">
+            <i class="fas fa-credit-card me-2"></i>Биллинг и подписка
+        </h1>
+        <p class="mb-0">Управление вашей подпиской и платежами</p>
+    </div>
+    {% if current_user.role != 'admin' %}
+    <div>
+        <span class="badge bg-success fs-6 p-2">
+            <i class="fas fa-crown me-2"></i>Премиум тариф
+        </span>
+    </div>
+    {% endif %}
+</div>
+
+<div class="row">
+    <!-- Текущая подписка -->
+    <div class="col-lg-8 mb-4">
+        <div class="card shadow">
+            <div class="card-header">
+                <h6 class="m-0 fw-bold text-primary">
+                    <i class="fas fa-star me-1"></i>Текущая подписка
+                </h6>
+            </div>
+            <div class="card-body">
+                <div class="row align-items-center">
+                    <div class="col-md-6">
+                        <h4 class="fw-bold text-primary">Профессиональный</h4>
+                        <p class="text-muted mb-3">
+                            <i class="fas fa-check text-success me-2"></i>До 10 каналов<br>
+                            <i class="fas fa-check text-success me-2"></i>100 публикаций в месяц<br>
+                            <i class="fas fa-check text-success me-2"></i>AI генерация статей и изображений<br>
+                            <i class="fas fa-check text-success me-2"></i>Приоритетная поддержка
+                        </p>
+                        
+                        <div class="mb-3">
+                            <div class="display-6 fw-bold">2 990₽</div>
+                            <small class="text-muted">в месяц</small>
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-6">
+                        <div class="card bg-light">
+                            <div class="card-body">
+                                <h6 class="fw-bold">Использование в этом месяце</h6>
+                                
+                                <div class="mb-3">
+                                    <div class="d-flex justify-content-between mb-1">
+                                        <span>Публикации</span>
+                                        <span>42/100</span>
+                                    </div>
+                                    <div class="progress">
+                                        <div class="progress-bar bg-success" style="width: 42%"></div>
+                                    </div>
+                                </div>
+                                
+                                <div class="mb-3">
+                                    <div class="d-flex justify-content-between mb-1">
+                                        <span>Каналы</span>
+                                        <span>6/10</span>
+                                    </div>
+                                    <div class="progress">
+                                        <div class="progress-bar bg-info" style="width: 60%"></div>
+                                    </div>
+                                </div>
+                                
+                                <div class="mb-3">
+                                    <div class="d-flex justify-content-between mb-1">
+                                        <span>AI изображения</span>
+                                        <span>85/100</span>
+                                    </div>
+                                    <div class="progress">
+                                        <div class="progress-bar bg-warning" style="width: 85%"></div>
+                                    </div>
+                                </div>
+                                
+                                <div class="text-center mt-3">
+                                    <small class="text-muted">Сброс лимитов: 1 февраля 2024</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="mt-4">
+                    <button class="btn btn-primary me-2" data-bs-toggle="modal" data-bs-target="#upgradeModal">
+                        <i class="fas fa-arrow-up me-2"></i>Улучшить тариф
+                    </button>
+                    <button class="btn btn-outline-danger" data-bs-toggle="modal" data-bs-target="#cancelModal">
+                        <i class="fas fa-times me-2"></i>Отменить подписку
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- История платежей -->
+        <div class="card shadow mt-4">
+            <div class="card-header">
+                <h6 class="m-0 fw-bold text-primary">
+                    <i class="fas fa-history me-1"></i>История платежей
+                </h6>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Дата</th>
+                                <th>Сумма</th>
+                                <th>Тип</th>
+                                <th>Статус</th>
+                                <th>Детали</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>15.01.2024</td>
+                                <td class="fw-bold">2 990₽</td>
+                                <td>Ежемесячная подписка</td>
+                                <td><span class="badge bg-success">Оплачено</span></td>
+                                <td>
+                                    <button class="btn btn-sm btn-outline-primary">
+                                        <i class="fas fa-receipt"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>15.12.2023</td>
+                                <td class="fw-bold">2 990₽</td>
+                                <td>Ежемесячная подписка</td>
+                                <td><span class="badge bg-success">Оплачено</span></td>
+                                <td>
+                                    <button class="btn btn-sm btn-outline-primary">
+                                        <i class="fas fa-receipt"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>15.11.2023</td>
+                                <td class="fw-bold">2 990₽</td>
+                                <td>Ежемесячная подписка</td>
+                                <td><span class="badge bg-success">Оплачено</span></td>
+                                <td>
+                                    <button class="btn btn-sm btn-outline-primary">
+                                        <i class="fas fa-receipt"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>15.10.2023</td>
+                                <td class="fw-bold">990₽</td>
+                                <td>Пробный период</td>
+                                <td><span class="badge bg-warning">Частично</span></td>
+                                <td>
+                                    <button class="btn btn-sm btn-outline-primary">
+                                        <i class="fas fa-receipt"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Боковая панель -->
+    <div class="col-lg-4 mb-4">
+        <!-- Следующий платеж -->
+        <div class="card shadow mb-4">
+            <div class="card-header bg-primary text-white">
+                <h6 class="m-0 fw-bold">
+                    <i class="fas fa-calendar-alt me-1"></i>Следующий платеж
+                </h6>
+            </div>
+            <div class="card-body text-center">
+                <div class="display-6 fw-bold text-primary mb-2">15.02.2024</div>
+                <div class="h3 fw-bold mb-3">2 990₽</div>
+                <p class="text-muted">Автоматическое списание с карты</p>
+                
+                <div class="mt-4">
+                    <div class="d-flex align-items-center justify-content-center mb-2">
+                        <i class="fab fa-cc-visa fa-2x text-primary me-3"></i>
+                        <div class="text-start">
+                            <div class="fw-bold">•••• •••• •••• 4242</div>
+                            <small class="text-muted">Истекает 12/25</small>
+                        </div>
+                    </div>
+                    
+                    <button class="btn btn-sm btn-outline-primary w-100 mt-2">
+                        <i class="fas fa-edit me-1"></i>Изменить карту
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Поддержка -->
+        <div class="card shadow">
+            <div class="card-header">
+                <h6 class="m-0 fw-bold text-primary">
+                    <i class="fas fa-headset me-1"></i>Поддержка
+                </h6>
+            </div>
+            <div class="card-body">
+                <p class="mb-3">Есть вопросы по биллингу?</p>
+                
+                <div class="list-group list-group-flush">
+                    <a href="#" class="list-group-item list-group-item-action">
+                        <i class="fas fa-file-invoice-dollar me-2"></i>
+                        Получить счет
+                    </a>
+                    <a href="#" class="list-group-item list-group-item-action">
+                        <i class="fas fa-question-circle me-2"></i>
+                        Частые вопросы
+                    </a>
+                    <a href="#" class="list-group-item list-group-item-action">
+                        <i class="fas fa-envelope me-2"></i>
+                        Написать в поддержку
+                    </a>
+                    <a href="#" class="list-group-item list-group-item-action">
+                        <i class="fas fa-phone me-2"></i>
+                        Позвонить нам
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Модальное окно улучшения тарифа -->
+<div class="modal fade" id="upgradeModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-arrow-up me-2"></i>Улучшить тариф
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <div class="card h-100 border-primary border-2">
+                            <div class="card-header text-center py-3">
+                                <h5 class="fw-bold mb-0">Бизнес</h5>
+                            </div>
+                            <div class="card-body text-center">
+                                <div class="display-5 fw-bold text-primary mb-2">5 990₽</div>
+                                <small class="text-muted d-block mb-3">в месяц</small>
+                                
+                                <ul class="list-unstyled text-start mb-4">
+                                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i>До 30 каналов</li>
+                                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i>Безлимитные публикации</li>
+                                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i>AI генерация премиум</li>
+                                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i>AI изображения HD</li>
+                                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i>Расширенная аналитика</li>
+                                </ul>
+                                
+                                <button class="btn btn-primary w-100">
+                                    Выбрать Бизнес
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-6 mb-3">
+                        <div class="card h-100">
+                            <div class="card-header text-center py-3 bg-light">
+                                <h5 class="fw-bold mb-0">Годовой план</h5>
+                                <span class="badge bg-success">Экономия 20%</span>
+                            </div>
+                            <div class="card-body text-center">
+                                <div class="display-5 fw-bold text-primary mb-2">28 752₽</div>
+                                <small class="text-muted d-block mb-3">2 396₽ в месяц</small>
+                                
+                                <ul class="list-unstyled text-start mb-4">
+                                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i>Все функции Профессионального</li>
+                                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i>Экономия 20%</li>
+                                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i>Приоритетная техподдержка</li>
+                                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i>Персональный менеджер</li>
+                                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i>Бесплатный месяц</li>
+                                </ul>
+                                
+                                <button class="btn btn-outline-primary w-100">
+                                    Выбрать Годовой
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Модальное окно отмены подписки -->
+<div class="modal fade" id="cancelModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-times-circle me-2 text-danger"></i>Отменить подписку
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-warning">
+                    <i class="fas fa-exclamation-triangle me-2"></i>
+                    Вы уверены, что хотите отменить подписку?
+                </div>
+                
+                <p class="mb-3">При отмене подписки:</p>
+                <ul class="mb-4">
+                    <li>Вы сохраните доступ до конца оплаченного периода</li>
+                    <li>Автоматические публикации будут остановлены</li>
+                    <li>Новые публикации будут недоступны</li>
+                    <li>Вы сможете возобновить подписку в любой момент</li>
+                </ul>
+                
+                <div class="mb-3">
+                    <label for="cancelReason" class="form-label">Причина отмены (необязательно)</label>
+                    <select class="form-select" id="cancelReason">
+                        <option value="">Выберите причину...</option>
+                        <option value="too_expensive">Слишком дорого</option>
+                        <option value="missing_features">Не хватает функций</option>
+                        <option value="not_using">Не использую сервис</option>
+                        <option value="switching">Перехожу на другой сервис</option>
+                        <option value="other">Другое</option>
+                    </select>
+                </div>
+                
+                <div class="form-check mb-4">
+                    <input class="form-check-input" type="checkbox" id="confirmCancel">
+                    <label class="form-check-label" for="confirmCancel">
+                        Я понимаю, что после отмены подписки функционал будет ограничен
+                    </label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+                <button type="button" class="btn btn-danger" id="confirmCancelBtn" disabled>
+                    <i class="fas fa-times me-2"></i>Отменить подписку
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Подтверждение отмены подписки
+document.addEventListener('DOMContentLoaded', function() {
+    const confirmCheckbox = document.getElementById('confirmCancel');
+    const confirmButton = document.getElementById('confirmCancelBtn');
+    
+    confirmCheckbox.addEventListener('change', function() {
+        confirmButton.disabled = !this.checked;
+    });
+    
+    confirmButton.addEventListener('click', function() {
+        const reason = document.getElementById('cancelReason').value;
+        
+        // Здесь будет запрос к API для отмены подписки
+        fetch('/api/billing/cancel', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ reason: reason })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showNotification('success', 'Подписка отменена', 
+                    'Вы сохраните доступ до конца оплаченного периода');
+                bootstrap.Modal.getInstance(document.getElementById('cancelModal')).hide();
+                location.reload();
+            } else {
+                showNotification('danger', 'Ошибка', 
+                    'Не удалось отменить подписку. Попробуйте позже.');
+            }
+        })
+        .catch(error => {
+            showNotification('danger', 'Ошибка', 
+                'Не удалось отменить подписку');
+            console.error('Error:', error);
+        });
+    });
+});
+
+// Уведомления
+function showNotification(type, title, message) {
+    const notification = document.createElement('div');
+    notification.className = `alert alert-${type} alert-dismissible fade show position-fixed`;
+    notification.style.cssText = `
+        top: 20px;
+        right: 20px;
+        z-index: 9999;
+        min-width: 300px;
+        box-shadow: 0 0.5rem 1rem rgba(0,0,0,.15);
+    `;
+    notification.innerHTML = `
+        <strong>${title}</strong><br>
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    
+    document.body.appendChild(notification);
+    
+    setTimeout(() => {
+        if (notification.parentNode) {
+            notification.remove();
+        }
+    }, 5000);
+}
+</script>
+{% endblock %}

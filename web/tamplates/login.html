@@ -1,0 +1,62 @@
+<!-- web/templates/login.html -->
+{% extends "layout.html" %}
+
+{% block title %}Snoomi Platform - Вход{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6 col-lg-5">
+        <div class="card border-0 shadow-lg">
+            <div class="card-body p-5">
+                <div class="text-center mb-4">
+                    <i class="fas fa-robot fa-3x text-primary mb-3"></i>
+                    <h2 class="fw-bold">Вход в систему</h2>
+                    <p class="text-muted">Введите ваши учетные данные</p>
+                </div>
+                
+                <form method="POST" action="{{ url_for('login') }}">
+                    <div class="mb-3">
+                        <label for="username" class="form-label">
+                            <i class="fas fa-user me-1"></i> Имя пользователя
+                        </label>
+                        <input type="text" class="form-control form-control-lg" id="username" 
+                               name="username" required autofocus>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <label for="password" class="form-label">
+                            <i class="fas fa-lock me-1"></i> Пароль
+                        </label>
+                        <input type="password" class="form-control form-control-lg" id="password" 
+                               name="password" required>
+                    </div>
+                    
+                    <div class="d-grid mb-3">
+                        <button type="submit" class="btn btn-primary btn-lg">
+                            <i class="fas fa-sign-in-alt me-2"></i> Войти
+                        </button>
+                    </div>
+                    
+                    <div class="text-center">
+                        <p class="mb-0">
+                            Нет аккаунта? 
+                            <a href="{{ url_for('register') }}" class="text-decoration-none">
+                                Зарегистрироваться
+                            </a>
+                        </p>
+                    </div>
+                </form>
+                
+                <hr class="my-4">
+                
+                <div class="text-center">
+                    <small class="text-muted">
+                        <i class="fas fa-info-circle me-1"></i>
+                        Тестовый доступ: admin / admin123
+                    </small>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

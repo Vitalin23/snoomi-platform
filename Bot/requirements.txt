@@ -1,0 +1,4 @@
+# requirements_bot_v22.txt
+python-telegram-bot==22.6
+pytz==2024.1
+httpx>=0.27  # Совместимо с yandex-ai-studio-sdk

@@ -1,0 +1,101 @@
+<!-- web/templates/register.html -->
+{% extends "layout.html" %}
+
+{% block title %}Snoomi Platform - Регистрация{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-7 col-lg-6">
+        <div class="card border-0 shadow-lg">
+            <div class="card-body p-5">
+                <div class="text-center mb-4">
+                    <i class="fas fa-user-plus fa-3x text-primary mb-3"></i>
+                    <h2 class="fw-bold">Регистрация</h2>
+                    <p class="text-muted">Создайте аккаунт для доступа к платформе</p>
+                </div>
+                
+                <form method="POST" action="{{ url_for('register') }}">
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="username" class="form-label">
+                                <i class="fas fa-user me-1"></i> Имя пользователя *
+                            </label>
+                            <input type="text" class="form-control" id="username" 
+                                   name="username" required autofocus>
+                            <div class="form-text">От 3 до 20 символов</div>
+                        </div>
+                        
+                        <div class="col-md-6 mb-3">
+                            <label for="email" class="form-label">
+                                <i class="fas fa-envelope me-1"></i> Email *
+                            </label>
+                            <input type="email" class="form-control" id="email" 
+                                   name="email" required>
+                            <div class="form-text">На этот адрес придут уведомления</div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="password" class="form-label">
+                                <i class="fas fa-lock me-1"></i> Пароль *
+                            </label>
+                            <input type="password" class="form-control" id="password" 
+                                   name="password" required>
+                            <div class="form-text">Не менее 6 символов</div>
+                        </div>
+                        
+                        <div class="col-md-6 mb-3">
+                            <label for="confirm_password" class="form-label">
+                                <i class="fas fa-lock me-1"></i> Подтверждение пароля *
+                            </label>
+                            <input type="password" class="form-control" id="confirm_password" 
+                                   name="confirm_password" required>
+                            <div class="form-text">Повторите пароль</div>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="terms" required>
+                            <label class="form-check-label" for="terms">
+                                Я соглашаюсь с <a href="#" class="text-decoration-none">условиями использования</a> 
+                                и <a href="#" class="text-decoration-none">политикой конфиденциальности</a>
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-primary btn-lg">
+                            <i class="fas fa-user-plus me-2"></i> Зарегистрироваться
+                        </button>
+                        <a href="{{ url_for('login') }}" class="btn btn-outline-secondary">
+                            <i class="fas fa-sign-in-alt me-2"></i> Уже есть аккаунт? Войти
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+        
+        <div class="card border-0 shadow-sm mt-4">
+            <div class="card-body text-center">
+                <h5 class="card-title mb-3">Почему выбирают Snoomi?</h5>
+                <div class="row">
+                    <div class="col-4">
+                        <i class="fas fa-bolt text-warning fa-2x mb-2"></i>
+                        <p class="small mb-0">Быстрый старт</p>
+                    </div>
+                    <div class="col-4">
+                        <i class="fas fa-shield-alt text-success fa-2x mb-2"></i>
+                        <p class="small mb-0">Безопасность</p>
+                    </div>
+                    <div class="col-4">
+                        <i class="fas fa-headset text-info fa-2x mb-2"></i>
+                        <p class="small mb-0">Поддержка 24/7</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

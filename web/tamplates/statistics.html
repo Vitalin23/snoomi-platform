@@ -1,0 +1,1404 @@
+<!-- web/templates/statistics.html -->
+{% extends "layout.html" %}
+
+{% block title %}Snoomi Platform - Статистика{% endblock %}
+
+{% block extra_css %}
+<style>
+    .stat-tab {
+        border-bottom: 3px solid transparent;
+        padding: 10px 15px;
+        cursor: pointer;
+        transition: all 0.3s;
+    }
+    .stat-tab.active {
+        border-bottom-color: #4e73df;
+        color: #4e73df;
+        font-weight: bold;
+    }
+    .stat-tab:hover:not(.active) {
+        border-bottom-color: #ddd;
+    }
+    .metric-card {
+        transition: transform 0.3s;
+    }
+    .metric-card:hover {
+        transform: translateY(-3px);
+    }
+    .chart-container {
+        position: relative;
+        height: 300px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- Заголовок -->
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h1 class="h3 mb-0 text-gray-800">
+            <i class="fas fa-chart-line me-2"></i>Статистика и аналитика
+        </h1>
+        <p class="mb-0">
+            {% if current_user.role == 'admin' %}
+                Статистика по всем клиентам системы
+            {% else %}
+                Статистика ваших каналов
+            {% endif %}
+        </p>
+    </div>
+    <div class="d-flex align-items-center">
+        <div class="btn-group me-3" role="group">
+            <a href="{{ url_for('statistics', range='7days') }}" 
+               class="btn btn-outline-primary {% if time_range == '7days' %}active{% endif %}">
+                7 дней
+            </a>
+            <a href="{{ url_for('statistics', range='30days') }}" 
+               class="btn btn-outline-primary {% if time_range == '30days' %}active{% endif %}">
+                30 дней
+            </a>
+            <a href="{{ url_for('statistics', range='90days') }}" 
+               class="btn btn-outline-primary {% if time_range == '90days' %}active{% endif %}">
+                90 дней
+            </a>
+        </div>
+        <button class="btn btn-primary" onclick="exportStatistics()">
+            <i class="fas fa-download me-2"></i>Экспорт
+        </button>
+    </div>
+</div>
+
+<!-- Вкладки -->
+<div class="card shadow mb-4">
+    <div class="card-header bg-white border-0">
+        <div class="d-flex overflow-auto" id="statTabs">
+            <div class="stat-tab active" onclick="showTab('overview')">
+                <i class="fas fa-home me-2"></i>Обзор
+            </div>
+            <div class="stat-tab" onclick="showTab('publications')">
+                <i class="fas fa-newspaper me-2"></i>Публикации
+            </div>
+            <div class="stat-tab" onclick="showTab('engagement')">
+                <i class="fas fa-heart me-2"></i>Вовлеченность
+            </div>
+            <div class="stat-tab" onclick="showTab('channels')">
+                <i class="fas fa-broadcast-tower me-2"></i>Каналы
+            </div>
+            {% if current_user.role == 'admin' %}
+            <div class="stat-tab" onclick="showTab('clients')">
+                <i class="fas fa-users me-2"></i>Клиенты
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Контент вкладок -->
+<div id="tabContent">
+    <!-- Вкладка Обзор -->
+    <div id="overviewTab" class="tab-pane active">
+        <!-- Ключевые метрики -->
+        <div class="row mb-4">
+            <div class="col-xl-3 col-md-6 mb-4">
+                <div class="card metric-card border-left-primary shadow h-100">
+                    <div class="card-body">
+                        <div class="row no-gutters align-items-center">
+                            <div class="col mr-2">
+                                <div class="text-xs fw-bold text-primary mb-1">
+                                    Всего публикаций
+                                </div>
+                                <div class="h5 mb-0 fw-bold" id="totalPosts">0</div>
+                            </div>
+                            <div class="col-auto">
+                                <i class="fas fa-newspaper fa-2x text-primary"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="col-xl-3 col-md-6 mb-4">
+                <div class="card metric-card border-left-success shadow h-100">
+                    <div class="card-body">
+                        <div class="row no-gutters align-items-center">
+                            <div class="col mr-2">
+                                <div class="text-xs fw-bold text-success mb-1">
+                                    Успешных публикаций
+                                </div>
+                                <div class="h5 mb-0 fw-bold" id="successRate">0%</div>
+                            </div>
+                            <div class="col-auto">
+                                <i class="fas fa-check-circle fa-2x text-success"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="col-xl-3 col-md-6 mb-4">
+                <div class="card metric-card border-left-info shadow h-100">
+                    <div class="card-body">
+                        <div class="row no-gutters align-items-center">
+                            <div class="col mr-2">
+                                <div class="text-xs fw-bold text-info mb-1">
+                                    Средний охват
+                                </div>
+                                <div class="h5 mb-0 fw-bold" id="avgViews">0</div>
+                            </div>
+                            <div class="col-auto">
+                                <i class="fas fa-eye fa-2x text-info"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="col-xl-3 col-md-6 mb-4">
+                <div class="card metric-card border-left-warning shadow h-100">
+                    <div class="card-body">
+                        <div class="row no-gutters align-items-center">
+                            <div class="col mr-2">
+                                <div class="text-xs fw-bold text-warning mb-1">
+                                    Вовлеченность
+                                </div>
+                                <div class="h5 mb-0 fw-bold" id="engagementRate">0%</div>
+                            </div>
+                            <div class="col-auto">
+                                <i class="fas fa-heart fa-2x text-warning"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Графики -->
+        <div class="row mb-4">
+            <div class="col-lg-8 mb-4">
+                <div class="card shadow h-100">
+                    <div class="card-header">
+                        <h6 class="m-0 fw-bold text-primary">
+                            <i class="fas fa-chart-area me-1"></i>Динамика публикаций
+                        </h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="chart-container">
+                            <canvas id="publicationsChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="col-lg-4 mb-4">
+                <div class="card shadow h-100">
+                    <div class="card-header">
+                        <h6 class="m-0 fw-bold text-primary">
+                            <i class="fas fa-chart-pie me-1"></i>По платформам
+                        </h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="chart-container">
+                            <canvas id="platformsChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Топ публикаций -->
+        <div class="row">
+            <div class="col-12">
+                <div class="card shadow">
+                    <div class="card-header">
+                        <h6 class="m-0 fw-bold text-primary">
+                            <i class="fas fa-trophy me-1"></i>Топ публикаций
+                        </h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover" id="topPublications">
+                                <thead>
+                                    <tr>
+                                        <th>Рейтинг</th>
+                                        <th>Тема</th>
+                                        <th>Канал</th>
+                                        <th>Просмотры</th>
+                                        <th>Лайки</th>
+                                        <th>Репосты</th>
+                                        <th>ER%</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="topPublicationsBody">
+                                    <!-- Заполнится через JavaScript -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Вкладка Публикации -->
+    <div id="publicationsTab" class="tab-pane" style="display: none;">
+        <div class="row">
+            <div class="col-12">
+                <div class="card shadow mb-4">
+                    <div class="card-header">
+                        <h6 class="m-0 fw-bold text-primary">
+                            <i class="fas fa-filter me-1"></i>Фильтры
+                        </h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-3">
+                            <div class="col-md-3">
+                                <label class="form-label">Платформа</label>
+                                <select class="form-select" id="filterPlatform">
+                                    <option value="">Все платформы</option>
+                                    <option value="telegram">Telegram</option>
+                                    <option value="vk">ВКонтакте</option>
+                                    <option value="ok">Одноклассники</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label">Статус</label>
+                                <select class="form-select" id="filterStatus">
+                                    <option value="">Все статусы</option>
+                                    <option value="success">Успешно</option>
+                                    <option value="failed">Ошибка</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label">Дата с</label>
+                                <input type="date" class="form-control" id="filterDateFrom">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label">Дата по</label>
+                                <input type="date" class="form-control" id="filterDateTo">
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <button class="btn btn-primary" onclick="loadPublications()">
+                                <i class="fas fa-search me-2"></i>Применить фильтры
+                            </button>
+                            <button class="btn btn-outline-secondary" onclick="resetFilters()">
+                                <i class="fas fa-redo me-2"></i>Сбросить
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card shadow">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h6 class="m-0 fw-bold text-primary">
+                            <i class="fas fa-list me-1"></i>Все публикации
+                        </h6>
+                        <div class="d-flex align-items-center">
+                            <div class="input-group input-group-sm me-2" style="width: 200px;">
+                                <input type="text" class="form-control" placeholder="Поиск..." id="searchPublications">
+                                <button class="btn btn-outline-secondary" type="button">
+                                    <i class="fas fa-search"></i>
+                                </button>
+                            </div>
+                            <select class="form-select form-select-sm w-auto" id="publicationsPerPage">
+                                <option value="10">10</option>
+                                <option value="25" selected>25</option>
+                                <option value="50">50</option>
+                                <option value="100">100</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover" id="allPublications">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Дата</th>
+                                        <th>Канал</th>
+                                        <th>Тема</th>
+                                        <th>Платформа</th>
+                                        <th>Статус</th>
+                                        <th>Просмотры</th>
+                                        <th>ER</th>
+                                        <th>Действия</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="allPublicationsBody">
+                                    <!-- Заполнится через JavaScript -->
+                                </tbody>
+                            </table>
+                        </div>
+                        <nav aria-label="Навигация по страницам">
+                            <ul class="pagination justify-content-center" id="publicationsPagination">
+                                <!-- Заполнится через JavaScript -->
+                            </ul>
+                        </nav>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Вкладка Вовлеченность -->
+    <div id="engagementTab" class="tab-pane" style="display: none;">
+        <div class="row">
+            <div class="col-lg-6 mb-4">
+                <div class="card shadow h-100">
+                    <div class="card-header">
+                        <h6 class="m-0 fw-bold text-primary">
+                            <i class="fas fa-chart-bar me-1"></i>Вовлеченность по времени
+                        </h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="chart-container">
+                            <canvas id="engagementTimeChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="col-lg-6 mb-4">
+                <div class="card shadow h-100">
+                    <div class="card-header">
+                        <h6 class="m-0 fw-bold text-primary">
+                            <i class="fas fa-chart-bar me-1"></i>Типы контента
+                        </h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="chart-container">
+                            <canvas id="contentTypeChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="row">
+            <div class="col-12">
+                <div class="card shadow">
+                    <div class="card-header">
+                        <h6 class="m-0 fw-bold text-primary">
+                            <i class="fas fa-comments me-1"></i>Анализ вовлеченности
+                        </h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-3 text-center">
+                                <div class="display-6 fw-bold text-primary" id="avgLikes">0</div>
+                                <p class="text-muted mb-0">Среднее лайков</p>
+                            </div>
+                            <div class="col-md-3 text-center">
+                                <div class="display-6 fw-bold text-success" id="avgShares">0</div>
+                                <p class="text-muted mb-0">Среднее репостов</p>
+                            </div>
+                            <div class="col-md-3 text-center">
+                                <div class="display-6 fw-bold text-info" id="avgComments">0</div>
+                                <p class="text-muted mb-0">Среднее комментариев</p>
+                            </div>
+                            <div class="col-md-3 text-center">
+                                <div class="display-6 fw-bold text-warning" id="avgCTR">0%</div>
+                                <p class="text-muted mb-0">CTR</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Вкладка Каналы -->
+    <div id="channelsTab" class="tab-pane" style="display: none;">
+        <div class="row mb-4">
+            <div class="col-12">
+                <div class="card shadow">
+                    <div class="card-header">
+                        <h6 class="m-0 fw-bold text-primary">
+                            <i class="fas fa-chart-bar me-1"></i>Эффективность каналов
+                        </h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="chart-container">
+                            <canvas id="channelsPerformanceChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="row">
+            <div class="col-12">
+                <div class="card shadow">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h6 class="m-0 fw-bold text-primary">
+                            <i class="fas fa-table me-1"></i>Рейтинг каналов
+                        </h6>
+                        <div>
+                            <button class="btn btn-sm btn-outline-primary" onclick="sortChannelsBy('posts')">
+                                По публикациям
+                            </button>
+                            <button class="btn btn-sm btn-outline-success" onclick="sortChannelsBy('views')">
+                                По просмотрам
+                            </button>
+                            <button class="btn btn-sm btn-outline-warning" onclick="sortChannelsBy('er')">
+                                По вовлеченности
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover" id="channelsRanking">
+                                <thead>
+                                    <tr>
+                                        <th>#</th>
+                                        <th>Канал</th>
+                                        <th>Платформа</th>
+                                        <th>Публикации</th>
+                                        <th>Просмотры</th>
+                                        <th>Лайки</th>
+                                        <th>Репосты</th>
+                                        <th>ER%</th>
+                                        <th>Рост</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="channelsRankingBody">
+                                    <!-- Заполнится через JavaScript -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Вкладка Клиенты (только для админа) -->
+    {% if current_user.role == 'admin' %}
+    <div id="clientsTab" class="tab-pane" style="display: none;">
+        <div class="row mb-4">
+            <div class="col-12">
+                <div class="card shadow">
+                    <div class="card-header">
+                        <h6 class="m-0 fw-bold text-primary">
+                            <i class="fas fa-chart-pie me-1"></i>Распределение клиентов
+                        </h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="chart-container">
+                            <canvas id="clientsDistributionChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="row">
+            <div class="col-12">
+                <div class="card shadow">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h6 class="m-0 fw-bold text-primary">
+                            <i class="fas fa-users me-1"></i>Активность клиентов
+                        </h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover" id="clientsActivity">
+                                <thead>
+                                    <tr>
+                                        <th>Клиент</th>
+                                        <th>Тариф</th>
+                                        <th>Каналы</th>
+                                        <th>Публикации</th>
+                                        <th>Средний ER</th>
+                                        <th>Статус</th>
+                                        <th>Доход</th>
+                                        <th>Действия</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="clientsActivityBody">
+                                    {% if stats.top_clients %}
+                                        {% for client in stats.top_clients %}
+                                        <tr>
+                                            <td>{{ client.client_name }}</td>
+                                            <td>
+                                                <span class="badge bg-info">Премиум</span>
+                                            </td>
+                                            <td>{{ client.channels }}</td>
+                                            <td>{{ client.posts }}</td>
+                                            <td>
+                                                {% if client.views and client.posts %}
+                                                    {{ ((client.views / client.posts) * 100)|round(1) }}%
+                                                {% else %}
+                                                    0%
+                                                {% endif %}
+                                            </td>
+                                            <td>
+                                                <span class="badge bg-success">Активен</span>
+                                            </td>
+                                            <td>
+                                                <strong>{{ (client.posts * 10)|int }}₽</strong>
+                                            </td>
+                                            <td>
+                                                <button class="btn btn-sm btn-outline-primary">
+                                                    <i class="fas fa-eye"></i>
+                                                </button>
+                                            </td>
+                                        </tr>
+                                        {% endfor %}
+                                    {% endif %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Модальное окно деталей публикации -->
+<div class="modal fade" id="publicationDetailModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-newspaper me-2"></i>Детали публикации
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="publicationDetailBody">
+                <!-- Заполнится через JavaScript -->
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Глобальные переменные
+let currentTab = 'overview';
+let currentPage = 1;
+let totalPages = 1;
+let publicationsData = [];
+
+// Переключение вкладок
+function showTab(tabName) {
+    // Скрываем все вкладки
+    document.querySelectorAll('.tab-pane').forEach(tab => {
+        tab.style.display = 'none';
+    });
+    
+    // Убираем активный класс со всех вкладок
+    document.querySelectorAll('.stat-tab').forEach(tab => {
+        tab.classList.remove('active');
+    });
+    
+    // Показываем выбранную вкладку
+    document.getElementById(tabName + 'Tab').style.display = 'block';
+    
+    // Добавляем активный класс выбранной вкладке
+    document.querySelectorAll('.stat-tab').forEach(tab => {
+        if (tab.textContent.includes(getTabTitle(tabName))) {
+            tab.classList.add('active');
+        }
+    });
+    
+    currentTab = tabName;
+    
+    // Загружаем данные для вкладки
+    switch(tabName) {
+        case 'overview':
+            loadOverviewData();
+            break;
+        case 'publications':
+            loadPublications();
+            break;
+        case 'engagement':
+            loadEngagementData();
+            break;
+        case 'channels':
+            loadChannelsData();
+            break;
+        case 'clients':
+            loadClientsData();
+            break;
+    }
+}
+
+function getTabTitle(tabName) {
+    const titles = {
+        'overview': 'Обзор',
+        'publications': 'Публикации',
+        'engagement': 'Вовлеченность',
+        'channels': 'Каналы',
+        'clients': 'Клиенты'
+    };
+    return titles[tabName] || tabName;
+}
+
+// Загрузка данных для обзора
+function loadOverviewData() {
+    fetch(`/api/statistics/overview?range={{ time_range }}`)
+        .then(response => response.json())
+        .then(data => {
+            // Обновляем метрики
+            document.getElementById('totalPosts').textContent = data.total_posts;
+            document.getElementById('successRate').textContent = data.success_rate + '%';
+            document.getElementById('avgViews').textContent = data.avg_views.toLocaleString();
+            document.getElementById('engagementRate').textContent = data.engagement_rate + '%';
+            
+            // Строим график публикаций
+            buildPublicationsChart(data.chart_data);
+            
+            // Строим график платформ
+            buildPlatformsChart(data.platforms_data);
+            
+            // Загружаем топ публикаций
+            loadTopPublications();
+        })
+        .catch(error => {
+            console.error('Error loading overview data:', error);
+            showNotification('error', 'Ошибка', 'Не удалось загрузить данные');
+        });
+}
+
+// Построение графика публикаций
+function buildPublicationsChart(chartData) {
+    const ctx = document.getElementById('publicationsChart').getContext('2d');
+    
+    if (window.publicationsChartInstance) {
+        window.publicationsChartInstance.destroy();
+    }
+    
+    window.publicationsChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: chartData.dates,
+            datasets: [{
+                label: 'Публикации',
+                data: chartData.posts,
+                borderColor: '#4e73df',
+                backgroundColor: 'rgba(78, 115, 223, 0.1)',
+                tension: 0.4,
+                fill: true
+            }, {
+                label: 'Просмотры',
+                data: chartData.views,
+                borderColor: '#1cc88a',
+                backgroundColor: 'rgba(28, 200, 138, 0.1)',
+                tension: 0.4,
+                fill: true,
+                yAxisID: 'y1'
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+                mode: 'index',
+                intersect: false,
+            },
+            scales: {
+                x: {
+                    grid: {
+                        display: false
+                    }
+                },
+                y: {
+                    type: 'linear',
+                    display: true,
+                    position: 'left',
+                    title: {
+                        display: true,
+                        text: 'Публикации'
+                    }
+                },
+                y1: {
+                    type: 'linear',
+                    display: true,
+                    position: 'right',
+                    title: {
+                        display: true,
+                        text: 'Просмотры'
+                    },
+                    grid: {
+                        drawOnChartArea: false,
+                    },
+                }
+            }
+        }
+    });
+}
+
+// Построение графика платформ
+function buildPlatformsChart(platformsData) {
+    const ctx = document.getElementById('platformsChart').getContext('2d');
+    
+    if (window.platformsChartInstance) {
+        window.platformsChartInstance.destroy();
+    }
+    
+    const platformColors = {
+        'telegram': '#0088cc',
+        'vk': '#4c75a3',
+        'ok': '#ee8208',
+        'dzen': '#ff3333'
+    };
+    
+    const labels = platformsData.map(p => p.platform.toUpperCase());
+    const data = platformsData.map(p => p.count);
+    const backgroundColor = platformsData.map(p => platformColors[p.platform] || '#6c757d');
+    
+    window.platformsChartInstance = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels: labels,
+            datasets: [{
+                data: data,
+                backgroundColor: backgroundColor,
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'bottom',
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            const label = context.label || '';
+                            const value = context.raw || 0;
+                            const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                            const percentage = Math.round((value / total) * 100);
+                            return `${label}: ${value} (${percentage}%)`;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+// Загрузка топ публикаций
+function loadTopPublications() {
+    fetch(`/api/statistics/top-publications?range={{ time_range }}&limit=10`)
+        .then(response => response.json())
+        .then(data => {
+            const tbody = document.getElementById('topPublicationsBody');
+            tbody.innerHTML = '';
+            
+            data.forEach((pub, index) => {
+                const er = pub.views > 0 ? ((pub.likes + pub.shares + pub.comments) / pub.views * 100).toFixed(1) : 0;
+                
+                tbody.innerHTML += `
+                    <tr>
+                        <td>
+                            <span class="badge bg-${index < 3 ? 'warning' : 'secondary'}">
+                                ${index + 1}
+                            </span>
+                        </td>
+                        <td class="text-truncate" style="max-width: 200px;" title="${pub.topic}">
+                            ${pub.topic}
+                        </td>
+                        <td>${pub.channel_name}</td>
+                        <td>${pub.views.toLocaleString()}</td>
+                        <td>${pub.likes.toLocaleString()}</td>
+                        <td>${pub.shares.toLocaleString()}</td>
+                        <td>
+                            <span class="badge bg-${er > 5 ? 'success' : er > 2 ? 'warning' : 'danger'}">
+                                ${er}%
+                            </span>
+                        </td>
+                    </tr>
+                `;
+            });
+        })
+        .catch(error => {
+            console.error('Error loading top publications:', error);
+        });
+}
+
+// Загрузка всех публикаций
+function loadPublications(page = 1) {
+    const platform = document.getElementById('filterPlatform').value;
+    const status = document.getElementById('filterStatus').value;
+    const dateFrom = document.getElementById('filterDateFrom').value;
+    const dateTo = document.getElementById('filterDateTo').value;
+    const perPage = document.getElementById('publicationsPerPage').value;
+    const search = document.getElementById('searchPublications').value;
+    
+    let url = `/api/statistics/publications?page=${page}&per_page=${perPage}`;
+    
+    const params = [];
+    if (platform) params.push(`platform=${platform}`);
+    if (status) params.push(`status=${status}`);
+    if (dateFrom) params.push(`date_from=${dateFrom}`);
+    if (dateTo) params.push(`date_to=${dateTo}`);
+    if (search) params.push(`search=${encodeURIComponent(search)}`);
+    
+    if (params.length > 0) {
+        url += '&' + params.join('&');
+    }
+    
+    fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            publicationsData = data.publications;
+            currentPage = data.page;
+            totalPages = data.total_pages;
+            
+            updatePublicationsTable();
+            updatePagination();
+        })
+        .catch(error => {
+            console.error('Error loading publications:', error);
+            showNotification('error', 'Ошибка', 'Не удалось загрузить публикации');
+        });
+}
+
+// Обновление таблицы публикаций
+function updatePublicationsTable() {
+    const tbody = document.getElementById('allPublicationsBody');
+    tbody.innerHTML = '';
+    
+    if (publicationsData.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="9" class="text-center text-muted py-4">
+                    <i class="fas fa-inbox fa-2x mb-3"></i><br>
+                    Публикации не найдены
+                </td>
+            </tr>
+        `;
+        return;
+    }
+    
+    publicationsData.forEach(pub => {
+        const date = new Date(pub.published_at);
+        const er = pub.views > 0 ? ((pub.likes + pub.shares + pub.comments) / pub.views * 100).toFixed(1) : 0;
+        
+        tbody.innerHTML += `
+            <tr>
+                <td>${pub.id}</td>
+                <td>${date.toLocaleDateString()}</td>
+                <td>${pub.channel_name}</td>
+                <td class="text-truncate" style="max-width: 150px;" title="${pub.topic}">
+                    ${pub.topic}
+                </td>
+                <td>
+                    <span class="badge bg-${pub.platform === 'telegram' ? 'info' : 'primary'}">
+                        ${pub.platform.toUpperCase()}
+                    </span>
+                </td>
+                <td>
+                    <span class="badge bg-${pub.success ? 'success' : 'danger'}">
+                        <i class="fas fa-${pub.success ? 'check' : 'times'} me-1"></i>
+                        ${pub.success ? 'Успешно' : 'Ошибка'}
+                    </span>
+                </td>
+                <td>${pub.views.toLocaleString()}</td>
+                <td>
+                    <span class="badge bg-${er > 5 ? 'success' : er > 2 ? 'warning' : 'danger'}">
+                        ${er}%
+                    </span>
+                </td>
+                <td>
+                    <button class="btn btn-sm btn-outline-primary" onclick="viewPublicationDetail(${pub.id})">
+                        <i class="fas fa-eye"></i>
+                    </button>
+                </td>
+            </tr>
+        `;
+    });
+}
+
+// Обновление пагинации
+function updatePagination() {
+    const pagination = document.getElementById('publicationsPagination');
+    pagination.innerHTML = '';
+    
+    // Кнопка "Назад"
+    const prevItem = document.createElement('li');
+    prevItem.className = `page-item ${currentPage === 1 ? 'disabled' : ''}`;
+    prevItem.innerHTML = `
+        <a class="page-link" href="#" onclick="loadPublications(${currentPage - 1})">
+            <i class="fas fa-chevron-left"></i>
+        </a>
+    `;
+    pagination.appendChild(prevItem);
+    
+    // Номера страниц
+    const startPage = Math.max(1, currentPage - 2);
+    const endPage = Math.min(totalPages, currentPage + 2);
+    
+    for (let i = startPage; i <= endPage; i++) {
+        const pageItem = document.createElement('li');
+        pageItem.className = `page-item ${i === currentPage ? 'active' : ''}`;
+        pageItem.innerHTML = `
+            <a class="page-link" href="#" onclick="loadPublications(${i})">
+                ${i}
+            </a>
+        `;
+        pagination.appendChild(pageItem);
+    }
+    
+    // Кнопка "Вперед"
+    const nextItem = document.createElement('li');
+    nextItem.className = `page-item ${currentPage === totalPages ? 'disabled' : ''}`;
+    nextItem.innerHTML = `
+        <a class="page-link" href="#" onclick="loadPublications(${currentPage + 1})">
+            <i class="fas fa-chevron-right"></i>
+        </a>
+    `;
+    pagination.appendChild(nextItem);
+}
+
+// Сброс фильтров
+function resetFilters() {
+    document.getElementById('filterPlatform').value = '';
+    document.getElementById('filterStatus').value = '';
+    document.getElementById('filterDateFrom').value = '';
+    document.getElementById('filterDateTo').value = '';
+    document.getElementById('searchPublications').value = '';
+    loadPublications(1);
+}
+
+// Просмотр деталей публикации
+function viewPublicationDetail(publicationId) {
+    fetch(`/api/publications/${publicationId}`)
+        .then(response => response.json())
+        .then(data => {
+            const modalBody = document.getElementById('publicationDetailBody');
+            
+            modalBody.innerHTML = `
+                <div class="row">
+                    <div class="col-md-6">
+                        <h6>Основная информация</h6>
+                        <table class="table table-sm">
+                            <tr>
+                                <td><strong>ID:</strong></td>
+                                <td>${data.id}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Дата публикации:</strong></td>
+                                <td>${new Date(data.published_at).toLocaleString()}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Канал:</strong></td>
+                                <td>${data.channel_name} (${data.platform.toUpperCase()})</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Тема:</strong></td>
+                                <td>${data.topic}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Статус:</strong></td>
+                                <td>
+                                    <span class="badge bg-${data.success ? 'success' : 'danger'}">
+                                        ${data.success ? 'Успешно' : 'Ошибка'}
+                                    </span>
+                                </td>
+                            </tr>
+                        </table>
+                    </div>
+                    <div class="col-md-6">
+                        <h6>Статистика</h6>
+                        <table class="table table-sm">
+                            <tr>
+                                <td><strong>Просмотры:</strong></td>
+                                <td>${data.views.toLocaleString()}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Лайки:</strong></td>
+                                <td>${data.likes.toLocaleString()}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Репосты:</strong></td>
+                                <td>${data.shares.toLocaleString()}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Комментарии:</strong></td>
+                                <td>${data.comments.toLocaleString()}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Вовлеченность:</strong></td>
+                                <td>
+                                    <span class="badge bg-${data.er > 5 ? 'success' : data.er > 2 ? 'warning' : 'danger'}">
+                                        ${data.er ? data.er.toFixed(1) + '%' : '0%'}
+                                    </span>
+                                </td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+                
+                ${data.content ? `
+                <div class="mt-3">
+                    <h6>Содержание</h6>
+                    <div class="card">
+                        <div class="card-body">
+                            ${data.content.substring(0, 500)}${data.content.length > 500 ? '...' : ''}
+                        </div>
+                    </div>
+                </div>
+                ` : ''}
+                
+                ${data.error_message ? `
+                <div class="mt-3">
+                    <h6>Ошибка</h6>
+                    <div class="alert alert-danger">
+                        <i class="fas fa-exclamation-triangle me-2"></i>
+                        ${data.error_message}
+                    </div>
+                </div>
+                ` : ''}
+            `;
+            
+            const modal = new bootstrap.Modal(document.getElementById('publicationDetailModal'));
+            modal.show();
+        })
+        .catch(error => {
+            console.error('Error loading publication details:', error);
+            showNotification('error', 'Ошибка', 'Не удалось загрузить детали публикации');
+        });
+}
+
+// Загрузка данных вовлеченности
+function loadEngagementData() {
+    fetch(`/api/statistics/engagement?range={{ time_range }}`)
+        .then(response => response.json())
+        .then(data => {
+            // Обновляем метрики
+            document.getElementById('avgLikes').textContent = data.avg_likes.toLocaleString();
+            document.getElementById('avgShares').textContent = data.avg_shares.toLocaleString();
+            document.getElementById('avgComments').textContent = data.avg_comments.toLocaleString();
+            document.getElementById('avgCTR').textContent = data.avg_ctr + '%';
+            
+            // Строим графики
+            buildEngagementTimeChart(data.time_data);
+            buildContentTypeChart(data.content_data);
+        })
+        .catch(error => {
+            console.error('Error loading engagement data:', error);
+        });
+}
+
+// Построение графика вовлеченности по времени
+function buildEngagementTimeChart(timeData) {
+    const ctx = document.getElementById('engagementTimeChart').getContext('2d');
+    
+    if (window.engagementTimeChartInstance) {
+        window.engagementTimeChartInstance.destroy();
+    }
+    
+    window.engagementTimeChartInstance = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: timeData.hours,
+            datasets: [{
+                label: 'Лайки',
+                data: timeData.likes,
+                backgroundColor: '#4e73df',
+                borderColor: '#4e73df',
+                borderWidth: 1
+            }, {
+                label: 'Репосты',
+                data: timeData.shares,
+                backgroundColor: '#1cc88a',
+                borderColor: '#1cc88a',
+                borderWidth: 1
+            }, {
+                label: 'Комментарии',
+                data: timeData.comments,
+                backgroundColor: '#f6c23e',
+                borderColor: '#f6c23e',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    title: {
+                        display: true,
+                        text: 'Часы'
+                    }
+                },
+                y: {
+                    beginAtZero: true,
+                    title: {
+                        display: true,
+                        text: 'Количество'
+                    }
+                }
+            }
+        }
+    });
+}
+
+// Построение графика типов контента
+function buildContentTypeChart(contentData) {
+    const ctx = document.getElementById('contentTypeChart').getContext('2d');
+    
+    if (window.contentTypeChartInstance) {
+        window.contentTypeChartInstance.destroy();
+    }
+    
+    window.contentTypeChartInstance = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: contentData.types,
+            datasets: [{
+                label: 'Средний ER',
+                data: contentData.er,
+                backgroundColor: '#36b9cc',
+                borderColor: '#36b9cc',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    title: {
+                        display: true,
+                        text: 'ER (%)'
+                    }
+                }
+            }
+        }
+    });
+}
+
+// Загрузка данных каналов
+function loadChannelsData() {
+    fetch(`/api/statistics/channels?range={{ time_range }}`)
+        .then(response => response.json())
+        .then(data => {
+            buildChannelsPerformanceChart(data.performance);
+            updateChannelsRanking(data.ranking);
+        })
+        .catch(error => {
+            console.error('Error loading channels data:', error);
+        });
+}
+
+// Построение графика эффективности каналов
+function buildChannelsPerformanceChart(performanceData) {
+    const ctx = document.getElementById('channelsPerformanceChart').getContext('2d');
+    
+    if (window.channelsPerformanceChartInstance) {
+        window.channelsPerformanceChartInstance.destroy();
+    }
+    
+    const labels = performanceData.map(c => c.channel_name);
+    const erData = performanceData.map(c => c.er);
+    const viewsData = performanceData.map(c => c.views / 1000); // в тысячах
+    
+    window.channelsPerformanceChartInstance = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'ER (%)',
+                data: erData,
+                backgroundColor: '#4e73df',
+                borderColor: '#4e73df',
+                borderWidth: 1,
+                yAxisID: 'y'
+            }, {
+                label: 'Просмотры (тыс.)',
+                data: viewsData,
+                backgroundColor: '#1cc88a',
+                borderColor: '#1cc88a',
+                borderWidth: 1,
+                yAxisID: 'y1'
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    ticks: {
+                        maxRotation: 45,
+                        minRotation: 45
+                    }
+                },
+                y: {
+                    type: 'linear',
+                    position: 'left',
+                    title: {
+                        display: true,
+                        text: 'ER (%)'
+                    }
+                },
+                y1: {
+                    type: 'linear',
+                    position: 'right',
+                    title: {
+                        display: true,
+                        text: 'Просмотры (тыс.)'
+                    },
+                    grid: {
+                        drawOnChartArea: false
+                    }
+                }
+            }
+        }
+    });
+}
+
+// Обновление рейтинга каналов
+function updateChannelsRanking(rankingData) {
+    const tbody = document.getElementById('channelsRankingBody');
+    tbody.innerHTML = '';
+    
+    rankingData.forEach((channel, index) => {
+        const growthClass = channel.growth > 0 ? 'success' : channel.growth < 0 ? 'danger' : 'secondary';
+        const growthIcon = channel.growth > 0 ? 'arrow-up' : channel.growth < 0 ? 'arrow-down' : 'minus';
+        
+        tbody.innerHTML += `
+            <tr>
+                <td>${index + 1}</td>
+                <td>${channel.channel_name}</td>
+                <td>
+                    <span class="badge bg-${channel.platform === 'telegram' ? 'info' : 'primary'}">
+                        ${channel.platform.toUpperCase()}
+                    </span>
+                </td>
+                <td>${channel.posts}</td>
+                <td>${channel.views.toLocaleString()}</td>
+                <td>${channel.likes.toLocaleString()}</td>
+                <td>${channel.shares.toLocaleString()}</td>
+                <td>
+                    <span class="badge bg-${channel.er > 5 ? 'success' : channel.er > 2 ? 'warning' : 'danger'}">
+                        ${channel.er.toFixed(1)}%
+                    </span>
+                </td>
+                <td>
+                    <span class="text-${growthClass}">
+                        <i class="fas fa-${growthIcon} me-1"></i>
+                        ${Math.abs(channel.growth).toFixed(1)}%
+                    </span>
+                </td>
+            </tr>
+        `;
+    });
+}
+
+// Сортировка каналов
+function sortChannelsBy(criteria) {
+    // В реальном приложении здесь был бы запрос к API с параметром сортировки
+    showNotification('info', 'Сортировка', `Сортировка по ${criteria} (в разработке)`);
+}
+
+// Загрузка данных клиентов (для админа)
+function loadClientsData() {
+    fetch('/api/statistics/clients')
+        .then(response => response.json())
+        .then(data => {
+            buildClientsDistributionChart(data.distribution);
+        })
+        .catch(error => {
+            console.error('Error loading clients data:', error);
+        });
+}
+
+// Построение графика распределения клиентов
+function buildClientsDistributionChart(distributionData) {
+    const ctx = document.getElementById('clientsDistributionChart').getContext('2d');
+    
+    if (window.clientsDistributionChartInstance) {
+        window.clientsDistributionChartInstance.destroy();
+    }
+    
+    window.clientsDistributionChartInstance = new Chart(ctx, {
+        type: 'pie',
+        data: {
+            labels: distributionData.labels,
+            datasets: [{
+                data: distributionData.data,
+                backgroundColor: ['#4e73df', '#1cc88a', '#36b9cc', '#f6c23e', '#e74a3b'],
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'bottom'
+                }
+            }
+        }
+    });
+}
+
+// Экспорт статистики
+function exportStatistics() {
+    const format = 'csv'; // или 'excel', 'pdf'
+    const url = `/api/statistics/export?range={{ time_range }}&format=${format}`;
+    
+    showNotification('info', 'Экспорт', 'Подготовка файла...');
+    
+    // Создаем временную ссылку для скачивания
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `snoomi_statistics_${new Date().toISOString().split('T')[0]}.${format}`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+// Уведомления
+function showNotification(type, title, message) {
+    const notification = document.createElement('div');
+    notification.className = `alert alert-${type} alert-dismissible fade show position-fixed`;
+    notification.style.cssText = `
+        top: 20px;
+        right: 20px;
+        z-index: 9999;
+        min-width: 300px;
+        box-shadow: 0 0.5rem 1rem rgba(0,0,0,.15);
+    `;
+    notification.innerHTML = `
+        <strong>${title}</strong><br>
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    
+    document.body.appendChild(notification);
+    
+    setTimeout(() => {
+        if (notification.parentNode) {
+            notification.remove();
+        }
+    }, 5000);
+}
+
+// Инициализация при загрузке страницы
+document.addEventListener('DOMContentLoaded', function() {
+    loadOverviewData();
+    
+    // Обработчики событий для фильтров
+    document.getElementById('publicationsPerPage').addEventListener('change', function() {
+        loadPublications(1);
+    });
+    
+    document.getElementById('searchPublications').addEventListener('keyup', function(event) {
+        if (event.key === 'Enter') {
+            loadPublications(1);
+        }
+    });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,29 @@
+# requirements_compatible.txt
+# Бот
+python-telegram-bot==22.6
+pytz==2024.1
+
+# Yandex AI
+yandex-ai-studio-sdk==0.19.2
+yandexcloud>=0.376.0
+
+# Общие зависимости
+httpx==0.28.1  # Совместимо с ВСЕМИ пакетами
+requests==2.32.3  # Требуется yandexcloud
+aiohttp>=3.9.0
+
+# Для работы с изображениями (если нужно)
+Pillow>=10.0.0
+
+# Для планировщика
+schedule>=1.2.0
+
+# Для VK API
+vk-api>=11.9.9
+
+# Для тестирования
+pytest==7.4.3
+pytest-cov==4.1.0
+pytest-mock==3.11.1
+colorama==0.4.6
+psutil==5.9.6

@@ -1,0 +1,567 @@
+<!-- web/templates/channels.html -->
+{% extends "layout.html" %}
+
+{% block title %}Snoomi Platform - Управление каналами{% endblock %}
+
+{% block extra_css %}
+<style>
+    .channel-platform-icon {
+        width: 40px;
+        height: 40px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 8px;
+        font-size: 1.2rem;
+    }
+    .platform-telegram { background-color: #0088cc; color: white; }
+    .platform-vk { background-color: #4c75a3; color: white; }
+    .platform-ok { background-color: #ee8208; color: white; }
+    .platform-dzen { background-color: #ff3333; color: white; }
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- Заголовок -->
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h1 class="h3 mb-0 text-gray-800">
+            <i class="fas fa-broadcast-tower me-2"></i>Управление каналами
+        </h1>
+        <p class="mb-0">
+            {% if current_user.role == 'admin' %}
+                Все каналы системы
+            {% else %}
+                Мои каналы
+            {% endif %}
+        </p>
+    </div>
+    <div>
+        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addChannelModal">
+            <i class="fas fa-plus me-2"></i>Добавить канал
+        </button>
+    </div>
+</div>
+
+<!-- Карточки каналов -->
+<div class="row" id="channelsContainer">
+    {% if channels %}
+        {% for channel in channels %}
+        <div class="col-xl-4 col-lg-6 mb-4" id="channel-{{ channel.id }}">
+            <div class="card shadow h-100">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center">
+                        {% if channel.platform == 'telegram' %}
+                        <div class="channel-platform-icon platform-telegram me-3">
+                            <i class="fab fa-telegram"></i>
+                        </div>
+                        {% elif channel.platform == 'vk' %}
+                        <div class="channel-platform-icon platform-vk me-3">
+                            <i class="fab fa-vk"></i>
+                        </div>
+                        {% elif channel.platform == 'ok' %}
+                        <div class="channel-platform-icon platform-ok me-3">
+                            <i class="fab fa-odnoklassniki"></i>
+                        </div>
+                        {% else %}
+                        <div class="channel-platform-icon platform-dzen me-3">
+                            <i class="fab fa-yandex"></i>
+                        </div>
+                        {% endif %}
+                        <div>
+                            <h6 class="mb-0 fw-bold">{{ channel.channel_name }}</h6>
+                            <small class="text-muted">{{ channel.platform }}</small>
+                        </div>
+                    </div>
+                    <div class="form-check form-switch">
+                        <input class="form-check-input channel-toggle" type="checkbox" 
+                               data-channel-id="{{ channel.id }}" 
+                               {% if channel.is_active %}checked{% endif %}>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <p class="card-text">
+                        <small class="text-muted">
+                            ID: <code>{{ channel.channel_id }}</code>
+                        </small>
+                        {% if current_user.role == 'admin' %}
+                        <br>
+                        <small class="text-muted">
+                            Клиент: {{ channel.client_name }}
+                        </small>
+                        {% endif %}
+                    </p>
+                    
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <span class="badge bg-{{ 'success' if channel.is_active else 'secondary' }}">
+                                {{ 'Активен' if channel.is_active else 'Неактивен' }}
+                            </span>
+                        </div>
+                        <div>
+                            <button class="btn btn-sm btn-outline-primary me-1" 
+                                    onclick="editChannel({{ channel.id }})"
+                                    title="Редактировать">
+                                <i class="fas fa-edit"></i>
+                            </button>
+                            <button class="btn btn-sm btn-outline-info me-1" 
+                                    onclick="testChannel({{ channel.id }})"
+                                    title="Тестировать">
+                                <i class="fas fa-wifi"></i>
+                            </button>
+                            <button class="btn btn-sm btn-outline-danger" 
+                                    onclick="deleteChannel({{ channel.id }}, '{{ channel.channel_name }}')"
+                                    title="Удалить">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-footer bg-transparent border-top-0">
+                    <small class="text-muted">
+                        <i class="far fa-calendar me-1"></i>
+                        Добавлен: {{ channel.created_at[:10] }}
+                    </small>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    {% else %}
+        <div class="col-12">
+            <div class="card shadow">
+                <div class="card-body text-center py-5">
+                    <i class="fas fa-broadcast-tower fa-4x text-muted mb-3"></i>
+                    <h4>Каналы не найдены</h4>
+                    <p class="text-muted">
+                        {% if current_user.role == 'admin' %}
+                            В системе пока нет добавленных каналов.
+                        {% else %}
+                            У вас пока нет добавленных каналов. Добавьте первый канал, чтобы начать автоматические публикации.
+                        {% endif %}
+                    </p>
+                    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addChannelModal">
+                        <i class="fas fa-plus me-2"></i>Добавить первый канал
+                    </button>
+                </div>
+            </div>
+        </div>
+    {% endif %}
+</div>
+
+<!-- Модальное окно добавления канала -->
+<div class="modal fade" id="addChannelModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-plus-circle me-2"></i>Добавить канал
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="addChannelForm">
+                    {% if current_user.role == 'admin' %}
+                    <div class="mb-3">
+                        <label for="clientSelect" class="form-label">Клиент *</label>
+                        <select class="form-select" id="clientSelect" required>
+                            <option value="">Выберите клиента...</option>
+                            <!-- Заполнится через JavaScript -->
+                        </select>
+                    </div>
+                    {% endif %}
+                    
+                    <div class="mb-3">
+                        <label for="platformSelect" class="form-label">Платформа *</label>
+                        <select class="form-select" id="platformSelect" required onchange="updatePlatformInfo()">
+                            <option value="">Выберите платформу...</option>
+                            <option value="telegram">Telegram</option>
+                            <option value="vk">ВКонтакте (VK)</option>
+                            <option value="ok">Одноклассники (OK)</option>
+                            <option value="dzen">Яндекс.Дзен</option>
+                        </select>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="channelId" class="form-label">ID канала *</label>
+                        <input type="text" class="form-control" id="channelId" required>
+                        <div class="form-text" id="platformHelp">
+                            Введите ID канала в соответствии с выбранной платформой
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="channelName" class="form-label">Название канала *</label>
+                        <input type="text" class="form-control" id="channelName" required>
+                        <div class="form-text">Название для отображения в системе</div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="accessToken" class="form-label">Токен доступа</label>
+                        <input type="text" class="form-control" id="accessToken">
+                        <div class="form-text">
+                            Токен бота/приложения для публикаций. Если не указан, будут использованы системные настройки.
+                        </div>
+                    </div>
+                    
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" id="isActive" checked>
+                        <label class="form-check-label" for="isActive">
+                            Активировать канал сразу после добавления
+                        </label>
+                    </div>
+                </form>
+                
+                <div class="alert alert-info">
+                    <i class="fas fa-info-circle me-2"></i>
+                    <strong>Внимание:</strong> Для публикаций бот должен быть администратором канала/группы 
+                    и иметь разрешение на публикацию сообщений.
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+                <button type="button" class="btn btn-primary" onclick="saveChannel()">
+                    <i class="fas fa-save me-2"></i>Сохранить канал
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Модальное окно редактирования канала -->
+<div class="modal fade" id="editChannelModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-edit me-2"></i>Редактировать канал
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="editChannelModalBody">
+                <!-- Заполнится через JavaScript -->
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Информация о платформах
+const platformInfo = {
+    telegram: {
+        help: "Введите @username канала (например, @mychannel) или ID канала (например, -1001234567890)",
+        example: "@mychannel или -1001234567890"
+    },
+    vk: {
+        help: "Введите ID группы ВКонтакте (например, -12345678). ID можно найти в адресе группы.",
+        example: "-12345678"
+    },
+    ok: {
+        help: "Введите ID группы Одноклассники",
+        example: "123456789012"
+    },
+    dzen: {
+        help: "Введите ID канала Яндекс.Дзен",
+        example: "channel_id"
+    }
+};
+
+// Обновление подсказки для платформы
+function updatePlatformInfo() {
+    const platform = document.getElementById('platformSelect').value;
+    const helpElement = document.getElementById('platformHelp');
+    
+    if (platform && platformInfo[platform]) {
+        helpElement.innerHTML = `
+            ${platformInfo[platform].help}<br>
+            <small class="text-muted">Пример: ${platformInfo[platform].example}</small>
+        `;
+    } else {
+        helpElement.textContent = 'Введите ID канала в соответствии с выбранной платформой';
+    }
+}
+
+// Загрузка списка клиентов (для администратора)
+function loadClients() {
+    {% if current_user.role == 'admin' %}
+    fetch('/api/clients')
+        .then(response => response.json())
+        .then(data => {
+            const select = document.getElementById('clientSelect');
+            select.innerHTML = '<option value="">Выберите клиента...</option>';
+            
+            data.forEach(client => {
+                const option = document.createElement('option');
+                option.value = client.id;
+                option.textContent = `${client.name} (${client.email})`;
+                select.appendChild(option);
+            });
+        })
+        .catch(error => {
+            console.error('Error loading clients:', error);
+        });
+    {% endif %}
+}
+
+// Сохранение канала
+function saveChannel() {
+    const form = document.getElementById('addChannelForm');
+    const formData = {
+        platform: document.getElementById('platformSelect').value,
+        channel_id: document.getElementById('channelId').value,
+        channel_name: document.getElementById('channelName').value,
+        access_token: document.getElementById('accessToken').value || null,
+        is_active: document.getElementById('isActive').checked
+    };
+    
+    {% if current_user.role == 'admin' %}
+    const clientId = document.getElementById('clientSelect').value;
+    if (!clientId) {
+        showNotification('warning', 'Внимание', 'Выберите клиента');
+        return;
+    }
+    formData.client_id = clientId;
+    {% endif %}
+    
+    // Валидация
+    if (!formData.platform || !formData.channel_id || !formData.channel_name) {
+        showNotification('warning', 'Внимание', 'Заполните все обязательные поля');
+        return;
+    }
+    
+    const button = document.querySelector('#addChannelModal .btn-primary');
+    const originalText = button.innerHTML;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Сохраняю...';
+    button.disabled = true;
+    
+    fetch('/api/channels', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(formData)
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showNotification('success', 'Успех', 'Канал успешно добавлен');
+            form.reset();
+            bootstrap.Modal.getInstance(document.getElementById('addChannelModal')).hide();
+            location.reload(); // Перезагружаем страницу для отображения нового канала
+        } else {
+            showNotification('danger', 'Ошибка', data.error || 'Не удалось добавить канал');
+        }
+    })
+    .catch(error => {
+        showNotification('danger', 'Ошибка', 'Не удалось добавить канал');
+        console.error('Error:', error);
+    })
+    .finally(() => {
+        button.innerHTML = originalText;
+        button.disabled = false;
+    });
+}
+
+// Редактирование канала
+function editChannel(channelId) {
+    fetch(`/api/channels/${channelId}`)
+        .then(response => response.json())
+        .then(data => {
+            const modalBody = document.getElementById('editChannelModalBody');
+            modalBody.innerHTML = `
+                <form id="editChannelForm">
+                    <div class="mb-3">
+                        <label for="editChannelName" class="form-label">Название канала</label>
+                        <input type="text" class="form-control" id="editChannelName" 
+                               value="${data.channel_name}" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="editAccessToken" class="form-label">Токен доступа</label>
+                        <input type="text" class="form-control" id="editAccessToken" 
+                               value="${data.access_token || ''}">
+                    </div>
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" id="editIsActive" 
+                               ${data.is_active ? 'checked' : ''}>
+                        <label class="form-check-label" for="editIsActive">
+                            Канал активен
+                        </label>
+                    </div>
+                </form>
+                <div class="d-grid gap-2">
+                    <button class="btn btn-primary" onclick="updateChannel(${channelId})">
+                        <i class="fas fa-save me-2"></i>Сохранить изменения
+                    </button>
+                    <button class="btn btn-outline-secondary" data-bs-dismiss="modal">
+                        Отмена
+                    </button>
+                </div>
+            `;
+            
+            const modal = new bootstrap.Modal(document.getElementById('editChannelModal'));
+            modal.show();
+        })
+        .catch(error => {
+            showNotification('danger', 'Ошибка', 'Не удалось загрузить данные канала');
+            console.error('Error:', error);
+        });
+}
+
+// Обновление канала
+function updateChannel(channelId) {
+    const formData = {
+        channel_name: document.getElementById('editChannelName').value,
+        access_token: document.getElementById('editAccessToken').value || null,
+        is_active: document.getElementById('editIsActive').checked
+    };
+    
+    fetch(`/api/channels/${channelId}`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(formData)
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showNotification('success', 'Успех', 'Канал успешно обновлен');
+            bootstrap.Modal.getInstance(document.getElementById('editChannelModal')).hide();
+            location.reload(); // Перезагружаем для обновления статуса
+        } else {
+            showNotification('danger', 'Ошибка', data.error || 'Не удалось обновить канал');
+        }
+    })
+    .catch(error => {
+        showNotification('danger', 'Ошибка', 'Не удалось обновить канал');
+        console.error('Error:', error);
+    });
+}
+
+// Тестирование канала
+function testChannel(channelId) {
+    if (!confirm('Протестировать подключение к каналу? Будет проверена возможность публикации.')) {
+        return;
+    }
+    
+    showNotification('info', 'Тестирование', 'Проверяем подключение к каналу...');
+    
+    fetch(`/api/channels/${channelId}/test`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.connected) {
+                showNotification('success', 'Успех', 
+                    `Подключение к каналу "${data.channel_name}" успешно!`);
+            } else {
+                showNotification('warning', 'Внимание', 
+                    `Не удалось подключиться: ${data.error || 'Неизвестная ошибка'}`);
+            }
+        })
+        .catch(error => {
+            showNotification('danger', 'Ошибка', 'Ошибка тестирования подключения');
+            console.error('Error:', error);
+        });
+}
+
+// Удаление канала
+function deleteChannel(channelId, channelName) {
+    if (!confirm(`Удалить канал "${channelName}"? Все связанные публикации и статистика также будут удалены.`)) {
+        return;
+    }
+    
+    fetch(`/api/channels/${channelId}`, {
+        method: 'DELETE'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showNotification('success', 'Успех', 'Канал успешно удален');
+            document.getElementById(`channel-${channelId}`).remove();
+            
+            // Если каналов не осталось, показываем сообщение
+            if (document.querySelectorAll('#channelsContainer .col').length === 0) {
+                location.reload();
+            }
+        } else {
+            showNotification('danger', 'Ошибка', data.error || 'Не удалось удалить канал');
+        }
+    })
+    .catch(error => {
+        showNotification('danger', 'Ошибка', 'Не удалось удалить канал');
+        console.error('Error:', error);
+    });
+}
+
+// Переключение активности канала
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.channel-toggle').forEach(toggle => {
+        toggle.addEventListener('change', function() {
+            const channelId = this.dataset.channelId;
+            const isActive = this.checked;
+            
+            fetch(`/api/channels/${channelId}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ is_active: isActive })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (!data.success) {
+                    // Возвращаем переключатель в исходное состояние при ошибке
+                    this.checked = !isActive;
+                    showNotification('danger', 'Ошибка', 
+                        'Не удалось изменить статус канала');
+                }
+            })
+            .catch(error => {
+                this.checked = !isActive;
+                showNotification('danger', 'Ошибка', 
+                    'Ошибка при изменении статуса канала');
+                console.error('Error:', error);
+            });
+        });
+    });
+    
+    // Загружаем клиентов при открытии модального окна
+    const addChannelModal = document.getElementById('addChannelModal');
+    if (addChannelModal) {
+        addChannelModal.addEventListener('show.bs.modal', function() {
+            {% if current_user.role == 'admin' %}
+            loadClients();
+            {% endif %}
+        });
+    }
+    
+    updatePlatformInfo(); // Инициализируем подсказку для платформы
+});
+
+// Уведомления
+function showNotification(type, title, message) {
+    const notification = document.createElement('div');
+    notification.className = `alert alert-${type} alert-dismissible fade show position-fixed`;
+    notification.style.cssText = `
+        top: 20px;
+        right: 20px;
+        z-index: 9999;
+        min-width: 300px;
+        box-shadow: 0 0.5rem 1rem rgba(0,0,0,.15);
+    `;
+    notification.innerHTML = `
+        <strong>${title}</strong><br>
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    
+    document.body.appendChild(notification);
+    
+    setTimeout(() => {
+        if (notification.parentNode) {
+            notification.remove();
+        }
+    }, 5000);
+}
+</script>
+{% endblock %}

@@ -1,0 +1,211 @@
+<!-- web/templates/index.html -->
+{% extends "layout.html" %}
+
+{% block title %}Snoomi Platform - Главная{% endblock %}
+
+{% block content %}
+<div class="row align-items-center py-5">
+    <div class="col-lg-6">
+        <h1 class="display-4 fw-bold mb-4">
+            Автоматизируйте публикации в соцсетях с <span class="text-primary">Snoomi</span>
+        </h1>
+        <p class="lead mb-4">
+            AI-система для генерации и публикации контента в Telegram, VK и другие платформы.
+            Экономьте время, увеличивайте аудиторию и монетизируйте ваши каналы.
+        </p>
+        
+        <div class="d-grid gap-2 d-md-flex justify-content-md-start mb-5">
+            {% if current_user.is_authenticated %}
+                <a href="{{ url_for('dashboard') }}" class="btn btn-primary btn-lg px-4 me-md-2">
+                    <i class="fas fa-tachometer-alt"></i> Перейти в панель
+                </a>
+            {% else %}
+                <a href="{{ url_for('register') }}" class="btn btn-primary btn-lg px-4 me-md-2">
+                    <i class="fas fa-rocket"></i> Начать бесплатно
+                </a>
+                <a href="{{ url_for('login') }}" class="btn btn-outline-secondary btn-lg px-4">
+                    <i class="fas fa-sign-in-alt"></i> Войти
+                </a>
+            {% endif %}
+        </div>
+    </div>
+    
+    <div class="col-lg-6">
+        <div class="card border-0 shadow-lg">
+            <div class="card-body p-4">
+                <div class="text-center mb-4">
+                    <i class="fas fa-robot fa-4x text-primary mb-3"></i>
+                    <h3>Как это работает?</h3>
+                </div>
+                
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <div class="text-center p-3 border rounded">
+                            <i class="fas fa-brain fa-2x text-primary mb-2"></i>
+                            <h5>AI Генерация</h5>
+                            <p class="small">Уникальные статьи на основе актуальных тем</p>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <div class="text-center p-3 border rounded">
+                            <i class="fas fa-palette fa-2x text-success mb-2"></i>
+                            <h5>AI Изображения</h5>
+                            <p class="small">Иллюстрации к каждой статье</p>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <div class="text-center p-3 border rounded">
+                            <i class="fas fa-broadcast-tower fa-2x text-warning mb-2"></i>
+                            <h5>Мультипостинг</h5>
+                            <p class="small">Публикация в несколько каналов одновременно</p>
+                        </div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <div class="text-center p-3 border rounded">
+                            <i class="fas fa-chart-line fa-2x text-info mb-2"></i>
+                            <h5>Аналитика</h5>
+                            <p class="small">Статистика и отчеты по эффективности</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Функции -->
+<div class="row py-5">
+    <div class="col-12 text-center mb-5">
+        <h2 class="fw-bold">Возможности платформы</h2>
+        <p class="text-muted">Все, что нужно для успешного ведения соцсетей</p>
+    </div>
+    
+    <div class="col-md-4 mb-4">
+        <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body text-center p-4">
+                <div class="icon-wrapper bg-primary bg-opacity-10 rounded-circle p-3 mb-3 mx-auto" style="width: 70px; height: 70px;">
+                    <i class="fas fa-cogs fa-2x text-primary"></i>
+                </div>
+                <h4 class="card-title">Автоматизация</h4>
+                <p class="card-text">
+                    Настройте расписание публикаций один раз и получайте регулярный контент без вашего участия.
+                </p>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4 mb-4">
+        <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body text-center p-4">
+                <div class="icon-wrapper bg-success bg-opacity-10 rounded-circle p-3 mb-3 mx-auto" style="width: 70px; height: 70px;">
+                    <i class="fas fa-robot fa-2x text-success"></i>
+                </div>
+                <h4 class="card-title">AI Контент</h4>
+                <p class="card-text">
+                    Нейросети создают уникальные статьи и изображения на основе ваших тем и ключевых слов.
+                </p>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4 mb-4">
+        <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body text-center p-4">
+                <div class="icon-wrapper bg-info bg-opacity-10 rounded-circle p-3 mb-3 mx-auto" style="width: 70px; height: 70px;">
+                    <i class="fas fa-chart-pie fa-2x text-info"></i>
+                </div>
+                <h4 class="card-title">Аналитика</h4>
+                <p class="card-text">
+                    Подробная статистика по публикациям, просмотрам, вовлеченности и эффективности контента.
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Тарифы -->
+<div class="row py-5 bg-light rounded-3">
+    <div class="col-12 text-center mb-5">
+        <h2 class="fw-bold">Тарифные планы</h2>
+        <p class="text-muted">Выберите подходящий тариф для вашего бизнеса</p>
+    </div>
+    
+    <div class="col-md-4 mb-4">
+        <div class="card h-100 border-0 shadow">
+            <div class="card-header bg-white text-center py-4">
+                <h4 class="fw-bold">Базовый</h4>
+                <div class="display-6 fw-bold text-primary">990₽</div>
+                <small class="text-muted">в месяц</small>
+            </div>
+            <div class="card-body">
+                <ul class="list-unstyled mb-4">
+                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> До 3 каналов</li>
+                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> 30 публикаций в месяц</li>
+                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> AI генерация статей</li>
+                    <li class="mb-2"><i class="fas fa-times text-danger me-2"></i> AI изображения</li>
+                    <li class="mb-2"><i class="fas fa-times text-danger me-2"></i> Приоритетная поддержка</li>
+                </ul>
+                <div class="d-grid">
+                    <a href="{{ url_for('register') }}" class="btn btn-outline-primary">Выбрать</a>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4 mb-4">
+        <div class="card h-100 border-primary border-2 shadow-lg">
+            <div class="card-header bg-primary text-white text-center py-4">
+                <span class="badge bg-warning position-absolute top-0 start-50 translate-middle">Популярный</span>
+                <h4 class="fw-bold">Профессиональный</h4>
+                <div class="display-6 fw-bold text-white">2 990₽</div>
+                <small class="text-white-50">в месяц</small>
+            </div>
+            <div class="card-body">
+                <ul class="list-unstyled mb-4">
+                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> До 10 каналов</li>
+                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> 100 публикаций в месяц</li>
+                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> AI генерация статей</li>
+                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> AI изображения</li>
+                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> Базовая поддержка</li>
+                </ul>
+                <div class="d-grid">
+                    <a href="{{ url_for('register') }}" class="btn btn-primary">Выбрать</a>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4 mb-4">
+        <div class="card h-100 border-0 shadow">
+            <div class="card-header bg-white text-center py-4">
+                <h4 class="fw-bold">Бизнес</h4>
+                <div class="display-6 fw-bold text-primary">5 990₽</div>
+                <small class="text-muted">в месяц</small>
+            </div>
+            <div class="card-body">
+                <ul class="list-unstyled mb-4">
+                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> До 30 каналов</li>
+                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> Безлимитные публикации</li>
+                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> AI генерация статей</li>
+                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> AI изображения</li>
+                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> Приоритетная поддержка</li>
+                </ul>
+                <div class="d-grid">
+                    <a href="{{ url_for('register') }}" class="btn btn-outline-primary">Выбрать</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- CTA -->
+<div class="row py-5">
+    <div class="col-12 text-center">
+        <h2 class="fw-bold mb-4">Готовы начать?</h2>
+        <p class="lead mb-4">Присоединяйтесь к тысячам довольных клиентов, которые уже автоматизировали свои соцсети</p>
+        <a href="{{ url_for('register') }}" class="btn btn-primary btn-lg px-5">
+            <i class="fas fa-rocket me-2"></i> Начать 14-дневный пробный период
+        </a>
+    </div>
+</div>
+{% endblock %}
