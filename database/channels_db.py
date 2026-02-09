@@ -432,7 +432,7 @@ class ChannelsDatabase:
             cs.max_posts_per_day,
             cs.is_auto_generate,
             cs.use_ai_images,
-            c.client_id,
+            cc.client_id as client_id,
             cl.name as client_name
         FROM client_channels cc
         JOIN channel_settings cs ON cc.id = cs.channel_id

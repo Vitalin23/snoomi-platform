@@ -6,9 +6,29 @@ import sys
 import os
 import threading
 import time
+import importlib
 
 # Добавляем пути
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _resolve_bot_entrypoint():
+    """
+    Находит точку входа Telegram-бота для разных вариантов имени папки:
+    Bot/main.py (текущее) или bot/main.py (legacy).
+    """
+    for module_name in ("Bot.main", "bot.main"):
+        try:
+            module = importlib.import_module(module_name)
+            return module.main
+        except ModuleNotFoundError as e:
+            # Игнорируем только ошибку отсутствия самого пакета Bot/bot.
+            package_name = module_name.split(".")[0]
+            if e.name == package_name:
+                continue
+            raise
+
+    raise ImportError("Не найден модуль бота: ожидается Bot/main.py или bot/main.py")
 
 def setup_environment():
     """Настройка окружения"""
@@ -17,9 +37,16 @@ def setup_environment():
     print("="*60)
     
     # Проверяем структуру
-    folders = ['bot', 'posting', 'ai', 'database']
-    for folder in folders:
-        if os.path.exists(folder):
+    folder_groups = [
+        ("Bot", "bot"),  # исторически встречаются оба варианта
+        ("posting",),
+        ("ai",),
+        ("database",),
+    ]
+    for group in folder_groups:
+        existing = next((folder for folder in group if os.path.exists(folder)), None)
+        folder = existing or group[0]
+        if existing:
             print(f"✅ Папка {folder}/")
         else:
             print(f"❌ Папка {folder}/ отсутствует")
@@ -49,7 +76,7 @@ def run_bot_safe():
             print("❌ TELEGRAM_BOT_TOKEN не настроен, бот не запускается")
             return
         
-        from bot.main import main as bot_main
+        bot_main = _resolve_bot_entrypoint()
         
         print("🤖 Telegram-бот запущен")
         bot_main()
