@@ -28,6 +28,14 @@ class Config:
     PUBLISH_TO_TG = os.getenv('PUBLISH_TO_TG', 'True').lower() == 'true'
     PUBLISH_HOUR = int(os.getenv('PUBLISH_HOUR', '10'))  # Время публикации (10 утра)
     
+    # ===== ИЗОЛЯЦИЯ КОМПОНЕНТОВ =====
+    # По умолчанию сайтовый бот работает без монетизационной админ-панели.
+    ENABLE_MONETIZATION_ADMIN_PANEL = (
+        os.getenv('ENABLE_MONETIZATION_ADMIN_PANEL', 'False').lower() == 'true'
+    )
+    WEB_HOST = os.getenv('WEB_HOST', '0.0.0.0')
+    WEB_PORT = int(os.getenv('WEB_PORT', '5000'))
+    
     # config.py - добавьте проверку Telegram канала
 @classmethod
 def validate(cls):
