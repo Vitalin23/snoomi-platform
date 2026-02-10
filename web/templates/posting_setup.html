@@ -144,6 +144,7 @@
 {% if channels %}
 <script>
     let plannedTopics = [];
+    let plannerSnapshot = null;
 
     function escapeHtml(value) {
         return (value || "")
@@ -200,6 +201,77 @@
         } else {
             questionsList.innerHTML = "";
             questionsBox.style.display = "none";
+        }
+    }
+
+    function clearPlannerInsights() {
+        document.getElementById("plannerInsightsBox").style.display = "none";
+        document.getElementById("plannerQuestionsBox").style.display = "none";
+        document.getElementById("plannerQuestionsList").innerHTML = "";
+        document.getElementById("plannerChannelName").textContent = "—";
+        document.getElementById("plannerStyleSummary").textContent = "—";
+        document.getElementById("plannerSemanticCore").textContent = "—";
+    }
+
+    async function loadSavedTopicsForChannel(channelId, silent = true) {
+        if (!channelId) {
+            plannedTopics = [];
+            plannerSnapshot = null;
+            clearPlannerInsights();
+            renderTopics();
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/posting-setup/topics?channel_id=${encodeURIComponent(channelId)}`);
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                if (!silent) {
+                    plannerMessage(data.error || "Не удалось загрузить сохраненные темы", "danger");
+                }
+                plannedTopics = [];
+                plannerSnapshot = null;
+                clearPlannerInsights();
+                renderTopics();
+                return;
+            }
+
+            plannedTopics = (data.topics || []).map((topicTitle) => ({
+                title: (topicTitle || "").toString(),
+                keyword: "",
+                questions: [],
+                rationale: "",
+            }));
+
+            if ((data.semantic_core || []).length || data.style_summary || (data.actual_questions || []).length) {
+                plannerSnapshot = {
+                    style_summary: data.style_summary || "",
+                    semantic_core: data.semantic_core || [],
+                    actual_questions: data.actual_questions || [],
+                };
+                setPlannerInsights({
+                    channel_name: data.channel_name || "",
+                    style_summary: data.style_summary || "",
+                    semantic_core: data.semantic_core || [],
+                    actual_questions: data.actual_questions || [],
+                });
+            } else {
+                plannerSnapshot = null;
+                clearPlannerInsights();
+            }
+
+            renderTopics();
+            if (!silent) {
+                plannerMessage("Сохраненные темы загружены.", "success");
+            }
+        } catch (error) {
+            if (!silent) {
+                plannerMessage(`Ошибка сети при загрузке тем: ${error}`, "danger");
+            }
+            plannedTopics = [];
+            plannerSnapshot = null;
+            clearPlannerInsights();
+            renderTopics();
         }
     }
 
@@ -311,6 +383,11 @@
                 questions: topic.questions || [],
                 rationale: topic.rationale || topic.why || ""
             }));
+            plannerSnapshot = {
+                style_summary: data.style_summary || "",
+                semantic_core: data.semantic_core || [],
+                actual_questions: data.actual_questions || [],
+            };
             setPlannerInsights(data);
             renderTopics();
             plannerMessage("План тем сгенерирован. Проверьте и отредактируйте формулировки перед сохранением.", "success");
@@ -338,12 +415,16 @@
         button.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Сохраняем...';
 
         try {
+            const metadata = plannerSnapshot || {};
             const response = await fetch("/api/posting-setup/topics", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     channel_id: channelId,
-                    topics: topics
+                    topics: topics,
+                    style_summary: metadata.style_summary || "",
+                    semantic_core: metadata.semantic_core || [],
+                    actual_questions: metadata.actual_questions || []
                 })
             });
             const data = await response.json();
@@ -353,6 +434,7 @@
             }
 
             plannerMessage(`Темы сохранены: ${data.saved_topics}. Теперь можно переходить к публикациям и аналитике.`, "success");
+            await loadSavedTopicsForChannel(channelId, true);
         } catch (error) {
             plannerMessage(`Ошибка сети при сохранении: ${error}`, "danger");
         } finally {
@@ -364,8 +446,14 @@
     document.getElementById("plannerGenerateBtn").addEventListener("click", generateTopicsPlan);
     document.getElementById("plannerAddManualBtn").addEventListener("click", addManualTopic);
     document.getElementById("plannerSaveBtn").addEventListener("click", saveTopicsPlan);
+    document.getElementById("plannerChannelSelect").addEventListener("change", () => {
+        const channelId = document.getElementById("plannerChannelSelect").value;
+        document.getElementById("plannerResultBox").innerHTML = "";
+        loadSavedTopicsForChannel(channelId, true);
+    });
 
-    renderTopics();
+    const initialChannelId = document.getElementById("plannerChannelSelect").value;
+    loadSavedTopicsForChannel(initialChannelId, true);
 </script>
 {% endif %}
 {% endblock %}

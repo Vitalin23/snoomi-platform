@@ -1895,6 +1895,38 @@ def _extract_channel_topics_for_plan(channel):
     return topics[:60]
 
 
+def _extract_saved_topic_state(channel):
+    extra = _channel_extra_config(channel)
+    topic_plan = extra.get("topic_plan") if isinstance(extra.get("topic_plan"), dict) else {}
+    settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
+
+    active_topics = (
+        ChannelTopic.query.filter_by(channel_id=channel.id, is_active=True)
+        .order_by(ChannelTopic.priority.desc(), ChannelTopic.created_at.asc())
+        .all()
+    )
+    topics = []
+    if active_topics:
+        topics = [item.topic for item in active_topics if (item.topic or "").strip()]
+    else:
+        topics = _normalize_topic_items((topic_plan.get("topics") or []))
+        if not topics and settings and settings.topics:
+            try:
+                topics = _normalize_topic_items(json.loads(settings.topics))
+            except Exception:
+                topics = []
+
+    return {
+        "channel_id": channel.id,
+        "channel_name": channel.channel_name,
+        "style_summary": str(topic_plan.get("style_summary") or "").strip(),
+        "semantic_core": _normalize_phrase_list(topic_plan.get("semantic_core") or [], limit=8),
+        "actual_questions": _question_text_list(topic_plan.get("actual_questions") or [], limit=5),
+        "topics": topics[:60],
+        "updated_at": topic_plan.get("updated_at"),
+    }
+
+
 def _build_posting_plan_preview_payload(
     channel,
     start_date=None,
@@ -1987,6 +2019,92 @@ def _normalize_posting_plan_items_for_save(raw_items):
         if len(normalized) >= 120:
             break
     return normalized
+
+
+def _extract_saved_posting_plan_draft(channel):
+    extra = _channel_extra_config(channel)
+    draft = extra.get("posting_plan_draft") if isinstance(extra.get("posting_plan_draft"), dict) else {}
+    settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
+
+    publish_frequency = _normalize_frequency(
+        draft.get("publish_frequency")
+        or (settings.publish_frequency if settings else None)
+        or extra.get("publish_frequency")
+        or "daily"
+    ) or "daily"
+    try:
+        publish_hour = int(
+            draft.get("publish_hour")
+            if draft.get("publish_hour") is not None
+            else (settings.publish_hour if settings and settings.publish_hour is not None else extra.get("publish_hour", 10))
+        )
+    except (TypeError, ValueError):
+        publish_hour = 10
+    publish_hour = min(max(publish_hour, 0), 23)
+
+    plan_items = _normalize_posting_plan_items_for_save(draft.get("plan_items") or [])
+    if plan_items:
+        start_date = plan_items[0]["publish_date"]
+    else:
+        start_date = datetime.utcnow().date().isoformat()
+
+    return {
+        "channel_id": channel.id,
+        "channel_name": channel.channel_name,
+        "publish_frequency": publish_frequency,
+        "publish_frequency_label": _frequency_to_human(publish_frequency),
+        "publish_hour": publish_hour,
+        "start_date": start_date,
+        "plan_items": plan_items,
+        "updated_at": draft.get("updated_at"),
+    }
+
+
+def _generate_manual_publication_text(channel, topic_text):
+    topic_text = (topic_text or "").strip() or f"Публикация для канала {channel.channel_name}"
+    channel_context = _channel_extra_config(channel).get("channel_description") or channel.channel_name
+    keywords = _extract_keywords(f"{topic_text}. {channel_context}", limit=8)
+
+    generated_text = ""
+    try:
+        if hasattr(text_gen, "create_article_with_research"):
+            generated_text = text_gen.create_article_with_research(topic_text, keywords=keywords)
+        elif hasattr(text_gen, "generate_for_topic"):
+            generated_text = text_gen.generate_for_topic(topic_text)
+    except Exception as e:
+        system_logger.warning(
+            "manual_publish_generation_failed channel_id=%s topic=%s error=%s",
+            channel.id,
+            topic_text,
+            e,
+        )
+
+    generated_text = (generated_text or "").strip()
+    if _count_words(generated_text) < 15:
+        generated_text = (
+            f"{topic_text}\n\n"
+            f"Канал: {channel.channel_name}. Подготовлен краткий практический пост по теме. "
+            "Проверьте формулировки и при необходимости дополните деталями перед следующими публикациями."
+        )
+    return generated_text
+
+
+def _channel_hashtags(channel):
+    settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
+    if not settings or not settings.hashtags:
+        return []
+    try:
+        parsed = json.loads(settings.hashtags)
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()][:12]
+    except Exception:
+        pass
+    return []
+
+
+def _question_text_list(raw_questions, limit=5):
+    normalized_questions = _normalize_actual_questions(raw_questions or [], limit=limit)
+    return [item.get("question") for item in normalized_questions if item.get("question")]
 
 
 def _get_accessible_channel(channel_id):
@@ -2639,10 +2757,27 @@ def api_posting_setup_plan():
             "platform": planner_payload.get("platform"),
             "style_summary": planner_payload.get("style_summary", ""),
             "semantic_core": planner_payload.get("semantic_core", [])[:8],
-            "actual_questions": planner_payload.get("actual_questions", [])[:5],
+            "actual_questions": _question_text_list(planner_payload.get("actual_questions", []), limit=5),
             "topics": planner_payload.get("topics", []),
         }
     )
+
+
+@app.route("/api/posting-setup/topics", methods=["GET"])
+@login_required
+def api_posting_setup_get_topics():
+    channel_id = request.args.get("channel_id")
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный channel_id"}), 400
+
+    channel = _get_accessible_channel(channel_id)
+    if not channel.is_active:
+        return jsonify({"success": False, "error": "Канал отключен. Включите его перед работой с темами."}), 400
+
+    state_payload = _extract_saved_topic_state(channel)
+    return jsonify({"success": True, **state_payload})
 
 
 @app.route("/api/posting-setup/topics", methods=["POST"])
@@ -2651,6 +2786,9 @@ def api_posting_setup_save_topics():
     data = request.get_json(silent=True) or {}
     channel_id = data.get("channel_id")
     raw_topics = data.get("topics") or []
+    style_summary = str(data.get("style_summary") or "").strip()
+    semantic_core = _normalize_phrase_list(data.get("semantic_core") or [], limit=8)
+    actual_questions = _normalize_actual_questions(data.get("actual_questions") or [], limit=5)
 
     try:
         channel_id = int(channel_id)
@@ -2697,6 +2835,9 @@ def api_posting_setup_save_topics():
     extra["topic_plan"] = {
         "updated_at": datetime.utcnow().isoformat(),
         "topics": normalized_topics,
+        "style_summary": style_summary,
+        "semantic_core": semantic_core,
+        "actual_questions": actual_questions,
     }
     channel.additional_config = json.dumps(extra, ensure_ascii=False)
 
@@ -2709,6 +2850,23 @@ def api_posting_setup_save_topics():
             "channel_name": channel.channel_name,
         }
     )
+
+
+@app.route("/api/posting-plan/draft", methods=["GET"])
+@login_required
+def api_posting_plan_get_draft():
+    channel_id = request.args.get("channel_id")
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный channel_id"}), 400
+
+    channel = _get_accessible_channel(channel_id)
+    if not channel.is_active:
+        return jsonify({"success": False, "error": "Канал отключен. Включите его перед работой с календарем."}), 400
+
+    draft_payload = _extract_saved_posting_plan_draft(channel)
+    return jsonify({"success": True, **draft_payload})
 
 
 @app.route("/api/posting-plan/preview", methods=["POST"])
@@ -3467,11 +3625,117 @@ def api_topics_stub():
 
 @app.route("/api/publish_now", methods=["POST"])
 @login_required
-def api_publish_now_stub():
+def api_publish_now():
+    data = request.get_json(silent=True) or {}
+    admin_client_id = data.get("client_id")
+
+    channels_query = ClientChannel.query.filter_by(is_active=True)
+    if is_admin_user(current_user):
+        if admin_client_id is not None:
+            try:
+                admin_client_id = int(admin_client_id)
+            except (TypeError, ValueError):
+                return jsonify({"success": False, "error": "Некорректный client_id"}), 400
+            channels_query = channels_query.filter_by(client_id=admin_client_id)
+        elif current_user.client_id:
+            channels_query = channels_query.filter_by(client_id=current_user.client_id)
+        else:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "В админ-режиме укажите client_id или используйте клиентский аккаунт для публикации.",
+                }
+            ), 400
+    else:
+        if not current_user.client_id:
+            return jsonify({"success": False, "error": "Ваш аккаунт не привязан к клиенту"}), 400
+        channels_query = channels_query.filter_by(client_id=current_user.client_id)
+
+    channels = channels_query.order_by(ClientChannel.created_at.asc()).all()
+    if not channels:
+        return jsonify({"success": False, "error": "Нет активных каналов для публикации"}), 400
+
+    try:
+        from posting.multi_publisher import MultiPlatformPublisher
+
+        publisher = MultiPlatformPublisher()
+    except Exception as e:
+        error_logger.error("manual_publish_init_failed user_id=%s error=%s", current_user.id, e)
+        return jsonify({"success": False, "error": f"Не удалось инициализировать публикатор: {e}"}), 500
+
+    results = []
+    successful_count = 0
+    failed_count = 0
+
+    for channel in channels:
+        channel_topics = _extract_channel_topics_for_plan(channel)
+        topic_text = channel_topics[0] if channel_topics else f"Публикация для {channel.channel_name}"
+        content_text = _generate_manual_publication_text(channel, topic_text)
+        hashtags = _channel_hashtags(channel)
+
+        channel_info = {
+            "platform": channel.platform,
+            "platform_channel_id": channel.channel_id,
+            "channel_name": channel.channel_name,
+            "access_token": channel.access_token,
+            "hashtags": hashtags,
+        }
+
+        publish_result = publisher.publish_to_channel(channel_info, content_text, image_path=None)
+        success = bool(publish_result.get("success"))
+        error_text = str(publish_result.get("error") or "").strip() or None
+
+        post_record = ChannelPost(
+            channel_id=channel.id,
+            topic=topic_text,
+            content=content_text,
+            success=success,
+            views=0,
+            likes=0,
+            shares=0,
+            comments=0,
+            published_at=datetime.utcnow(),
+            error_message=error_text,
+        )
+        db.session.add(post_record)
+
+        if success:
+            successful_count += 1
+        else:
+            failed_count += 1
+
+        results.append(
+            {
+                "channel_id": channel.id,
+                "channel_name": channel.channel_name,
+                "platform": channel.platform,
+                "success": success,
+                "post_id": publish_result.get("post_id"),
+                "error": error_text,
+            }
+        )
+
+    db.session.commit()
+
+    if successful_count == 0:
+        return jsonify(
+            {
+                "success": False,
+                "error": "Не удалось выполнить публикацию ни в один канал. Проверьте токены и доступы.",
+                "published": successful_count,
+                "successful_posts": successful_count,
+                "failed": failed_count,
+                "results": results,
+            }
+        ), 400
+
     return jsonify(
         {
-            "success": False,
-            "error": "Публикация из веб-панели пока не подключена. Используйте планировщик монетизации.",
+            "success": True,
+            "published": successful_count,
+            "successful_posts": successful_count,
+            "failed": failed_count,
+            "results": results,
         }
     )
 

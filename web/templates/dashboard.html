@@ -517,9 +517,13 @@ function publishNow(buttonElement) {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
+            const published = Number(data.published || 0);
+            const failed = Number(data.failed || 0);
             showNotification('success', 
-                `Опубликовано в ${data.successful_posts} каналов!`, 
-                'Новый контент успешно создан и опубликован.'
+                `Опубликовано в ${published} каналов`,
+                failed > 0
+                    ? `Часть каналов не прошла: ${failed}. Проверьте журнал публикации.`
+                    : 'Новый контент успешно создан и опубликован.'
             );
             loadRecentPublications(); // Обновляем список публикаций
         } else {

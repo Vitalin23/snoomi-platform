@@ -187,6 +187,53 @@
         document.getElementById("planHour").value = hour;
     }
 
+    async function loadSavedPlanDraft(channelId, silent = true) {
+        if (!channelId) {
+            postingPlanItems = [];
+            renderPlanRows();
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/posting-plan/draft?channel_id=${encodeURIComponent(channelId)}`);
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                if (!silent) {
+                    planMessage(data.error || "Не удалось загрузить сохраненный календарь", "danger");
+                }
+                postingPlanItems = [];
+                renderPlanRows();
+                return;
+            }
+
+            if (data.publish_frequency) {
+                document.getElementById("planFrequency").value = data.publish_frequency;
+            }
+            if (data.publish_hour !== undefined && data.publish_hour !== null) {
+                document.getElementById("planHour").value = data.publish_hour;
+            }
+            if (data.start_date) {
+                document.getElementById("planStartDate").value = data.start_date;
+            }
+
+            postingPlanItems = (data.plan_items || []).map((item) => ({
+                publish_date: item.publish_date || "",
+                publish_time: item.publish_time || "10:00",
+                topic: item.topic || "",
+            }));
+            renderPlanRows();
+            if (!silent && postingPlanItems.length) {
+                planMessage("Сохраненный черновик календаря загружен.", "success");
+            }
+        } catch (error) {
+            if (!silent) {
+                planMessage(`Ошибка сети при загрузке черновика: ${error}`, "danger");
+            }
+            postingPlanItems = [];
+            renderPlanRows();
+        }
+    }
+
     function renderPlanRows() {
         const tbody = document.getElementById("planItemsBody");
         updatePlanCount();
@@ -361,6 +408,7 @@
                 return;
             }
             planMessage(`Черновик сохранен: ${data.saved_items} публикаций для канала «${data.channel_name}».`, "success");
+            await loadSavedPlanDraft(channelId, true);
         } catch (error) {
             planMessage(`Ошибка сети: ${error}`, "danger");
         } finally {
@@ -369,7 +417,12 @@
         }
     }
 
-    document.getElementById("planChannelSelect").addEventListener("change", syncChannelDefaults);
+    document.getElementById("planChannelSelect").addEventListener("change", () => {
+        syncChannelDefaults();
+        const channelId = document.getElementById("planChannelSelect").value;
+        document.getElementById("planResultBox").innerHTML = "";
+        loadSavedPlanDraft(channelId, true);
+    });
     document.getElementById("planPreviewBtn").addEventListener("click", generatePlanPreview);
     document.getElementById("planAddRowBtn").addEventListener("click", addPlanRow);
     document.getElementById("planSaveBtn").addEventListener("click", savePlanDraft);
@@ -377,7 +430,8 @@
     const today = new Date().toISOString().slice(0, 10);
     document.getElementById("planStartDate").value = today;
     syncChannelDefaults();
-    renderPlanRows();
+    const initialChannelId = document.getElementById("planChannelSelect").value;
+    loadSavedPlanDraft(initialChannelId, true);
 </script>
 {% endif %}
 {% endblock %}
