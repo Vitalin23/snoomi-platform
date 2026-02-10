@@ -600,49 +600,33 @@ def _fetch_telegram_channel_preview(channel_reference, access_token=None):
             recent_posts = posts_from_page
             verified = True
 
-    def _is_dns_resolution_error(error_obj):
-        error_text = str(error_obj).lower()
-        return any(
-            marker in error_text
-            for marker in (
-                "failed to resolve",
-                "name resolution",
-                "name or service not known",
-                "temporary failure in name resolution",
-                "getaddrinfo failed",
-                "nodename nor servname provided",
-            )
-        )
+    def _try_public_url(url, label):
+        nonlocal verified
+        try:
+            response = requests.get(url, timeout=(6, 12), headers=headers)
+            if response.status_code == 200:
+                # Доступность публичной ссылки уже считается успешной верификацией.
+                verified = True
+                _absorb_page_data(response.text)
+                return True
+            verification_errors.append(f"{label}: HTTP {response.status_code}")
+        except Exception as request_error:
+            verification_errors.append(f"{label}: {request_error}")
+        return False
 
-    # Сначала и обязательно проверяем публичную ссылку канала.
-    try:
-        response = requests.get(source_url, timeout=(6, 12), headers=headers)
-        if response.status_code == 200:
-            verified = True
-            _absorb_page_data(response.text)
-        else:
-            verification_errors.append(f"публичная ссылка: HTTP {response.status_code}")
-    except Exception as e:
-        verification_errors.append(f"публичная ссылка: {e}")
-        # В некоторых сетях/провайдерах tg.me может не резолвиться на DNS-уровне.
-        # Делаем технический fallback на t.me, сохраняя канонический tg.me в данных канала.
-        if _is_dns_resolution_error(e):
-            fallback_public_url = f"https://t.me/{username}"
-            try:
-                response = requests.get(fallback_public_url, timeout=(6, 12), headers=headers)
-                if response.status_code == 200:
-                    verified = True
-                    _absorb_page_data(response.text)
-                    system_logger.warning(
-                        "telegram_public_verify_dns_fallback username=%s canonical=%s fallback=%s",
-                        username,
-                        source_url,
-                        fallback_public_url,
-                    )
-                else:
-                    verification_errors.append(f"fallback t.me: HTTP {response.status_code}")
-            except Exception as fallback_error:
-                verification_errors.append(f"fallback t.me: {fallback_error}")
+    # Сначала проверяем канонический адрес tg.me.
+    primary_ok = _try_public_url(source_url, "публичная ссылка")
+    # Если tg.me недоступен/не прошел, пробуем технический fallback t.me.
+    if not primary_ok:
+        fallback_public_url = f"https://t.me/{username}"
+        fallback_ok = _try_public_url(fallback_public_url, "fallback t.me")
+        if fallback_ok:
+            system_logger.warning(
+                "telegram_public_verify_fallback_used username=%s canonical=%s fallback=%s",
+                username,
+                source_url,
+                fallback_public_url,
+            )
 
     # После успешной публичной проверки можно дополнить данные через Bot API.
     if verified and access_token and not channel_description:
