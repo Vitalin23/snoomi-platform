@@ -106,6 +106,21 @@
             </div>
         </div>
 
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div class="row">
+                    <div class="col-12">
+                        {% for category, message in messages %}
+                            <div class="alert alert-{{ category if category != 'message' else 'info' }} alert-dismissible fade show">
+                                {{ message }}
+                                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                            </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            {% endif %}
+        {% endwith %}
+
         <div class="card content-card mb-4">
             <div class="card-header bg-dark text-white">
                 <h5 class="mb-0"><i class="fas fa-plug"></i> Подключить канал для автопостинга</h5>
@@ -121,24 +136,56 @@
                 </div>
                 {% endif %}
                 <form id="autopostChannelForm" class="row g-3">
-                    <div class="col-md-4">
+                    <input type="hidden" id="autopostPlatform" value="telegram">
+                    <div class="col-12">
                         <label class="form-label">Платформа *</label>
-                        <select class="form-control" id="autopostPlatform" required>
-                            <option value="telegram">Telegram</option>
-                            <option value="vk">VK</option>
-                        </select>
+                        <div class="btn-group w-100" role="group" aria-label="platform selector">
+                            <button type="button" class="btn btn-primary" id="platformBtnTelegram">
+                                <i class="fab fa-telegram"></i> Telegram
+                            </button>
+                            <button type="button" class="btn btn-outline-primary" id="platformBtnVk">
+                                <i class="fab fa-vk"></i> VK
+                            </button>
+                        </div>
                     </div>
-                    <div class="col-md-4">
-                        <label class="form-label">Название канала *</label>
-                        <input type="text" class="form-control" id="autopostChannelName" required>
+                    <div class="col-md-8">
+                        <label class="form-label" id="autopostReferenceLabel">Ссылка или @username канала *</label>
+                        <input
+                            type="text"
+                            class="form-control"
+                            id="autopostChannelReference"
+                            placeholder="@channel или https://t.me/channel"
+                            required
+                        >
+                        <div class="form-text">Без проверки ссылки канал не добавляется в автопостинг</div>
                     </div>
-                    <div class="col-md-4">
-                        <label class="form-label">ID канала/группы *</label>
-                        <input type="text" class="form-control" id="autopostChannelId" placeholder="@channel / -100... / -12345" required>
+                    <div class="col-md-4 d-grid">
+                        <label class="form-label opacity-0">Проверка</label>
+                        <button type="button" class="btn btn-outline-primary" id="autopostVerifyBtn">
+                            <i class="fas fa-check-circle"></i> Проверить канал
+                        </button>
                     </div>
                     <div class="col-md-6">
-                        <label class="form-label">Access token для обработчика *</label>
+                        <label class="form-label" id="autopostTokenLabel">Telegram bot token для публикации *</label>
                         <input type="password" class="form-control" id="autopostAccessToken" required>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Название канала (автоподстановка)</label>
+                        <input type="text" class="form-control" id="autopostChannelName" readonly>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">ID канала/группы (автоподстановка)</label>
+                        <input type="text" class="form-control" id="autopostChannelId" readonly>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Проверенный адрес</label>
+                        <input type="text" class="form-control" id="autopostSourceUrl" readonly>
+                    </div>
+                    <div class="col-12" id="autopostStyleBox" style="display:none;">
+                        <div class="alert alert-secondary mb-0">
+                            <h6 class="mb-1"><i class="fas fa-brain me-1"></i> Анализ стилистики канала</h6>
+                            <div id="autopostStyleSummary" class="small"></div>
+                        </div>
                     </div>
                     <div class="col-md-3">
                         <label class="form-label">Частотность автопостинга *</label>
@@ -164,6 +211,11 @@
                     <div class="col-md-6">
                         <label class="form-label">Ваш Telegram для уведомлений (опционально)</label>
                         <input type="text" class="form-control" id="autopostNotificationTg" placeholder="@username или ID">
+                    </div>
+                    <div class="col-md-6 d-grid">
+                        <a href="{{ specialist_telegram_link }}" target="_blank" class="btn btn-warning">
+                            <i class="fab fa-telegram me-1"></i> Вызов специалиста для настройки
+                        </a>
                     </div>
                     <div class="col-12 d-grid">
                         <button class="btn btn-success" id="autopostSubmitBtn" type="submit">
@@ -516,8 +568,10 @@
         let currentImagePath = '';
         let currentContentId = null;
 
+        let verifiedChannelState = null;
+
         function countWords(text) {
-            const matches = (text || '').trim().match(/[^\W_]+/gu);
+            const matches = (text || '').trim().match(/[A-Za-zА-Яа-яЁё0-9]+/g);
             return matches ? matches.length : 0;
         }
 
@@ -531,30 +585,151 @@
             `;
         }
 
-        const descriptionEl = document.getElementById('autopostDescription');
-        const descCounterEl = document.getElementById('descWordCounter');
-        if (descriptionEl && descCounterEl) {
-            descriptionEl.addEventListener('input', function() {
-                const words = countWords(this.value);
-                descCounterEl.textContent = `Слов: ${words}`;
-            });
+        function refreshDescriptionCounter() {
+            const descValue = document.getElementById('autopostDescription').value;
+            document.getElementById('descWordCounter').textContent = `Слов: ${countWords(descValue)}`;
         }
+
+        function clearVerificationState() {
+            verifiedChannelState = null;
+            document.getElementById('autopostChannelName').value = '';
+            document.getElementById('autopostChannelId').value = '';
+            document.getElementById('autopostSourceUrl').value = '';
+            document.getElementById('autopostStyleSummary').textContent = '';
+            document.getElementById('autopostStyleBox').style.display = 'none';
+        }
+
+        function setPlatform(platform) {
+            const hiddenPlatform = document.getElementById('autopostPlatform');
+            const tgBtn = document.getElementById('platformBtnTelegram');
+            const vkBtn = document.getElementById('platformBtnVk');
+            const referenceLabel = document.getElementById('autopostReferenceLabel');
+            const tokenLabel = document.getElementById('autopostTokenLabel');
+            const referenceInput = document.getElementById('autopostChannelReference');
+
+            hiddenPlatform.value = platform;
+            clearVerificationState();
+
+            if (platform === 'telegram') {
+                tgBtn.className = 'btn btn-primary';
+                vkBtn.className = 'btn btn-outline-primary';
+                referenceLabel.textContent = 'Ссылка или @username канала *';
+                referenceInput.placeholder = '@channel или https://t.me/channel';
+                tokenLabel.textContent = 'Telegram bot token для публикации *';
+            } else {
+                tgBtn.className = 'btn btn-outline-primary';
+                vkBtn.className = 'btn btn-primary';
+                referenceLabel.textContent = 'Ссылка VK-группы (или short name) *';
+                referenceInput.placeholder = 'https://vk.com/club123456 или shortname';
+                tokenLabel.textContent = 'VK access token для проверки и публикации *';
+            }
+        }
+
+        async function verifyChannel() {
+            const platform = document.getElementById('autopostPlatform').value;
+            const channelReference = document.getElementById('autopostChannelReference').value.trim();
+            const accessToken = document.getElementById('autopostAccessToken').value.trim();
+            const verifyBtn = document.getElementById('autopostVerifyBtn');
+
+            if (!channelReference) {
+                showAutopostResult('Введите ссылку или ник канала перед проверкой.', false);
+                return;
+            }
+            if (!accessToken) {
+                showAutopostResult('Укажите access token для обработчика.', false);
+                return;
+            }
+
+            verifyBtn.disabled = true;
+            verifyBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Проверяем...';
+            clearVerificationState();
+
+            try {
+                const response = await fetch('/api/channels/verify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        platform: platform,
+                        channel_reference: channelReference,
+                        access_token: accessToken
+                    })
+                });
+                const data = await response.json();
+
+                if (!response.ok || !data.success) {
+                    showAutopostResult(data.error || 'Канал не прошел проверку', false);
+                    return;
+                }
+
+                verifiedChannelState = {
+                    platform: platform,
+                    channel_reference: channelReference,
+                    channel_name: data.channel_name,
+                    channel_id: data.channel_id,
+                    source_url: data.source_url,
+                    style_profile: data.style_profile || {}
+                };
+
+                document.getElementById('autopostChannelName').value = data.channel_name || '';
+                document.getElementById('autopostChannelId').value = data.channel_id || '';
+                document.getElementById('autopostSourceUrl').value = data.source_url || '';
+
+                const styleSummary = data.style_summary || '';
+                if (styleSummary) {
+                    document.getElementById('autopostStyleSummary').textContent = styleSummary;
+                    document.getElementById('autopostStyleBox').style.display = '';
+                }
+
+                const descriptionEl = document.getElementById('autopostDescription');
+                if (countWords(descriptionEl.value) < 20 && data.auto_description) {
+                    descriptionEl.value = data.auto_description;
+                    refreshDescriptionCounter();
+                }
+
+                showAutopostResult('Канал успешно проверен. Название и стилистика подтянуты автоматически.', true);
+            } catch (error) {
+                showAutopostResult('Ошибка сети при проверке канала: ' + error, false);
+            } finally {
+                verifyBtn.disabled = false;
+                verifyBtn.innerHTML = '<i class="fas fa-check-circle"></i> Проверить канал';
+            }
+        }
+
+        document.getElementById('platformBtnTelegram').addEventListener('click', () => setPlatform('telegram'));
+        document.getElementById('platformBtnVk').addEventListener('click', () => setPlatform('vk'));
+        document.getElementById('autopostVerifyBtn').addEventListener('click', verifyChannel);
+        document.getElementById('autopostChannelReference').addEventListener('input', clearVerificationState);
+        document.getElementById('autopostAccessToken').addEventListener('input', clearVerificationState);
+        document.getElementById('autopostDescription').addEventListener('input', refreshDescriptionCounter);
+        setPlatform('telegram');
+        refreshDescriptionCounter();
 
         const autopostForm = document.getElementById('autopostChannelForm');
         if (autopostForm) {
             autopostForm.addEventListener('submit', function(e) {
                 e.preventDefault();
 
+                const platform = document.getElementById('autopostPlatform').value;
+                const channelReference = document.getElementById('autopostChannelReference').value.trim();
                 const payload = {
-                    platform: document.getElementById('autopostPlatform').value,
-                    channel_name: document.getElementById('autopostChannelName').value,
-                    channel_id: document.getElementById('autopostChannelId').value,
-                    access_token: document.getElementById('autopostAccessToken').value,
+                    platform: platform,
+                    channel_reference: channelReference,
+                    access_token: document.getElementById('autopostAccessToken').value.trim(),
                     publish_frequency: document.getElementById('autopostFrequency').value,
                     publish_hour: document.getElementById('autopostHour').value,
                     channel_description: document.getElementById('autopostDescription').value,
-                    notification_telegram: document.getElementById('autopostNotificationTg').value
+                    notification_telegram: document.getElementById('autopostNotificationTg').value,
+                    style_profile: (verifiedChannelState && verifiedChannelState.style_profile) || {}
                 };
+
+                if (!verifiedChannelState) {
+                    showAutopostResult('Сначала выполните проверку ссылки канала.', false);
+                    return;
+                }
+                if (verifiedChannelState.platform !== platform || verifiedChannelState.channel_reference !== channelReference) {
+                    showAutopostResult('После изменения ссылки/платформы нужно повторно нажать «Проверить канал».', false);
+                    return;
+                }
 
                 const words = countWords(payload.channel_description);
                 if (words < 20) {

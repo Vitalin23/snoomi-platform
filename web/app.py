@@ -13,11 +13,19 @@ import re
 import sys
 import json
 import uuid
+import smtplib
+import ssl
 import logging
+from collections import Counter
 from datetime import datetime, timedelta
+from email.message import EmailMessage
 from functools import wraps
+from html import unescape
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from urllib.parse import urlparse
+
+import requests
 
 from flask import (
     Flask,
@@ -122,6 +130,7 @@ SCHEDULED_POSTS = []
 SUPPORTED_PLATFORMS = {"telegram", "vk"}
 SUPPORTED_PUBLISH_FREQUENCIES = {"daily", "every_other_day", "every_two_days"}
 TRIAL_OPTIONS_DAYS = {7, 14, 30}
+SUPPORT_DEFAULT_TELEGRAM_LINK = "https://t.me/snoomi_support"
 
 
 class Client(db.Model):
@@ -252,6 +261,26 @@ def _request_user_context():
         }
 
     return {"user_id": None, "username": "anonymous", "client_id": None, "role": None}
+
+
+def _specialist_telegram_link():
+    explicit_link = (os.environ.get("SPECIALIST_TELEGRAM_LINK") or "").strip()
+    if explicit_link:
+        return explicit_link
+
+    tg_admin = (os.environ.get("TG_ADMIN") or "").strip()
+    if tg_admin.startswith("@") and len(tg_admin) > 1:
+        return f"https://t.me/{tg_admin[1:]}"
+    if tg_admin and tg_admin.isdigit():
+        # Работает если у клиента установлен Telegram.
+        return f"tg://user?id={tg_admin}"
+
+    return SUPPORT_DEFAULT_TELEGRAM_LINK
+
+
+@app.context_processor
+def inject_common_template_context():
+    return {"specialist_telegram_link": _specialist_telegram_link()}
 
 
 @app.before_request
@@ -402,12 +431,17 @@ def _ensure_client_channels_schema():
             conn.execute(text("ALTER TABLE client_channels ADD COLUMN additional_config TEXT"))
 
 
+def _word_tokens(text_value):
+    """Универсальный токенайзер: поддерживает кириллицу и латиницу."""
+    return re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", text_value or "", flags=re.UNICODE)
+
+
 def _count_words(text_value):
-    return len(re.findall(r"[^\W_]+", text_value or "", flags=re.UNICODE))
+    return len(_word_tokens(text_value))
 
 
 def _extract_keywords(text_value, limit=8):
-    words = re.findall(r"[^\W_]+", (text_value or "").lower(), flags=re.UNICODE)
+    words = [w.lower() for w in _word_tokens(text_value)]
     stop_words = {
         "и", "в", "во", "на", "по", "к", "для", "с", "со", "о", "об", "это", "как",
         "что", "при", "или", "не", "а", "но", "до", "от", "из", "под", "над", "у",
@@ -424,6 +458,533 @@ def _extract_keywords(text_value, limit=8):
         if len(filtered) >= limit:
             break
     return filtered
+
+
+def _strip_html(text_value):
+    if not text_value:
+        return ""
+    text_value = re.sub(r"<br\s*/?>", "\n", text_value, flags=re.IGNORECASE)
+    text_value = re.sub(r"</p>", "\n", text_value, flags=re.IGNORECASE)
+    text_value = re.sub(r"<[^>]+>", " ", text_value)
+    text_value = unescape(text_value)
+    text_value = re.sub(r"\s+", " ", text_value).strip()
+    return text_value
+
+
+def _extract_telegram_username(channel_reference):
+    raw_reference = (channel_reference or "").strip()
+    if not raw_reference:
+        return None
+
+    if raw_reference.startswith("@"):
+        candidate = raw_reference[1:]
+    else:
+        if not raw_reference.startswith(("http://", "https://")) and "/" not in raw_reference:
+            candidate = raw_reference
+        else:
+            candidate_reference = raw_reference
+            if not candidate_reference.startswith(("http://", "https://")):
+                candidate_reference = f"https://{candidate_reference}"
+
+            parsed = urlparse(candidate_reference)
+            if "t.me" not in parsed.netloc and "telegram.me" not in parsed.netloc:
+                return None
+
+            path_parts = [part for part in parsed.path.split("/") if part]
+            if not path_parts:
+                return None
+            if path_parts[0] == "s" and len(path_parts) > 1:
+                candidate = path_parts[1]
+            else:
+                candidate = path_parts[0]
+
+    candidate = candidate.split("?")[0].split("#")[0].strip().lstrip("@")
+    if not re.fullmatch(r"[A-Za-z0-9_]{4,64}", candidate):
+        return None
+    return candidate
+
+
+def _extract_vk_identifier(channel_reference):
+    raw_reference = (channel_reference or "").strip()
+    if not raw_reference:
+        return None
+
+    if raw_reference.startswith("-") and raw_reference[1:].isdigit():
+        return raw_reference[1:]
+    if raw_reference.isdigit():
+        return raw_reference
+    if re.fullmatch(r"(club|public)\d+", raw_reference):
+        return raw_reference
+
+    if not raw_reference.startswith(("http://", "https://")):
+        if "/" not in raw_reference and "." not in raw_reference:
+            return raw_reference
+        raw_reference = f"https://{raw_reference}"
+
+    parsed = urlparse(raw_reference)
+    if "vk.com" not in parsed.netloc:
+        return None
+
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if not path_parts:
+        return None
+
+    return path_parts[0]
+
+
+def _extract_telegram_posts_from_html(page_html, limit=10):
+    post_blocks = re.findall(
+        r'<div class="tgme_widget_message_text[^>]*>(.*?)</div>',
+        page_html,
+        flags=re.DOTALL,
+    )
+    posts = []
+    for block in post_blocks:
+        clean_text = _strip_html(block)
+        if _count_words(clean_text) >= 5:
+            posts.append(clean_text)
+        if len(posts) >= limit:
+            break
+    return posts
+
+
+def _fetch_telegram_channel_preview(channel_reference):
+    username = _extract_telegram_username(channel_reference)
+    if not username:
+        return {"success": False, "error": "Укажите корректную ссылку или @username Telegram-канала"}
+
+    source_url = f"https://t.me/{username}"
+    preview_url = f"https://t.me/s/{username}"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        )
+    }
+
+    try:
+        response = requests.get(preview_url, timeout=20, headers=headers)
+    except Exception as e:
+        return {"success": False, "error": f"Не удалось проверить Telegram-канал: {e}"}
+
+    if response.status_code != 200:
+        return {
+            "success": False,
+            "error": f"Ссылка Telegram недоступна (HTTP {response.status_code})",
+        }
+
+    page_html = response.text
+    title_match = re.search(r'<meta property="og:title" content="([^"]+)"', page_html)
+    desc_match = re.search(r'<meta property="og:description" content="([^"]*)"', page_html)
+
+    channel_name = _strip_html(title_match.group(1)) if title_match else f"@{username}"
+    channel_description = _strip_html(desc_match.group(1)) if desc_match else ""
+    recent_posts = _extract_telegram_posts_from_html(page_html, limit=10)
+
+    if not recent_posts:
+        return {
+            "success": False,
+            "error": (
+                "Не удалось получить последние публикации Telegram-канала. "
+                "Проверьте ссылку, публичность канала и повторите проверку."
+            ),
+        }
+
+    return {
+        "success": True,
+        "platform": "telegram",
+        "channel_id": f"@{username}",
+        "channel_name": channel_name or f"@{username}",
+        "source_url": source_url,
+        "channel_external_description": channel_description,
+        "recent_posts": recent_posts,
+    }
+
+
+def _fetch_vk_channel_preview(channel_reference, access_token):
+    if not access_token:
+        return {"success": False, "error": "Для VK нужно указать access token для проверки группы"}
+
+    vk_identifier = _extract_vk_identifier(channel_reference)
+    if not vk_identifier:
+        return {"success": False, "error": "Укажите корректную ссылку VK-группы или идентификатор"}
+
+    try:
+        group_resp = requests.get(
+            "https://api.vk.com/method/groups.getById",
+            params={
+                "group_id": vk_identifier,
+                "fields": "description,screen_name",
+                "access_token": access_token,
+                "v": "5.199",
+            },
+            timeout=20,
+        )
+        group_payload = group_resp.json()
+    except Exception as e:
+        return {"success": False, "error": f"Не удалось проверить VK-группу: {e}"}
+
+    if group_payload.get("error"):
+        error_text = group_payload["error"].get("error_msg", "VK API error")
+        return {"success": False, "error": f"VK API: {error_text}"}
+
+    response_data = group_payload.get("response")
+    groups = []
+    if isinstance(response_data, list):
+        groups = response_data
+    elif isinstance(response_data, dict):
+        groups = response_data.get("groups") or response_data.get("items") or []
+
+    if not groups:
+        return {"success": False, "error": "VK не вернул данные группы по указанной ссылке"}
+
+    group = groups[0]
+    group_id = int(group.get("id", 0))
+    if group_id <= 0:
+        return {"success": False, "error": "Некорректный VK group_id"}
+
+    screen_name = group.get("screen_name") or f"club{group_id}"
+    source_url = f"https://vk.com/{screen_name}"
+
+    recent_posts = []
+    try:
+        wall_resp = requests.get(
+            "https://api.vk.com/method/wall.get",
+            params={
+                "owner_id": -group_id,
+                "count": 10,
+                "filter": "owner",
+                "access_token": access_token,
+                "v": "5.199",
+            },
+            timeout=20,
+        )
+        wall_payload = wall_resp.json()
+        if not wall_payload.get("error"):
+            wall_response = wall_payload.get("response", {})
+            items = wall_response.get("items", []) if isinstance(wall_response, dict) else []
+            for item in items:
+                text = (item.get("text") or "").strip()
+                if _count_words(text) >= 5:
+                    recent_posts.append(text)
+    except Exception:
+        # Ошибка получения стены не должна ломать всю верификацию группы.
+        pass
+
+    if not recent_posts:
+        return {
+            "success": False,
+            "error": (
+                "Не удалось получить последние посты VK-группы. "
+                "Проверьте права токена и доступность стены группы."
+            ),
+        }
+
+    return {
+        "success": True,
+        "platform": "vk",
+        "channel_id": f"-{group_id}",
+        "channel_name": (group.get("name") or "").strip() or f"VK group {group_id}",
+        "source_url": source_url,
+        "channel_external_description": (group.get("description") or "").strip(),
+        "recent_posts": recent_posts[:10],
+    }
+
+
+def _heuristic_style_profile(channel_name, platform, channel_description, recent_posts):
+    posts = [p.strip() for p in (recent_posts or []) if p and p.strip()]
+    joined_text = " ".join([channel_description or "", *posts]).strip()
+    words = [w.lower() for w in _word_tokens(joined_text) if len(w) >= 4]
+    top_keywords = [word for word, _ in Counter(words).most_common(8)]
+
+    avg_post_length = 0
+    if posts:
+        avg_post_length = int(sum(len(p) for p in posts) / max(len(posts), 1))
+
+    exclamation_count = joined_text.count("!")
+    question_count = joined_text.count("?")
+    emoji_count = len(re.findall(r"[\U0001F300-\U0001FAFF]", joined_text))
+
+    tone = "экспертный и спокойный"
+    if exclamation_count > question_count and exclamation_count >= 3:
+        tone = "энергичный и вовлекающий"
+    elif question_count >= 3:
+        tone = "диалоговый и вовлекающий"
+    elif emoji_count >= 3:
+        tone = "дружелюбный и эмоциональный"
+
+    summary = (
+        f"Канал «{channel_name}» ({platform}) ведет коммуникацию в тоне «{tone}». "
+        f"Средняя длина поста около {max(avg_post_length, 180)} символов. "
+        f"Ключевые слова: {', '.join(top_keywords[:5]) if top_keywords else 'тематика канала'}."
+    )
+
+    return {
+        "summary": summary,
+        "tone": tone,
+        "audience": "подписчики канала и заинтересованная целевая аудитория",
+        "keywords": top_keywords,
+        "dos": [
+            "Сохранять структуру коротких абзацев и практический фокус",
+            "Добавлять конкретику и действия для читателя",
+            "Поддерживать тон и лексику, привычные аудитории канала",
+        ],
+        "donts": [
+            "Не уходить в слишком формальный канцелярит",
+            "Не делать длинные перегруженные абзацы",
+            "Не менять резко голос бренда между публикациями",
+        ],
+        "recent_posts_count": len(posts),
+    }
+
+
+def _extract_json_object(raw_text):
+    if not raw_text:
+        return None
+    match = re.search(r"\{.*\}", raw_text, flags=re.DOTALL)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(0))
+    except Exception:
+        return None
+
+
+def _ai_style_profile(channel_name, platform, channel_description, recent_posts):
+    try:
+        from config import Config
+    except Exception:
+        return None
+
+    if not (getattr(Config, "YANDEX_API_KEY", "") and getattr(Config, "YANDEX_FOLDER_ID", "")):
+        return None
+
+    posts_excerpt = []
+    for idx, post in enumerate((recent_posts or [])[:10], start=1):
+        posts_excerpt.append(f"{idx}. {post[:450]}")
+    posts_text = "\n".join(posts_excerpt) or "Посты не обнаружены."
+
+    prompt = f"""
+Проанализируй стиль канала и верни СТРОГО JSON (без markdown и комментариев) с полями:
+summary (string), tone (string), audience (string), keywords (array of strings),
+dos (array of strings), donts (array of strings).
+
+Платформа: {platform}
+Название: {channel_name}
+Описание канала: {channel_description or "нет описания"}
+Последние 10 постов:
+{posts_text}
+"""
+
+    payload = {
+        "modelUri": f"gpt://{Config.YANDEX_FOLDER_ID}/yandexgpt",
+        "completionOptions": {
+            "stream": False,
+            "temperature": 0.2,
+            "maxTokens": 1500,
+        },
+        "messages": [
+            {
+                "role": "system",
+                "text": "Ты редактор контента. Всегда отвечай только валидным JSON без дополнительного текста.",
+            },
+            {"role": "user", "text": prompt},
+        ],
+    }
+    headers = {
+        "Authorization": f"Api-Key {Config.YANDEX_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        response = requests.post(
+            "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
+            headers=headers,
+            json=payload,
+            timeout=35,
+        )
+        if response.status_code != 200:
+            return None
+        text_result = (
+            response.json()
+            .get("result", {})
+            .get("alternatives", [{}])[0]
+            .get("message", {})
+            .get("text", "")
+        )
+        parsed = _extract_json_object(text_result)
+        if not isinstance(parsed, dict):
+            return None
+
+        return {
+            "summary": str(parsed.get("summary", "")).strip(),
+            "tone": str(parsed.get("tone", "")).strip(),
+            "audience": str(parsed.get("audience", "")).strip(),
+            "keywords": [str(x).strip() for x in (parsed.get("keywords") or []) if str(x).strip()][:10],
+            "dos": [str(x).strip() for x in (parsed.get("dos") or []) if str(x).strip()][:6],
+            "donts": [str(x).strip() for x in (parsed.get("donts") or []) if str(x).strip()][:6],
+        }
+    except Exception:
+        return None
+
+
+def _compose_auto_channel_description(channel_name, platform, channel_external_description, style_profile):
+    platform_label = "Telegram" if platform == "telegram" else "VK"
+    keyword_text = ", ".join((style_profile.get("keywords") or [])[:5])
+    if not keyword_text:
+        keyword_text = "экспертный контент, полезные рекомендации, регулярные публикации"
+
+    base_description = (
+        f"Канал «{channel_name}» на платформе {platform_label}. "
+        f"Основная тематика и стиль: {style_profile.get('summary') or 'практические материалы для аудитории канала'}. "
+        f"Ключевые направления контента: {keyword_text}. "
+        f"Важно сохранять узнаваемый тон коммуникации и публиковать структурированные материалы с понятной пользой для подписчиков."
+    )
+
+    if channel_external_description:
+        base_description += f" Дополнительно из описания канала: {channel_external_description[:300]}."
+
+    if _count_words(base_description) < 20:
+        base_description += (
+            " Канал ориентирован на стабильную вовлеченность, прикладные советы, понятную структуру текстов "
+            "и аккуратную адаптацию контента под ожидания аудитории."
+        )
+    return base_description
+
+
+def _verify_channel_source(platform, channel_reference, access_token):
+    if platform == "telegram":
+        return _fetch_telegram_channel_preview(channel_reference)
+    if platform == "vk":
+        return _fetch_vk_channel_preview(channel_reference, access_token)
+    return {"success": False, "error": "Поддерживаются только Telegram и VK"}
+
+
+def _build_channel_intelligence(platform, channel_reference, access_token, run_ai_analysis=True):
+    verification = _verify_channel_source(platform, channel_reference, access_token)
+    if not verification.get("success"):
+        return verification
+
+    channel_name = verification.get("channel_name") or "Канал"
+    channel_external_description = verification.get("channel_external_description") or ""
+    recent_posts = verification.get("recent_posts") or []
+
+    style_profile = None
+    if run_ai_analysis:
+        style_profile = _ai_style_profile(
+            channel_name=channel_name,
+            platform=platform,
+            channel_description=channel_external_description,
+            recent_posts=recent_posts,
+        )
+    if not style_profile:
+        style_profile = _heuristic_style_profile(
+            channel_name=channel_name,
+            platform=platform,
+            channel_description=channel_external_description,
+            recent_posts=recent_posts,
+        )
+
+    verification["style_profile"] = style_profile
+    verification["style_summary"] = style_profile.get("summary", "")
+    verification["auto_description"] = _compose_auto_channel_description(
+        channel_name=channel_name,
+        platform=platform,
+        channel_external_description=channel_external_description,
+        style_profile=style_profile,
+    )
+    verification["recent_posts"] = recent_posts[:10]
+    verification["verified_at"] = datetime.utcnow().isoformat()
+    return verification
+
+
+def _send_registration_email(email_to, username, password, client_name, trial_days):
+    if not email_to:
+        return False, "email_empty"
+
+    smtp_host = (os.environ.get("SMTP_HOST") or "").strip()
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    smtp_user = (os.environ.get("SMTP_USER") or "").strip()
+    smtp_password = (os.environ.get("SMTP_PASSWORD") or "").strip()
+    smtp_from = (os.environ.get("SMTP_FROM_EMAIL") or smtp_user or "noreply@snoomi.local").strip()
+    smtp_from_name = (os.environ.get("SMTP_FROM_NAME") or "Snoomi Platform").strip()
+    smtp_use_ssl = (os.environ.get("SMTP_USE_SSL", "False").strip().lower() == "true")
+    smtp_use_tls = (os.environ.get("SMTP_USE_TLS", "True").strip().lower() == "true")
+
+    if not smtp_host:
+        system_logger.warning("SMTP is not configured, registration email skipped")
+        return False, "smtp_not_configured"
+
+    subject = "Добро пожаловать в Snoomi Platform"
+    login_url = f"http://{os.environ.get('WEB_HOST', 'localhost')}:{os.environ.get('WEB_PORT', '5000')}/login"
+    support_link = _specialist_telegram_link()
+
+    plain_body = f"""
+Здравствуйте!
+
+Добро пожаловать в Snoomi Platform — сервис автопостинга и AI-генерации контента для Telegram и VK.
+
+Ваши регистрационные данные:
+Логин: {username}
+Пароль: {password}
+Клиент: {client_name}
+Тестовый период: {trial_days} дней
+
+Вход в систему:
+{login_url}
+
+Если нужна помощь с настройкой — свяжитесь со специалистом:
+{support_link}
+
+С уважением,
+Команда Snoomi Platform
+""".strip()
+
+    html_body = f"""
+<html>
+  <body>
+    <h2>Добро пожаловать в Snoomi Platform</h2>
+    <p><b>Snoomi Platform</b> — сервис автопостинга и AI-генерации контента для Telegram и VK.</p>
+    <p>Ваши регистрационные данные:</p>
+    <ul>
+      <li><b>Логин:</b> {username}</li>
+      <li><b>Пароль:</b> {password}</li>
+      <li><b>Клиент:</b> {client_name}</li>
+      <li><b>Тестовый период:</b> {trial_days} дней</li>
+    </ul>
+    <p><a href="{login_url}">Войти в систему</a></p>
+    <p>Нужна помощь с настройкой? <a href="{support_link}">Вызов специалиста в Telegram</a></p>
+    <hr>
+    <small>С уважением, команда Snoomi Platform</small>
+  </body>
+</html>
+""".strip()
+
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = f"{smtp_from_name} <{smtp_from}>"
+    message["To"] = email_to
+    message.set_content(plain_body)
+    message.add_alternative(html_body, subtype="html")
+
+    ssl_context = ssl.create_default_context()
+    try:
+        if smtp_use_ssl:
+            with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=20, context=ssl_context) as smtp:
+                if smtp_user and smtp_password:
+                    smtp.login(smtp_user, smtp_password)
+                smtp.send_message(message)
+        else:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as smtp:
+                if smtp_use_tls:
+                    smtp.starttls(context=ssl_context)
+                if smtp_user and smtp_password:
+                    smtp.login(smtp_user, smtp_password)
+                smtp.send_message(message)
+        return True, "sent"
+    except Exception as e:
+        error_logger.error("Registration email send failed for %s: %s", email_to, e)
+        return False, str(e)
 
 
 def _frequency_to_human(freq):
@@ -509,7 +1070,7 @@ def _ensure_channel_runtime_setup(channel_id, channel_description, publish_frequ
 
     active_topics = ChannelTopic.query.filter_by(channel_id=channel_id, is_active=True).all()
     if not active_topics:
-        words = re.findall(r"[^\W_]+", channel_description, flags=re.UNICODE)
+        words = _word_tokens(channel_description)
         short_topic = " ".join(words[:12]).strip()
         if not short_topic:
             short_topic = "Контент по тематике канала"
@@ -543,6 +1104,8 @@ def _serialize_channel(channel, include_client_name=True):
         "access_token": channel.access_token,
         "is_active": bool(channel.is_active),
         "channel_description": extra.get("channel_description", ""),
+        "channel_source_url": extra.get("source_url"),
+        "style_summary": (extra.get("style_profile") or {}).get("summary", ""),
         "publish_frequency": publish_frequency,
         "publish_frequency_label": _frequency_to_human(publish_frequency),
         "publish_hour": publish_hour,
@@ -713,11 +1276,34 @@ def register():
         db.session.add(new_user)
         db.session.commit()
 
+        email_sent = False
+        email_status = "not_requested"
+        if email:
+            email_sent, email_status = _send_registration_email(
+                email_to=email,
+                username=username,
+                password=password,
+                client_name=client_name,
+                trial_days=trial_days,
+            )
+
         login_user(new_user)
         flash(
             f"Регистрация успешна! Вам активирован бесплатный тестовый период на {trial_days} дней.",
             "success",
         )
+        if email and email_sent:
+            flash("Данные для входа отправлены на указанную почту.", "success")
+        elif email and email_status == "smtp_not_configured":
+            flash(
+                "Регистрация выполнена, но почта не отправлена: SMTP пока не настроен в окружении.",
+                "warning",
+            )
+        elif email and not email_sent:
+            flash(
+                "Регистрация выполнена, но письмо не отправлено. Проверьте настройки SMTP.",
+                "warning",
+            )
         return redirect(url_for("channels"))
 
     return render_template("register.html")
@@ -1011,6 +1597,84 @@ def api_client_events():
     return jsonify({"success": True})
 
 
+# -------------------- API: ПРОВЕРКА КАНАЛОВ И СТИЛИСТИКА --------------------
+@app.route("/api/public/channel-preview", methods=["POST"])
+def api_public_channel_preview():
+    data = request.get_json(silent=True) or {}
+    platform = (data.get("platform") or "").strip().lower()
+    channel_reference = (data.get("channel_reference") or "").strip()
+    access_token = (data.get("access_token") or "").strip()
+
+    if platform not in SUPPORTED_PLATFORMS:
+        return jsonify({"success": False, "error": "Поддерживаются только Telegram и VK"}), 400
+    if not channel_reference:
+        return jsonify({"success": False, "error": "Укажите ссылку или ник канала"}), 400
+
+    intelligence = _build_channel_intelligence(
+        platform=platform,
+        channel_reference=channel_reference,
+        access_token=access_token,
+        run_ai_analysis=True,
+    )
+    if not intelligence.get("success"):
+        return jsonify({"success": False, "error": intelligence.get("error", "Канал не прошел проверку")}), 400
+
+    return jsonify(
+        {
+            "success": True,
+            "verified": True,
+            "platform": intelligence.get("platform"),
+            "channel_name": intelligence.get("channel_name"),
+            "channel_id": intelligence.get("channel_id"),
+            "source_url": intelligence.get("source_url"),
+            "channel_external_description": intelligence.get("channel_external_description", ""),
+            "recent_posts": intelligence.get("recent_posts", [])[:10],
+            "style_profile": intelligence.get("style_profile", {}),
+            "style_summary": intelligence.get("style_summary", ""),
+            "auto_description": intelligence.get("auto_description", ""),
+        }
+    )
+
+
+@app.route("/api/channels/verify", methods=["POST"])
+@login_required
+def api_verify_channel():
+    data = request.get_json(silent=True) or {}
+    platform = (data.get("platform") or "").strip().lower()
+    channel_reference = (data.get("channel_reference") or "").strip()
+    access_token = (data.get("access_token") or "").strip()
+
+    if platform not in SUPPORTED_PLATFORMS:
+        return jsonify({"success": False, "error": "Поддерживаются только Telegram и VK"}), 400
+    if not channel_reference:
+        return jsonify({"success": False, "error": "Укажите ссылку или ник канала"}), 400
+
+    intelligence = _build_channel_intelligence(
+        platform=platform,
+        channel_reference=channel_reference,
+        access_token=access_token,
+        run_ai_analysis=True,
+    )
+    if not intelligence.get("success"):
+        return jsonify({"success": False, "error": intelligence.get("error", "Канал не прошел проверку")}), 400
+
+    return jsonify(
+        {
+            "success": True,
+            "verified": True,
+            "platform": intelligence.get("platform"),
+            "channel_name": intelligence.get("channel_name"),
+            "channel_id": intelligence.get("channel_id"),
+            "source_url": intelligence.get("source_url"),
+            "channel_external_description": intelligence.get("channel_external_description", ""),
+            "recent_posts": intelligence.get("recent_posts", [])[:10],
+            "style_profile": intelligence.get("style_profile", {}),
+            "style_summary": intelligence.get("style_summary", ""),
+            "auto_description": intelligence.get("auto_description", ""),
+        }
+    )
+
+
 # -------------------- API: КАНАЛЫ/ПОДКЛЮЧЕНИЯ --------------------
 @app.route("/api/clients", methods=["GET"])
 @login_required
@@ -1028,13 +1692,24 @@ def api_clients():
 @login_required
 def api_add_channel():
     data = request.get_json(silent=True) or {}
-    required_fields = ["platform", "channel_id", "channel_name", "access_token", "channel_description", "publish_frequency"]
+    required_fields = [
+        "platform",
+        "channel_reference",
+        "access_token",
+        "channel_description",
+        "publish_frequency",
+    ]
     if not all(data.get(field) for field in required_fields):
         return jsonify({"success": False, "error": "Не все обязательные поля заполнены"}), 400
 
     platform = (data.get("platform") or "").strip().lower()
     if platform not in SUPPORTED_PLATFORMS:
         return jsonify({"success": False, "error": "Сейчас поддерживаются только Telegram и VK"}), 400
+
+    channel_reference = (data.get("channel_reference") or "").strip()
+    access_token = (data.get("access_token") or "").strip()
+    if not channel_reference:
+        return jsonify({"success": False, "error": "Укажите ссылку или ник канала"}), 400
 
     publish_frequency = _normalize_frequency(data.get("publish_frequency"))
     if not publish_frequency:
@@ -1085,17 +1760,60 @@ def api_add_channel():
     if notification_telegram:
         client.notification_telegram = notification_telegram
 
+    # Без успешной проверки ссылки канал не добавляется.
+    intelligence = _build_channel_intelligence(
+        platform=platform,
+        channel_reference=channel_reference,
+        access_token=access_token,
+        run_ai_analysis=False,
+    )
+    if not intelligence.get("success"):
+        return jsonify(
+            {
+                "success": False,
+                "error": intelligence.get(
+                    "error",
+                    "Ссылка канала не подтверждена. Нажмите «Проверить канал» и попробуйте снова.",
+                ),
+            }
+        ), 400
+
+    verified_channel_name = intelligence.get("channel_name")
+    verified_channel_id = intelligence.get("channel_id")
+    source_url = intelligence.get("source_url")
+    style_profile = intelligence.get("style_profile") or {}
+    if not verified_channel_name or not verified_channel_id:
+        return jsonify({"success": False, "error": "Не удалось определить имя или ID канала по ссылке"}), 400
+
+    duplicate_channel = ClientChannel.query.filter_by(
+        client_id=client_id,
+        platform=platform,
+        channel_id=verified_channel_id,
+    ).first()
+    if duplicate_channel:
+        return jsonify(
+            {
+                "success": False,
+                "error": "Этот канал уже добавлен в ваш список автопостинга",
+            }
+        ), 400
+
     additional_config = {
         "channel_description": channel_description,
         "publish_frequency": publish_frequency,
+        "channel_reference": channel_reference,
+        "source_url": source_url,
+        "channel_external_description": intelligence.get("channel_external_description", ""),
+        "recent_posts_preview": intelligence.get("recent_posts", [])[:10],
+        "style_profile": style_profile,
         "source": "web_client_onboarding",
     }
     channel = ClientChannel(
         client_id=client_id,
         platform=platform,
-        channel_id=data["channel_id"].strip(),
-        channel_name=data["channel_name"].strip(),
-        access_token=data.get("access_token"),
+        channel_id=verified_channel_id,
+        channel_name=verified_channel_name,
+        access_token=access_token,
         additional_config=json.dumps(additional_config, ensure_ascii=False),
         is_active=bool(data.get("is_active", True)),
     )
@@ -1114,8 +1832,12 @@ def api_add_channel():
         {
             "success": True,
             "channel_id": channel.id,
+            "platform_channel_id": verified_channel_id,
+            "channel_name": verified_channel_name,
+            "source_url": source_url,
             "publish_frequency": publish_frequency,
             "publish_hour": publish_hour,
+            "style_summary": style_profile.get("summary", ""),
         }
     )
 
