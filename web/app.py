@@ -1339,6 +1339,144 @@ def _serialize_user(user):
     }
 
 
+def _build_topic_planner_payload(channel, focus_text="", desired_count=8):
+    """Готовит идеи тем для шага 2 (настройка постинга)."""
+    desired_count = min(max(int(desired_count or 8), 3), 20)
+    focus_text = (focus_text or "").strip()
+    extra = _channel_extra_config(channel)
+
+    channel_client_description = (extra.get("channel_description") or "").strip()
+    channel_external_description = (extra.get("channel_external_description") or "").strip()
+    recent_posts_raw = extra.get("recent_posts_preview") or []
+    if not isinstance(recent_posts_raw, list):
+        recent_posts_raw = []
+    recent_posts = [str(item).strip() for item in recent_posts_raw if str(item).strip()][:10]
+
+    if not recent_posts and channel_external_description:
+        recent_posts = [channel_external_description]
+
+    style_profile = _ai_style_profile(
+        channel_name=channel.channel_name,
+        platform=channel.platform,
+        channel_description=channel_external_description or channel_client_description,
+        recent_posts=recent_posts,
+    )
+    if not style_profile:
+        style_profile = _heuristic_style_profile(
+            channel_name=channel.channel_name,
+            platform=channel.platform,
+            channel_description=channel_external_description or channel_client_description,
+            recent_posts=recent_posts,
+        )
+
+    style_summary = (style_profile.get("summary") or "").strip()
+
+    keyword_pool = []
+    planner_stop_words = {
+        "больше",
+        "тема",
+        "темы",
+        "канал",
+        "канала",
+        "контент",
+        "пост",
+        "посты",
+        "публикация",
+        "публикации",
+    }
+    keyword_sources = [
+        focus_text,
+        channel_client_description,
+        channel_external_description,
+        " ".join(recent_posts),
+        " ".join(style_profile.get("keywords") or []),
+    ]
+    for source_text in keyword_sources:
+        for keyword in _extract_keywords(source_text, limit=12):
+            normalized = keyword.lower().strip()
+            if not normalized:
+                continue
+            if normalized in planner_stop_words:
+                continue
+            if normalized in keyword_pool:
+                continue
+            keyword_pool.append(normalized)
+
+    fallback_keywords = [
+        "контент план",
+        "боли аудитории",
+        "практические кейсы",
+        "ошибки новичков",
+        "тренды ниши",
+        "вопросы подписчиков",
+        "полезные инструменты",
+        "разбор стратегии",
+    ]
+    for fallback_keyword in fallback_keywords:
+        if fallback_keyword not in keyword_pool:
+            keyword_pool.append(fallback_keyword)
+
+    topic_templates = [
+        "Практический разбор: {keyword} для аудитории канала",
+        "Чек-лист по теме «{keyword}»: что сделать за 7 дней",
+        "Топ ошибок в теме «{keyword}» и как их исправить",
+        "Кейс подписчика: как применить «{keyword}» на практике",
+        "Тренды 2026: что меняется в «{keyword}» прямо сейчас",
+        "Пошаговая инструкция по теме «{keyword}» для начинающих",
+    ]
+    question_templates = [
+        "С чего начать в теме «{keyword}» без лишних затрат?",
+        "Какие частые ошибки мешают получить результат в «{keyword}»?",
+        "Как измерить эффективность подхода по теме «{keyword}»?",
+    ]
+
+    topic_items = []
+    for idx in range(desired_count):
+        keyword = keyword_pool[idx % len(keyword_pool)]
+        title = topic_templates[idx % len(topic_templates)].format(keyword=keyword)
+        topic_items.append(
+            {
+                "id": idx + 1,
+                "title": title,
+                "keyword": keyword,
+                "questions": [q.format(keyword=keyword) for q in question_templates],
+                "rationale": (
+                    f"Тема сформирована на базе анализа канала «{channel.channel_name}» "
+                    f"и пользовательского фокуса."
+                ),
+            }
+        )
+
+    return {
+        "channel_id": channel.id,
+        "channel_name": channel.channel_name,
+        "platform": channel.platform,
+        "style_summary": style_summary,
+        "keywords": keyword_pool[:12],
+        "topics": topic_items,
+        "source": "ai+heuristic",
+    }
+
+
+def _normalize_topic_items(raw_topics):
+    normalized = []
+    for item in raw_topics or []:
+        if isinstance(item, str):
+            title = item.strip()
+        elif isinstance(item, dict):
+            title = str(item.get("title") or item.get("topic") or "").strip()
+        else:
+            title = ""
+        if not title:
+            continue
+        if title in normalized:
+            continue
+        normalized.append(title)
+        if len(normalized) >= 30:
+            break
+    return normalized
+
+
 def _get_accessible_channel(channel_id):
     channel = ClientChannel.query.get_or_404(channel_id)
     if is_admin_user(current_user):
@@ -1630,6 +1768,28 @@ def channels():
     )
 
 
+@app.route("/posting-setup")
+@login_required
+def posting_setup():
+    if is_admin_user(current_user):
+        channels_data = (
+            ClientChannel.query.filter_by(is_active=True)
+            .order_by(ClientChannel.created_at.desc())
+            .all()
+        )
+    elif current_user.client_id:
+        channels_data = (
+            ClientChannel.query.filter_by(client_id=current_user.client_id, is_active=True)
+            .order_by(ClientChannel.created_at.desc())
+            .all()
+        )
+    else:
+        channels_data = []
+
+    channels_payload = [_serialize_channel(ch, include_client_name=True) for ch in channels_data]
+    return render_template("posting_setup.html", channels=channels_payload, user=current_user)
+
+
 @app.route("/content")
 @login_required
 def content():
@@ -1906,6 +2066,102 @@ def api_verify_channel():
             "style_profile": intelligence.get("style_profile", {}),
             "style_summary": intelligence.get("style_summary", ""),
             "auto_description": intelligence.get("auto_description", ""),
+        }
+    )
+
+
+@app.route("/api/posting-setup/plan", methods=["POST"])
+@login_required
+def api_posting_setup_plan():
+    data = request.get_json(silent=True) or {}
+    channel_id = data.get("channel_id")
+    focus_text = (data.get("focus_text") or "").strip()
+    desired_count = data.get("desired_count", 8)
+
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный channel_id"}), 400
+
+    try:
+        desired_count = int(desired_count)
+    except (TypeError, ValueError):
+        desired_count = 8
+
+    channel = _get_accessible_channel(channel_id)
+    if not channel.is_active:
+        return jsonify({"success": False, "error": "Канал отключен. Включите его перед настройкой постинга."}), 400
+
+    planner_payload = _build_topic_planner_payload(
+        channel=channel,
+        focus_text=focus_text,
+        desired_count=desired_count,
+    )
+    return jsonify({"success": True, **planner_payload})
+
+
+@app.route("/api/posting-setup/topics", methods=["POST"])
+@login_required
+def api_posting_setup_save_topics():
+    data = request.get_json(silent=True) or {}
+    channel_id = data.get("channel_id")
+    raw_topics = data.get("topics") or []
+
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный channel_id"}), 400
+
+    normalized_topics = _normalize_topic_items(raw_topics)
+    if not normalized_topics:
+        return jsonify({"success": False, "error": "Добавьте хотя бы одну тему для сохранения"}), 400
+
+    channel = _get_accessible_channel(channel_id)
+    if not channel.is_active:
+        return jsonify({"success": False, "error": "Канал отключен. Включите его перед сохранением тем."}), 400
+
+    ChannelTopic.query.filter_by(channel_id=channel.id, is_active=True).update({"is_active": False})
+    for idx, topic_title in enumerate(normalized_topics, start=1):
+        topic_item = ChannelTopic(
+            channel_id=channel.id,
+            topic=topic_title,
+            keywords=json.dumps(_extract_keywords(topic_title), ensure_ascii=False),
+            priority=max(1, 10 - idx),
+            is_active=True,
+        )
+        db.session.add(topic_item)
+
+    settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
+    if not settings:
+        default_frequency = _normalize_frequency((_channel_extra_config(channel).get("publish_frequency") or "daily"))
+        settings = ChannelSetting(
+            channel_id=channel.id,
+            publish_hour=10,
+            publish_frequency=default_frequency or "daily",
+            topics=json.dumps(normalized_topics, ensure_ascii=False),
+            hashtags=json.dumps([], ensure_ascii=False),
+            max_posts_per_day=1,
+            is_auto_generate=True,
+            use_ai_images=True,
+        )
+        db.session.add(settings)
+    else:
+        settings.topics = json.dumps(normalized_topics, ensure_ascii=False)
+
+    extra = _channel_extra_config(channel)
+    extra["topic_plan"] = {
+        "updated_at": datetime.utcnow().isoformat(),
+        "topics": normalized_topics,
+    }
+    channel.additional_config = json.dumps(extra, ensure_ascii=False)
+
+    db.session.commit()
+    return jsonify(
+        {
+            "success": True,
+            "saved_topics": len(normalized_topics),
+            "channel_id": channel.id,
+            "channel_name": channel.channel_name,
         }
     )
 

@@ -1,0 +1,314 @@
+{% extends "layout.html" %}
+
+{% block title %}Snoomi Platform - Шаг 2: Настройка постинга{% endblock %}
+
+{% block extra_css %}
+<style>
+    .topic-item-card {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        background: var(--color-surface);
+        box-shadow: var(--shadow-1);
+    }
+    .topic-item-card .topic-meta {
+        color: var(--color-text-muted);
+        font-size: 0.85rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title"><i class="fas fa-sliders-h me-2"></i>Шаг 2. Настройка постинга</h1>
+        <p class="page-subtitle">
+            Планировщик тем: анализ канала, подбор актуальных вопросов и подготовка списка тем для редактирования.
+        </p>
+    </div>
+</div>
+
+{% if not channels %}
+<div class="card content-card">
+    <div class="card-body">
+        <div class="operator-empty-state">
+            <i class="fas fa-plug-circle-xmark"></i>
+            <h6>Сначала подключите хотя бы один канал</h6>
+            <p>Шаг 2 доступен после шага 1 — добавления и проверки каналов в разделе “Каналы”.</p>
+            <a href="{{ url_for('channels') }}" class="btn btn-primary">
+                <i class="fas fa-arrow-left me-1"></i>Перейти к шагу 1
+            </a>
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="row g-4">
+    <div class="col-xl-4">
+        <div class="card content-card h-100">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="fas fa-cogs me-1"></i>Параметры планировщика</h5>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="form-label">Канал для настройки *</label>
+                    <select class="form-control" id="plannerChannelSelect">
+                        {% for channel in channels %}
+                        <option value="{{ channel.id }}">
+                            {{ channel.channel_name }} ({{ channel.platform|upper }})
+                        </option>
+                        {% endfor %}
+                    </select>
+                    <div class="form-text">Темы будут сохранены для выбранного канала.</div>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Фокус/цели на период (опционально)</label>
+                    <textarea
+                        class="form-control"
+                        id="plannerFocusInput"
+                        rows="4"
+                        placeholder="Например: больше практики для новичков, упор на кейсы, контент для прогрева перед продажами..."
+                    ></textarea>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Количество тем</label>
+                    <input
+                        type="number"
+                        min="3"
+                        max="20"
+                        value="8"
+                        class="form-control"
+                        id="plannerCountInput"
+                    >
+                </div>
+
+                <div class="d-grid gap-2">
+                    <button type="button" class="btn btn-primary" id="plannerGenerateBtn">
+                        <i class="fas fa-wand-magic-sparkles me-1"></i>Сгенерировать темы
+                    </button>
+                    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">
+                        <i class="fas fa-tachometer-alt me-1"></i>Перейти в дашборд
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-8">
+        <div class="card content-card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="fas fa-list-check me-1"></i>Список тем для редактирования</h5>
+                <span class="badge bg-light text-dark" id="plannerTopicsCount">0 тем</span>
+            </div>
+            <div class="card-body">
+                <div id="plannerResultBox"></div>
+
+                <div class="alert alert-secondary" id="plannerInsightsBox" style="display:none;">
+                    <div><strong>Канал:</strong> <span id="plannerChannelName">—</span></div>
+                    <div class="mt-1"><strong>Стилистика:</strong> <span id="plannerStyleSummary">—</span></div>
+                    <div class="mt-1"><strong>Ключевые слова:</strong> <span id="plannerKeywords">—</span></div>
+                </div>
+
+                <div id="plannerTopicsContainer">
+                    <div class="operator-empty-state">
+                        <i class="fas fa-lightbulb"></i>
+                        <h6>Темы пока не сгенерированы</h6>
+                        <p>Нажмите “Сгенерировать темы”, затем отредактируйте предложения и сохраните список.</p>
+                    </div>
+                </div>
+
+                <div class="d-flex flex-wrap gap-2 mt-3">
+                    <button type="button" class="btn btn-outline-primary" id="plannerAddManualBtn">
+                        <i class="fas fa-plus me-1"></i>Добавить свою тему
+                    </button>
+                    <button type="button" class="btn btn-success" id="plannerSaveBtn">
+                        <i class="fas fa-save me-1"></i>Сохранить темы для канала
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+{% if channels %}
+<script>
+    let plannedTopics = [];
+
+    function plannerMessage(text, kind) {
+        const cls = kind === "success" ? "success" : (kind === "warning" ? "warning" : "danger");
+        document.getElementById("plannerResultBox").innerHTML = `
+            <div class="alert alert-${cls} mb-3">${text}</div>
+        `;
+    }
+
+    function updateTopicsCount() {
+        const count = plannedTopics.length;
+        document.getElementById("plannerTopicsCount").textContent = `${count} ${count === 1 ? "тема" : (count >= 2 && count <= 4 ? "темы" : "тем")}`;
+    }
+
+    function setPlannerInsights(payload) {
+        const insights = document.getElementById("plannerInsightsBox");
+        const hasData = payload && (payload.style_summary || (payload.keywords || []).length);
+        if (!hasData) {
+            insights.style.display = "none";
+            return;
+        }
+        insights.style.display = "";
+        document.getElementById("plannerChannelName").textContent = payload.channel_name || "—";
+        document.getElementById("plannerStyleSummary").textContent = payload.style_summary || "Без явного стилевого маркера";
+        document.getElementById("plannerKeywords").textContent = (payload.keywords || []).slice(0, 12).join(", ") || "—";
+    }
+
+    function renderTopics() {
+        const container = document.getElementById("plannerTopicsContainer");
+        updateTopicsCount();
+
+        if (!plannedTopics.length) {
+            container.innerHTML = `
+                <div class="operator-empty-state">
+                    <i class="fas fa-lightbulb"></i>
+                    <h6>Список тем пуст</h6>
+                    <p>Сгенерируйте темы или добавьте их вручную.</p>
+                </div>
+            `;
+            return;
+        }
+
+        container.innerHTML = plannedTopics.map((topic, idx) => {
+            const safeTitle = (topic.title || "").replace(/"/g, "&quot;");
+            const questions = (topic.questions || [])
+                .map((q) => `<li>${q}</li>`)
+                .join("");
+            return `
+                <div class="topic-item-card p-3 mb-3" data-idx="${idx}">
+                    <div class="d-flex justify-content-between align-items-start gap-2">
+                        <div class="topic-meta">Тема #${idx + 1}${topic.keyword ? ` · ключ: ${topic.keyword}` : ""}</div>
+                        <button class="btn btn-sm btn-outline-danger" type="button" onclick="removeTopic(${idx})">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                    </div>
+                    <textarea
+                        class="form-control mt-2 planner-topic-title"
+                        rows="2"
+                        data-idx="${idx}"
+                        onchange="updateTopicTitle(${idx}, this.value)"
+                    >${safeTitle}</textarea>
+                    ${questions ? `<ul class="mt-2 mb-0 small">${questions}</ul>` : ""}
+                </div>
+            `;
+        }).join("");
+    }
+
+    function updateTopicTitle(index, value) {
+        if (!plannedTopics[index]) return;
+        plannedTopics[index].title = (value || "").trim();
+    }
+
+    function removeTopic(index) {
+        plannedTopics.splice(index, 1);
+        renderTopics();
+    }
+
+    function addManualTopic() {
+        plannedTopics.push({
+            title: "Новая тема (введите текст)",
+            keyword: "manual",
+            questions: [],
+            rationale: "Добавлено вручную пользователем",
+        });
+        renderTopics();
+    }
+
+    async function generateTopicsPlan() {
+        const channelId = document.getElementById("plannerChannelSelect").value;
+        const focusText = document.getElementById("plannerFocusInput").value.trim();
+        const desiredCount = Number(document.getElementById("plannerCountInput").value || 8);
+        const button = document.getElementById("plannerGenerateBtn");
+
+        button.disabled = true;
+        button.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Генерируем...';
+        document.getElementById("plannerResultBox").innerHTML = "";
+
+        try {
+            const response = await fetch("/api/posting-setup/plan", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    channel_id: channelId,
+                    focus_text: focusText,
+                    desired_count: desiredCount
+                })
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                plannerMessage(data.error || "Не удалось построить план тем", "danger");
+                return;
+            }
+
+            plannedTopics = (data.topics || []).map((topic) => ({
+                title: topic.title || "",
+                keyword: topic.keyword || "",
+                questions: topic.questions || [],
+                rationale: topic.rationale || ""
+            }));
+            setPlannerInsights(data);
+            renderTopics();
+            plannerMessage("План тем сгенерирован. Проверьте и отредактируйте формулировки перед сохранением.", "success");
+        } catch (error) {
+            plannerMessage(`Ошибка сети при генерации: ${error}`, "danger");
+        } finally {
+            button.disabled = false;
+            button.innerHTML = '<i class="fas fa-wand-magic-sparkles me-1"></i>Сгенерировать темы';
+        }
+    }
+
+    async function saveTopicsPlan() {
+        const channelId = document.getElementById("plannerChannelSelect").value;
+        const topics = plannedTopics
+            .map((topic) => (topic.title || "").trim())
+            .filter((title) => !!title);
+
+        if (!topics.length) {
+            plannerMessage("Добавьте хотя бы одну тему для сохранения.", "warning");
+            return;
+        }
+
+        const button = document.getElementById("plannerSaveBtn");
+        button.disabled = true;
+        button.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Сохраняем...';
+
+        try {
+            const response = await fetch("/api/posting-setup/topics", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    channel_id: channelId,
+                    topics: topics
+                })
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                plannerMessage(data.error || "Не удалось сохранить темы", "danger");
+                return;
+            }
+
+            plannerMessage(`Темы сохранены: ${data.saved_topics}. Теперь можно переходить к публикациям и аналитике.`, "success");
+        } catch (error) {
+            plannerMessage(`Ошибка сети при сохранении: ${error}`, "danger");
+        } finally {
+            button.disabled = false;
+            button.innerHTML = '<i class="fas fa-save me-1"></i>Сохранить темы для канала';
+        }
+    }
+
+    document.getElementById("plannerGenerateBtn").addEventListener("click", generateTopicsPlan);
+    document.getElementById("plannerAddManualBtn").addEventListener("click", addManualTopic);
+    document.getElementById("plannerSaveBtn").addEventListener("click", saveTopicsPlan);
+
+    renderTopics();
+</script>
+{% endif %}
+{% endblock %}
