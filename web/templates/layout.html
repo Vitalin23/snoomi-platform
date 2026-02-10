@@ -4,6 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light dark">
     <title>{% block title %}Snoomi Platform - Автопостинг{% endblock %}</title>
     
     <!-- Bootstrap 5 -->
@@ -12,12 +13,25 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <!-- Custom CSS -->
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+
+    <script>
+        (function () {
+            try {
+                const savedTheme = localStorage.getItem("snoomi-theme");
+                if (savedTheme) {
+                    document.documentElement.setAttribute("data-theme", savedTheme);
+                }
+            } catch (e) {}
+        })();
+    </script>
     
     {% block extra_css %}{% endblock %}
 </head>
 <body>
+    <a class="skip-link" href="#appMainContent">Перейти к основному контенту</a>
+
     <!-- Навигация -->
-    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+    <nav class="navbar navbar-expand-lg navbar-light app-navbar">
         <div class="container">
             <a class="navbar-brand" href="{{ url_for('dashboard') if current_user.is_authenticated else url_for('index') }}">
                 <i class="fas fa-robot"></i> Snoomi Platform
@@ -70,6 +84,23 @@
                 </ul>
                 
                 <ul class="navbar-nav">
+                    <li class="nav-item dropdown me-2">
+                        <button
+                            class="btn btn-sm btn-outline-primary dropdown-toggle mt-1 mt-lg-0"
+                            id="themeDropdown"
+                            data-bs-toggle="dropdown"
+                            aria-expanded="false"
+                            aria-label="Переключить тему интерфейса"
+                        >
+                            <i class="fas fa-circle-half-stroke me-1"></i>
+                            <span id="activeThemeLabel">Тема</span>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end theme-menu">
+                            <li><button class="dropdown-item theme-option" type="button" data-theme="light">Светлая</button></li>
+                            <li><button class="dropdown-item theme-option" type="button" data-theme="dark">Тёмная</button></li>
+                            <li><button class="dropdown-item theme-option" type="button" data-theme="contrast">Высокий контраст</button></li>
+                        </ul>
+                    </li>
                     {% if current_user.is_authenticated %}
                         <li class="nav-item dropdown">
                             <a class="nav-link dropdown-toggle" href="#" id="userDropdown" role="button" data-bs-toggle="dropdown">
@@ -119,12 +150,12 @@
     {% endwith %}
 
     <!-- Основной контент -->
-    <main class="container py-4">
+    <main class="container main-shell" id="appMainContent">
         {% block content %}{% endblock %}
     </main>
 
     <!-- Футер -->
-    <footer class="bg-dark text-white py-4 mt-5">
+    <footer class="app-footer py-4 mt-5">
         <div class="container">
             <div class="row">
                 <div class="col-md-6">
@@ -244,6 +275,55 @@
             window.addEventListener("unhandledrejection", function (event) {
                 sendClientEvent("js_unhandled_rejection", {
                     reason: safeText(String(event.reason || "unknown"), 400)
+                });
+            });
+        })();
+    </script>
+
+    <script>
+        (function () {
+            const themeNames = {
+                light: "Светлая",
+                dark: "Тёмная",
+                contrast: "Контраст",
+            };
+
+            function getCurrentTheme() {
+                return document.documentElement.getAttribute("data-theme") || "light";
+            }
+
+            function updateThemeUi() {
+                const current = getCurrentTheme();
+                const label = document.getElementById("activeThemeLabel");
+                if (label) {
+                    label.textContent = themeNames[current] || "Тема";
+                }
+
+                document.querySelectorAll(".theme-option").forEach((button) => {
+                    const isActive = button.dataset.theme === current;
+                    button.classList.toggle("active", isActive);
+                    button.setAttribute("aria-pressed", isActive ? "true" : "false");
+                });
+            }
+
+            function setTheme(theme) {
+                document.documentElement.setAttribute("data-theme", theme);
+                try {
+                    localStorage.setItem("snoomi-theme", theme);
+                } catch (e) {}
+                updateThemeUi();
+
+                if (typeof window.__sendClientEvent === "function") {
+                    window.__sendClientEvent("theme_changed", { theme: theme });
+                }
+            }
+
+            document.addEventListener("DOMContentLoaded", function () {
+                updateThemeUi();
+                document.querySelectorAll(".theme-option").forEach((button) => {
+                    button.addEventListener("click", function () {
+                        setTheme(this.dataset.theme || "light");
+                    });
                 });
             });
         })();

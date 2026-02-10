@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light dark">
     <title>Управление контентом - Snoomi Platform</title>
     
     <!-- Bootstrap CSS -->
@@ -10,19 +11,28 @@
     <!-- Font Awesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+
+    <script>
+        (function () {
+            try {
+                const savedTheme = localStorage.getItem("snoomi-theme");
+                if (savedTheme) {
+                    document.documentElement.setAttribute("data-theme", savedTheme);
+                }
+            } catch (e) {}
+        })();
+    </script>
     
     <style>
         .content-card {
-            transition: transform 0.2s;
             margin-bottom: 20px;
-            border: 1px solid #e0e0e0;
-            border-radius: 10px;
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-md);
             overflow: hidden;
         }
         .content-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            box-shadow: var(--shadow-2);
         }
         .content-status {
             display: inline-block;
@@ -32,26 +42,26 @@
             font-weight: bold;
         }
         .status-draft {
-            background-color: #ffd700;
-            color: #000;
+            background-color: var(--color-warning-soft);
+            color: var(--color-warning);
         }
         .status-scheduled {
-            background-color: #3498db;
-            color: white;
+            background-color: var(--color-info);
+            color: #fff;
         }
         .status-published {
-            background-color: #2ecc71;
-            color: white;
+            background-color: var(--color-success);
+            color: #fff;
         }
         .generation-result {
-            background-color: #f8f9fa;
-            border-left: 4px solid #3498db;
+            background-color: var(--color-surface-soft);
+            border-left: 4px solid var(--color-primary);
             padding: 15px;
             margin: 15px 0;
             border-radius: 0 5px 5px 0;
         }
         .schedule-form {
-            background-color: #f8f9fa;
+            background-color: var(--color-surface-soft);
             padding: 20px;
             border-radius: 10px;
             margin-top: 20px;
@@ -63,7 +73,7 @@
 </head>
 <body>
     <!-- Навигация -->
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+    <nav class="navbar navbar-expand-lg navbar-light app-navbar">
         <div class="container">
             <a class="navbar-brand" href="/">
                 <i class="fas fa-blog"></i> Snoomi Platform
@@ -92,6 +102,22 @@
                         <a class="nav-link" href="/analytics">
                             <i class="fas fa-chart-bar"></i> Аналитика
                         </a>
+                    </li>
+                    <li class="nav-item dropdown ms-lg-2">
+                        <button
+                            class="btn btn-sm btn-outline-primary dropdown-toggle mt-1 mt-lg-0"
+                            id="channelsThemeDropdown"
+                            data-bs-toggle="dropdown"
+                            aria-expanded="false"
+                        >
+                            <i class="fas fa-circle-half-stroke me-1"></i>
+                            <span id="channelsActiveThemeLabel">Тема</span>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end theme-menu">
+                            <li><button class="dropdown-item channels-theme-option" type="button" data-theme="light">Светлая</button></li>
+                            <li><button class="dropdown-item channels-theme-option" type="button" data-theme="dark">Тёмная</button></li>
+                            <li><button class="dropdown-item channels-theme-option" type="button" data-theme="contrast">Высокий контраст</button></li>
+                        </ul>
                     </li>
                 </ul>
             </div>
@@ -560,6 +586,42 @@
         let currentGeneratedText = '';
         let currentImagePath = '';
         let currentContentId = null;
+
+        const channelsThemeNames = {
+            light: 'Светлая',
+            dark: 'Тёмная',
+            contrast: 'Контраст'
+        };
+
+        function getChannelsTheme() {
+            return document.documentElement.getAttribute('data-theme') || 'light';
+        }
+
+        function updateChannelsThemeUi() {
+            const current = getChannelsTheme();
+            const label = document.getElementById('channelsActiveThemeLabel');
+            if (label) {
+                label.textContent = channelsThemeNames[current] || 'Тема';
+            }
+            document.querySelectorAll('.channels-theme-option').forEach((btn) => {
+                const active = btn.dataset.theme === current;
+                btn.classList.toggle('active', active);
+                btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+            });
+        }
+
+        function setChannelsTheme(theme) {
+            document.documentElement.setAttribute('data-theme', theme);
+            try {
+                localStorage.setItem('snoomi-theme', theme);
+            } catch (e) {}
+            updateChannelsThemeUi();
+        }
+
+        document.querySelectorAll('.channels-theme-option').forEach((btn) => {
+            btn.addEventListener('click', () => setChannelsTheme(btn.dataset.theme || 'light'));
+        });
+        updateChannelsThemeUi();
 
         let verifiedChannelState = null;
         const tokenHelpLinks = {
