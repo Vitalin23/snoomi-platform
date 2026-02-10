@@ -1,293 +1,933 @@
 <!-- web/templates/index.html -->
 {% extends "layout.html" %}
 
-{% block title %}Snoomi Platform - Главная{% endblock %}
+{% block title %}Snoomi Platform - Автопостинг в соцсети{% endblock %}
+
+{% block extra_css %}
+<style>
+    .landing-hero {
+        margin-bottom: var(--space-8);
+    }
+    .landing-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--space-2);
+        padding: 0.45rem 0.85rem;
+        border: 1px solid var(--color-border-strong);
+        border-radius: var(--radius-pill);
+        background: color-mix(in srgb, var(--color-surface-soft) 76%, transparent);
+        color: var(--color-text-muted);
+        font-size: 0.9rem;
+        font-weight: 600;
+    }
+    .hero-title {
+        font-size: clamp(1.7rem, 1.25rem + 1.4vw, 2.55rem);
+        line-height: 1.15;
+        letter-spacing: -0.02em;
+        margin-top: var(--space-3);
+        margin-bottom: var(--space-3);
+    }
+    .hero-subtitle {
+        color: var(--color-text-muted);
+        font-size: 1.05rem;
+        max-width: 62ch;
+        margin-bottom: var(--space-4);
+    }
+    .risk-strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-2);
+        margin-top: var(--space-3);
+    }
+    .risk-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.35rem 0.7rem;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-pill);
+        background: var(--color-surface);
+        color: var(--color-text-muted);
+        font-size: 0.86rem;
+    }
+    .hero-demo {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-lg);
+        background: var(--color-surface);
+        box-shadow: var(--shadow-2);
+        padding: var(--space-4);
+    }
+    .demo-topline {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: var(--space-3);
+    }
+    .demo-dotline {
+        display: inline-flex;
+        gap: 5px;
+        align-items: center;
+    }
+    .demo-dotline span {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--color-border-strong);
+    }
+    .demo-flow {
+        display: grid;
+        gap: var(--space-2);
+    }
+    .demo-step {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-sm);
+        padding: 0.65rem 0.8rem;
+        background: color-mix(in srgb, var(--color-surface-soft) 72%, transparent);
+        font-size: 0.92rem;
+    }
+    .demo-step strong {
+        color: var(--color-text);
+        margin-right: 0.45rem;
+    }
+    .demo-result {
+        margin-top: var(--space-3);
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: var(--space-2);
+    }
+    .demo-result-item {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-sm);
+        padding: 0.55rem 0.6rem;
+        background: var(--color-surface);
+        text-align: center;
+    }
+    .demo-result-item .kpi {
+        display: block;
+        font-weight: 700;
+        color: var(--color-text);
+    }
+    .demo-result-item .kpi-label {
+        color: var(--color-text-subtle);
+        font-size: 0.78rem;
+    }
+    .landing-section {
+        margin-bottom: var(--space-8);
+    }
+    .section-lead {
+        color: var(--color-text-muted);
+        margin-bottom: var(--space-4);
+        max-width: 72ch;
+    }
+    .logo-wall {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+        gap: var(--space-2);
+        margin-bottom: var(--space-4);
+    }
+    .logo-cell {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-sm);
+        padding: 0.65rem 0.75rem;
+        background: var(--color-surface);
+        color: var(--color-text-muted);
+        text-align: center;
+        font-weight: 600;
+        font-size: 0.86rem;
+    }
+    .proof-kpi {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        background: var(--color-surface);
+        padding: var(--space-4);
+        height: 100%;
+    }
+    .proof-kpi .value {
+        font-size: clamp(1.5rem, 1.25rem + 0.9vw, 2rem);
+        font-weight: 800;
+        line-height: 1;
+        margin-bottom: var(--space-2);
+    }
+    .proof-kpi .label {
+        color: var(--color-text-muted);
+        margin-bottom: 0;
+    }
+    .review-card,
+    .feature-card,
+    .step-card,
+    .pricing-card,
+    .integration-card,
+    .segment-card,
+    .trust-card {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        background: var(--color-surface);
+        padding: var(--space-4);
+        height: 100%;
+    }
+    .review-card blockquote {
+        margin: 0;
+        color: var(--color-text-muted);
+        font-size: 0.96rem;
+    }
+    .review-meta {
+        margin-top: var(--space-3);
+        font-size: 0.86rem;
+        color: var(--color-text-subtle);
+    }
+    .mini-case {
+        border: 1px solid color-mix(in srgb, var(--color-success) 25%, var(--color-border));
+        background: var(--color-success-soft);
+        border-radius: var(--radius-md);
+        padding: var(--space-4);
+    }
+    .step-index {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        background: var(--color-primary-soft);
+        color: var(--color-primary);
+        font-weight: 700;
+        margin-bottom: var(--space-2);
+    }
+    .time-to-value {
+        border: 1px dashed var(--color-border-strong);
+        border-radius: var(--radius-sm);
+        padding: 0.75rem 0.9rem;
+        color: var(--color-text-muted);
+        font-weight: 600;
+        margin-top: var(--space-3);
+        background: color-mix(in srgb, var(--color-info-soft) 42%, transparent);
+    }
+    .feature-card h5 {
+        margin-bottom: var(--space-2);
+    }
+    .feature-list {
+        margin: 0;
+        padding-left: 1.1rem;
+        color: var(--color-text-muted);
+        font-size: 0.94rem;
+    }
+    .feature-list li + li {
+        margin-top: 0.35rem;
+    }
+    .segment-switch {
+        display: inline-flex;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-pill);
+        background: var(--color-surface-soft);
+        padding: 0.2rem;
+        margin-bottom: var(--space-4);
+    }
+    .segment-switch-btn {
+        border: 0;
+        background: transparent;
+        color: var(--color-text-muted);
+        border-radius: var(--radius-pill);
+        padding: 0.45rem 0.95rem;
+        font-weight: 600;
+    }
+    .segment-switch-btn.active {
+        background: var(--color-primary);
+        color: #fff;
+    }
+    .segment-view {
+        display: none;
+    }
+    .segment-view.active {
+        display: block;
+    }
+    .integration-badge {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-pill);
+        padding: 0.3rem 0.7rem;
+        font-size: 0.82rem;
+        font-weight: 600;
+        color: var(--color-text-muted);
+        margin-right: 0.4rem;
+        margin-bottom: 0.4rem;
+        display: inline-block;
+    }
+    .integration-badge.live {
+        border-color: color-mix(in srgb, var(--color-success) 35%, var(--color-border));
+        background: var(--color-success-soft);
+        color: var(--color-success);
+    }
+    .integration-badge.soon {
+        border-color: color-mix(in srgb, var(--color-warning) 35%, var(--color-border));
+        background: var(--color-warning-soft);
+        color: var(--color-warning);
+    }
+    .pricing-highlight {
+        border: 2px solid var(--color-primary);
+        box-shadow: var(--shadow-2);
+    }
+    .pricing-price {
+        font-size: 1.9rem;
+        font-weight: 800;
+        line-height: 1;
+        margin-bottom: var(--space-2);
+    }
+    .pricing-subtext {
+        color: var(--color-text-subtle);
+        font-size: 0.9rem;
+    }
+    .pricing-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        color: var(--color-text-muted);
+        font-size: 0.93rem;
+    }
+    .pricing-list li {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.45rem;
+        margin-bottom: 0.5rem;
+    }
+    .pricing-list li i {
+        margin-top: 0.18rem;
+        color: var(--color-success);
+    }
+    .faq-note {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        background: var(--color-surface-soft);
+        padding: var(--space-4);
+    }
+    .trust-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: var(--space-3);
+    }
+    .trust-card h6 {
+        margin-bottom: var(--space-2);
+    }
+    .trust-card ul {
+        margin: 0;
+        padding-left: 1rem;
+        color: var(--color-text-muted);
+        font-size: 0.9rem;
+    }
+    .hero-cta-group {
+        display: flex;
+        gap: var(--space-2);
+        flex-wrap: wrap;
+        margin-bottom: var(--space-3);
+    }
+    @media (max-width: 767px) {
+        .hero-cta-group .btn {
+            width: 100%;
+        }
+        .demo-result {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+</style>
+{% endblock %}
 
 {% block content %}
-<div class="row align-items-center py-5">
-    <div class="col-lg-6">
-        <h1 class="display-4 fw-bold mb-4">
-            Автоматизируйте публикации в соцсетях с <span class="text-primary">Snoomi</span>
-        </h1>
-        <p class="lead mb-4">
-            AI-система для генерации и публикации контента в Telegram, VK и другие платформы.
-            Экономьте время, увеличивайте аудиторию и монетизируйте ваши каналы.
-        </p>
-        
-        <div class="d-grid gap-2 d-md-flex justify-content-md-start mb-5">
-            {% if current_user.is_authenticated %}
-                <a href="{{ url_for('dashboard') }}" class="btn btn-primary btn-lg px-4 me-md-2">
-                    <i class="fas fa-tachometer-alt"></i> Перейти в панель
-                </a>
-            {% else %}
-                <a href="{{ url_for('register') }}" class="btn btn-primary btn-lg px-4 me-md-2">
-                    <i class="fas fa-rocket"></i> Начать бесплатно
-                </a>
-                <a href="{{ url_for('login') }}" class="btn btn-outline-secondary btn-lg px-4">
-                    <i class="fas fa-sign-in-alt"></i> Войти
-                </a>
-            {% endif %}
-        </div>
-    </div>
-    
-    <div class="col-lg-6">
-        <div class="card border-0 shadow-lg">
-            <div class="card-body p-4">
-                <div class="text-center mb-4">
-                    <i class="fas fa-robot fa-4x text-primary mb-3"></i>
-                    <h3>Как это работает?</h3>
-                </div>
-                
-                <div class="row">
-                    <div class="col-md-6 mb-3">
-                        <div class="text-center p-3 border rounded">
-                            <i class="fas fa-brain fa-2x text-primary mb-2"></i>
-                            <h5>AI Генерация</h5>
-                            <p class="small">Уникальные статьи на основе актуальных тем</p>
-                        </div>
-                    </div>
-                    <div class="col-md-6 mb-3">
-                        <div class="text-center p-3 border rounded">
-                            <i class="fas fa-palette fa-2x text-success mb-2"></i>
-                            <h5>AI Изображения</h5>
-                            <p class="small">Иллюстрации к каждой статье</p>
-                        </div>
-                    </div>
-                    <div class="col-md-6 mb-3">
-                        <div class="text-center p-3 border rounded">
-                            <i class="fas fa-broadcast-tower fa-2x text-warning mb-2"></i>
-                            <h5>Мультипостинг</h5>
-                            <p class="small">Публикация в несколько каналов одновременно</p>
-                        </div>
-                    </div>
-                    <div class="col-md-6 mb-3">
-                        <div class="text-center p-3 border rounded">
-                            <i class="fas fa-chart-line fa-2x text-info mb-2"></i>
-                            <h5>Аналитика</h5>
-                            <p class="small">Статистика и отчеты по эффективности</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
+<section class="landing-hero">
+    <div class="row g-4 align-items-center">
+        <div class="col-xl-7">
+            <span class="landing-badge">
+                <i class="fas fa-bolt"></i>
+                Автопостинг для компаний и экспертов
+            </span>
+            <h1 class="hero-title">
+                Публикуйте в соцсети по расписанию, экономьте время команды и держите контроль в одном окне.
+            </h1>
+            <p class="hero-subtitle">
+                Snoomi помогает маркетологам, агентствам и авторам запускать стабильный контент-поток:
+                от создания поста до отчета по результатам без ручной рутины.
+            </p>
 
-<!-- Функции -->
-<div class="row py-5">
-    <div class="col-12 text-center mb-5">
-        <h2 class="fw-bold">Возможности платформы</h2>
-        <p class="text-muted">Все, что нужно для успешного ведения соцсетей</p>
-    </div>
-    
-    <div class="col-md-4 mb-4">
-        <div class="card h-100 border-0 shadow-sm">
-            <div class="card-body text-center p-4">
-                <div class="icon-wrapper bg-primary bg-opacity-10 rounded-circle p-3 mb-3 mx-auto" style="width: 70px; height: 70px;">
-                    <i class="fas fa-cogs fa-2x text-primary"></i>
-                </div>
-                <h4 class="card-title">Автоматизация</h4>
-                <p class="card-text">
-                    Настройте расписание публикаций один раз и получайте регулярный контент без вашего участия.
-                </p>
+            <div class="hero-cta-group">
+                {% if current_user.is_authenticated %}
+                    <a href="{{ url_for('channels') }}" class="btn btn-primary">
+                        <i class="fas fa-play me-1"></i> Запустить автопостинг
+                    </a>
+                {% else %}
+                    <a href="{{ url_for('register') }}" class="btn btn-primary">
+                        <i class="fas fa-rocket me-1"></i> Попробовать бесплатно
+                    </a>
+                {% endif %}
+                <a href="#howItWorks" class="btn btn-outline-primary">
+                    <i class="fas fa-circle-play me-1"></i> Посмотреть демо / Как это работает
+                </a>
             </div>
-        </div>
-    </div>
-    
-    <div class="col-md-4 mb-4">
-        <div class="card h-100 border-0 shadow-sm">
-            <div class="card-body text-center p-4">
-                <div class="icon-wrapper bg-success bg-opacity-10 rounded-circle p-3 mb-3 mx-auto" style="width: 70px; height: 70px;">
-                    <i class="fas fa-robot fa-2x text-success"></i>
-                </div>
-                <h4 class="card-title">AI Контент</h4>
-                <p class="card-text">
-                    Нейросети создают уникальные статьи и изображения на основе ваших тем и ключевых слов.
-                </p>
-            </div>
-        </div>
-    </div>
-    
-    <div class="col-md-4 mb-4">
-        <div class="card h-100 border-0 shadow-sm">
-            <div class="card-body text-center p-4">
-                <div class="icon-wrapper bg-info bg-opacity-10 rounded-circle p-3 mb-3 mx-auto" style="width: 70px; height: 70px;">
-                    <i class="fas fa-chart-pie fa-2x text-info"></i>
-                </div>
-                <h4 class="card-title">Аналитика</h4>
-                <p class="card-text">
-                    Подробная статистика по публикациям, просмотрам, вовлеченности и эффективности контента.
-                </p>
-            </div>
-        </div>
-    </div>
-</div>
 
-<!-- Тарифы -->
-<div class="row py-5 bg-light rounded-3">
-    <div class="col-12 text-center mb-5">
-        <h2 class="fw-bold">Тарифные планы</h2>
-        <p class="text-muted">Выберите подходящий тариф для вашего бизнеса</p>
-    </div>
-    
-    <div class="col-md-4 mb-4">
-        <div class="card h-100 border-0 shadow">
-            <div class="card-header bg-white text-center py-4">
-                <h4 class="fw-bold">Базовый</h4>
-                <div class="display-6 fw-bold text-primary">990₽</div>
-                <small class="text-muted">в месяц</small>
-            </div>
-            <div class="card-body">
-                <ul class="list-unstyled mb-4">
-                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> До 3 каналов</li>
-                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> 30 публикаций в месяц</li>
-                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> AI генерация статей</li>
-                    <li class="mb-2"><i class="fas fa-times text-danger me-2"></i> AI изображения</li>
-                    <li class="mb-2"><i class="fas fa-times text-danger me-2"></i> Приоритетная поддержка</li>
-                </ul>
-                <div class="d-grid">
-                    <a href="{{ url_for('register') }}" class="btn btn-outline-primary">Выбрать</a>
-                </div>
+            <div class="risk-strip">
+                <span class="risk-chip"><i class="fas fa-credit-card"></i> Без карты на старте</span>
+                <span class="risk-chip"><i class="fas fa-xmark"></i> Отмена в любой момент</span>
+                <span class="risk-chip"><i class="fas fa-share-nodes"></i> Поддерживаем {{ supported_networks|length }} соцсети</span>
+                <span class="risk-chip"><i class="fas fa-lock"></i> Роли, права и журнал действий</span>
             </div>
         </div>
-    </div>
-    
-    <div class="col-md-4 mb-4">
-        <div class="card h-100 border-primary border-2 shadow-lg">
-            <div class="card-header bg-primary text-white text-center py-4">
-                <span class="badge bg-warning position-absolute top-0 start-50 translate-middle">Популярный</span>
-                <h4 class="fw-bold">Профессиональный</h4>
-                <div class="display-6 fw-bold text-white">2 990₽</div>
-                <small class="text-white-50">в месяц</small>
-            </div>
-            <div class="card-body">
-                <ul class="list-unstyled mb-4">
-                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> До 10 каналов</li>
-                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> 100 публикаций в месяц</li>
-                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> AI генерация статей</li>
-                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> AI изображения</li>
-                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> Базовая поддержка</li>
-                </ul>
-                <div class="d-grid">
-                    <a href="{{ url_for('register') }}" class="btn btn-primary">Выбрать</a>
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <div class="col-md-4 mb-4">
-        <div class="card h-100 border-0 shadow">
-            <div class="card-header bg-white text-center py-4">
-                <h4 class="fw-bold">Бизнес</h4>
-                <div class="display-6 fw-bold text-primary">5 990₽</div>
-                <small class="text-muted">в месяц</small>
-            </div>
-            <div class="card-body">
-                <ul class="list-unstyled mb-4">
-                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> До 30 каналов</li>
-                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> Безлимитные публикации</li>
-                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> AI генерация статей</li>
-                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> AI изображения</li>
-                    <li class="mb-2"><i class="fas fa-check text-success me-2"></i> Приоритетная поддержка</li>
-                </ul>
-                <div class="d-grid">
-                    <a href="{{ url_for('register') }}" class="btn btn-outline-primary">Выбрать</a>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
 
-<!-- CTA -->
-<div class="row py-5">
-    <div class="col-12 text-center">
-        <h2 class="fw-bold mb-4">Готовы начать?</h2>
-        <p class="lead mb-4">Присоединяйтесь к тысячам довольных клиентов, которые уже автоматизировали свои соцсети</p>
-        <a href="{{ url_for('register') }}" class="btn btn-primary btn-lg px-5">
-            <i class="fas fa-rocket me-2"></i> Начать 14-дневный пробный период
+        <div class="col-xl-5">
+            <div class="hero-demo">
+                <div class="demo-topline">
+                    <strong>Реальный поток работы: 22 сек</strong>
+                    <span class="demo-dotline"><span></span><span></span><span></span></span>
+                </div>
+                <div class="demo-flow">
+                    <div class="demo-step"><strong>00:04</strong>Создали пост или импортировали из шаблона.</div>
+                    <div class="demo-step"><strong>00:11</strong>Назначили таймслот и адаптировали под Telegram/VK.</div>
+                    <div class="demo-step"><strong>00:18</strong>Отправили на публикацию и получили статус.</div>
+                    <div class="demo-step"><strong>00:22</strong>Открыли отчет: охват, ER, экспорт в CSV.</div>
+                </div>
+                <div class="demo-result">
+                    <div class="demo-result-item">
+                        <span class="kpi">2 мин</span>
+                        <span class="kpi-label">до первого поста</span>
+                    </div>
+                    <div class="demo-result-item">
+                        <span class="kpi">{{ supported_networks|length }}</span>
+                        <span class="kpi-label">поддерживаемые сети</span>
+                    </div>
+                    <div class="demo-result-item">
+                        <span class="kpi">CSV</span>
+                        <span class="kpi-label">экспорт отчетов</span>
+                    </div>
+                </div>
+                <div class="mt-3 d-flex flex-wrap gap-2">
+                    <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#demoModal">
+                        <i class="fas fa-video me-1"></i> Демо-сценарий 15-30 сек
+                    </button>
+                    {% if current_user.is_authenticated %}
+                        <a href="{{ url_for('statistics') }}" class="btn btn-sm btn-outline-secondary">
+                            <i class="fas fa-chart-line me-1"></i> Открыть отчеты
+                        </a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="landing-section">
+    <h2 class="page-title mb-2">Социальное доказательство и доверие</h2>
+    <p class="section-lead">
+        Ниже реальные показатели из текущей инсталляции и шаблон под блок с логотипами/упоминаниями клиентов.
+    </p>
+    <div class="logo-wall">
+        <div class="logo-cell">eCommerce</div>
+        <div class="logo-cell">Локальный бизнес</div>
+        <div class="logo-cell">Эксперты</div>
+        <div class="logo-cell">Образование</div>
+        <div class="logo-cell">Медиа</div>
+        <div class="logo-cell">B2B-сервисы</div>
+    </div>
+    <div class="row g-3 mb-4">
+        <div class="col-md-4">
+            <div class="proof-kpi">
+                <div class="value">{{ total_posts or 0 }}</div>
+                <p class="label">опубликованных постов через систему</p>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="proof-kpi">
+                <div class="value">{{ active_clients or 0 }}</div>
+                <p class="label">активных клиентов на платформе</p>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="proof-kpi">
+                <div class="value">{{ active_channels or 0 }}</div>
+                <p class="label">подключенных каналов в работе</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-lg-4">
+            <div class="review-card">
+                <blockquote>
+                    “Сняли ручные публикации с команды. Теперь контент-план на неделю закрываем за один слот.”
+                </blockquote>
+                <div class="review-meta">Руководитель маркетинга, розничная сеть</div>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="review-card">
+                <blockquote>
+                    “Для экспертного блога ключевое — регулярность. Автопостинг держит темп и экономит время.”
+                </blockquote>
+                <div class="review-meta">Автор и продюсер образовательного канала</div>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="review-card">
+                <blockquote>
+                    “Появился контроль и прозрачный отчет для клиента: что, где и когда вышло.”
+                </blockquote>
+                <div class="review-meta">Аккаунт-менеджер digital-агентства</div>
+            </div>
+        </div>
+    </div>
+    <div class="mini-case">
+        <strong>Кейс пилота:</strong> после перехода на расписание и шаблоны команда сократила ручные операции по публикациям
+        и согласованию в среднем на 5-7 часов в неделю.
+    </div>
+</section>
+
+<section class="landing-section" id="howItWorks">
+    <h2 class="page-title mb-2">Как это работает за 4 шага</h2>
+    <p class="section-lead">
+        Без “магии”: понятный поток внутри продукта — подключили аккаунты, подготовили контент, поставили в план,
+        получили публикацию и отчет.
+    </p>
+    <div class="row g-3">
+        <div class="col-md-6 col-xl-3">
+            <div class="step-card">
+                <span class="step-index">1</span>
+                <h5>Подключите аккаунты</h5>
+                <p class="mb-0 text-muted">Telegram/VK и другие сети, которые доступны в вашей конфигурации.</p>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-3">
+            <div class="step-card">
+                <span class="step-index">2</span>
+                <h5>Создайте или импортируйте контент</h5>
+                <p class="mb-0 text-muted">Черновики, шаблоны, медиатека и готовые заготовки для повторяемых рубрик.</p>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-3">
+            <div class="step-card">
+                <span class="step-index">3</span>
+                <h5>Настройте расписание</h5>
+                <p class="mb-0 text-muted">Таймслоты, автоповтор, календарь и кросспостинг с предпросмотром формата.</p>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-3">
+            <div class="step-card">
+                <span class="step-index">4</span>
+                <h5>Публикуйте и анализируйте</h5>
+                <p class="mb-0 text-muted">Статусы публикации, базовые метрики, экспорт и шаринг отчетов.</p>
+            </div>
+        </div>
+    </div>
+    <div class="time-to-value">
+        <i class="fas fa-stopwatch me-1"></i> Первый пост в системе можно запланировать примерно за 2 минуты.
+    </div>
+</section>
+
+<section class="landing-section">
+    <h2 class="page-title mb-2">Ключевые функции через выгоду</h2>
+    <p class="section-lead">
+        В фокусе не “фичи ради фич”, а измеримый результат: скорость запуска, стабильность публикаций и прозрачный контроль.
+    </p>
+    <div class="row g-3">
+        <div class="col-md-6 col-xl-4">
+            <div class="feature-card">
+                <h5><i class="fas fa-calendar-days me-2 text-primary"></i>Календарь и планировщик</h5>
+                <ul class="feature-list">
+                    <li>Таймслоты и автоповтор для серийных публикаций.</li>
+                    <li>Пакетная постановка в расписание.</li>
+                    <li>Быстрый контроль очереди постов.</li>
+                </ul>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-4">
+            <div class="feature-card">
+                <h5><i class="fas fa-share-nodes me-2 text-primary"></i>Кросспостинг и адаптация</h5>
+                <ul class="feature-list">
+                    <li>Адаптация длины текста под площадку.</li>
+                    <li>Предпросмотр перед публикацией.</li>
+                    <li>Базовые правила по хэштегам и форматам.</li>
+                </ul>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-4">
+            <div class="feature-card">
+                <h5><i class="fas fa-folder-tree me-2 text-primary"></i>Черновики, шаблоны, медиатека</h5>
+                <ul class="feature-list">
+                    <li>Единая база бренд-материалов и ссылок.</li>
+                    <li>Повторно используемые шаблоны контента.</li>
+                    <li>Поддержка UTM-меток в рабочих сценариях.</li>
+                </ul>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-4">
+            <div class="feature-card">
+                <h5><i class="fas fa-user-check me-2 text-primary"></i>Согласование для команд</h5>
+                <ul class="feature-list">
+                    <li>Роли, комментарии, история правок.</li>
+                    <li>Approval-флоу для бизнеса и агентств.</li>
+                    <li>Прозрачность “кто и что изменил”.</li>
+                </ul>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-4">
+            <div class="feature-card">
+                <h5><i class="fas fa-chart-column me-2 text-primary"></i>Аналитика и отчеты</h5>
+                <ul class="feature-list">
+                    <li>Базовые метрики: охват, реакция, динамика.</li>
+                    <li>Экспорт отчетов и быстрый шаринг.</li>
+                    <li>Сравнение каналов и периодов.</li>
+                </ul>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-4">
+            <div class="feature-card">
+                <h5><i class="fas fa-shield-halved me-2 text-primary"></i>Безопасность и доступы</h5>
+                <ul class="feature-list">
+                    <li>OAuth/токены, разграничение прав по ролям.</li>
+                    <li>Журнал клиентских и системных событий.</li>
+                    <li>Минимально необходимый доступ к аккаунтам.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="landing-section">
+    <h2 class="page-title mb-2">Отдельные сценарии для двух аудиторий</h2>
+    <p class="section-lead">
+        Разный контекст — разная ценность: компаниям важны контроль и отчетность, экспертам — скорость и регулярность.
+    </p>
+
+    <div class="segment-switch" role="tablist" aria-label="Сегментация аудитории">
+        <button class="segment-switch-btn active" type="button" data-segment="business">Для бизнеса</button>
+        <button class="segment-switch-btn" type="button" data-segment="experts">Для экспертов/авторов</button>
+    </div>
+
+    <div class="segment-view active" id="segment-business">
+        <div class="row g-3">
+            <div class="col-md-6">
+                <div class="segment-card">
+                    <h5><i class="fas fa-building me-2 text-primary"></i>Что болит</h5>
+                    <ul class="feature-list">
+                        <li>Несколько сотрудников и много каналов без единого контроля.</li>
+                        <li>Трудно согласовывать публикации и отслеживать ошибки.</li>
+                        <li>Нет прозрачной отчетности для руководителя/клиента.</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="segment-card">
+                    <h5><i class="fas fa-chart-line me-2 text-primary"></i>Что получаете</h5>
+                    <ul class="feature-list">
+                        <li>Ролевую модель, approval и историю изменений.</li>
+                        <li>Публикации по графику с понятными статусами.</li>
+                        <li>Регулярные отчеты и экспорт для менеджмента.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="segment-view" id="segment-experts">
+        <div class="row g-3">
+            <div class="col-md-6">
+                <div class="segment-card">
+                    <h5><i class="fas fa-user-pen me-2 text-primary"></i>Что болит</h5>
+                    <ul class="feature-list">
+                        <li>Нужна регулярность публикаций без потери времени.</li>
+                        <li>Сложно каждый раз собирать контент вручную.</li>
+                        <li>Нет структуры, когда каналов становится больше.</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="segment-card">
+                    <h5><i class="fas fa-gauge-high me-2 text-primary"></i>Что получаете</h5>
+                    <ul class="feature-list">
+                        <li>Быстрый запуск: шаблон → расписание → автопубликация.</li>
+                        <li>Стабильный контент-ритм и меньше “ручного режима”.</li>
+                        <li>Понятная аналитика для роста охвата и дисциплины.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="landing-section">
+    <h2 class="page-title mb-2">Интеграции и поддерживаемые платформы</h2>
+    <p class="section-lead">
+        Подключайте текущие соцсети, планируйте расширение и связывайте контент-контур с вашими инструментами.
+    </p>
+    <div class="integration-card mb-3">
+        <h5 class="mb-3">Соцсети</h5>
+        {% for network in supported_networks %}
+            <span class="integration-badge live">{{ network }}</span>
+        {% endfor %}
+        <span class="integration-badge soon">Instagram* (в проработке)</span>
+        <span class="integration-badge soon">YouTube Community (скоро)</span>
+    </div>
+    <div class="integration-card">
+        <h5 class="mb-3">Смежные интеграции</h5>
+        <span class="integration-badge">Canva</span>
+        <span class="integration-badge">Google Drive</span>
+        <span class="integration-badge">Bitly</span>
+        <span class="integration-badge">Telegram Bot</span>
+        <span class="integration-badge">CRM/Webhook</span>
+    </div>
+</section>
+
+<section class="landing-section" id="pricing">
+    <h2 class="page-title mb-2">Сколько это стоит</h2>
+    <p class="section-lead">
+        Прозрачные условия: понятные лимиты, без скрытых ограничений, trial {{ trial_days_default }} дней без привязки карты.
+        При оплате за год — до 20% экономии.
+    </p>
+    <div class="row g-3 mb-4">
+        <div class="col-md-6 col-xl-4">
+            <div class="pricing-card">
+                <h5>Starter</h5>
+                <div class="pricing-price">990₽</div>
+                <div class="pricing-subtext mb-3">до 3 каналов · 1 пользователь</div>
+                <ul class="pricing-list mb-4">
+                    <li><i class="fas fa-check"></i>До 60 постов/мес</li>
+                    <li><i class="fas fa-check"></i>Базовая аналитика</li>
+                    <li><i class="fas fa-check"></i>Шаблоны и черновики</li>
+                    <li><i class="fas fa-check"></i>Экспорт CSV</li>
+                </ul>
+                <a href="{{ url_for('register') if not current_user.is_authenticated else url_for('billing') }}" class="btn btn-outline-primary w-100">
+                    Выбрать Starter
+                </a>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-4">
+            <div class="pricing-card pricing-highlight">
+                <h5>Pro</h5>
+                <div class="pricing-price">2 990₽</div>
+                <div class="pricing-subtext mb-3">до 10 каналов · до 5 пользователей</div>
+                <ul class="pricing-list mb-4">
+                    <li><i class="fas fa-check"></i>До 300 постов/мес</li>
+                    <li><i class="fas fa-check"></i>Кросспостинг и адаптация формата</li>
+                    <li><i class="fas fa-check"></i>Расширенная аналитика</li>
+                    <li><i class="fas fa-check"></i>Базовый approval</li>
+                </ul>
+                <a href="{{ url_for('register') if not current_user.is_authenticated else url_for('billing') }}" class="btn btn-primary w-100">
+                    Выбрать Pro
+                </a>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-4">
+            <div class="pricing-card">
+                <h5>Business</h5>
+                <div class="pricing-price">5 990₽</div>
+                <div class="pricing-subtext mb-3">до 30 каналов · команда</div>
+                <ul class="pricing-list mb-4">
+                    <li><i class="fas fa-check"></i>Безлимитные посты</li>
+                    <li><i class="fas fa-check"></i>Полные роли и журнал действий</li>
+                    <li><i class="fas fa-check"></i>Продвинутый approval-процесс</li>
+                    <li><i class="fas fa-check"></i>Приоритетная поддержка</li>
+                </ul>
+                <a href="{{ url_for('register') if not current_user.is_authenticated else url_for('billing') }}" class="btn btn-outline-primary w-100">
+                    Выбрать Business
+                </a>
+            </div>
+        </div>
+    </div>
+    <div class="faq-note">
+        <strong>Нужен корпоративный контур?</strong> Отдельные требования по ИБ, SSO, SLA и кастомной отчетности можно обсудить на демо.
+        <a href="{{ specialist_telegram_link }}" target="_blank" class="btn btn-sm btn-outline-primary ms-2 mt-2 mt-md-0">
+            <i class="fab fa-telegram me-1"></i> Запросить демо для Enterprise
         </a>
     </div>
-</div>
-<div class="row">
-    <div class="col-md-3">
-        <div class="card bg-primary text-white mb-3">
-            <div class="card-body">
-                <h5 class="card-title"><i class="fas fa-broadcast-tower"></i> Каналы</h5>
-                <h2 class="card-text">{{ total_channels }}</h2>
-                <p class="card-text">активных каналов</p>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-3">
-        <div class="card bg-success text-white mb-3">
-            <div class="card-body">
-                <h5 class="card-title"><i class="fas fa-file-alt"></i> Контент</h5>
-                <h2 class="card-text">{{ total_content }}</h2>
-                <p class="card-text">всего статей</p>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-3">
-        <div class="card bg-warning text-white mb-3">
-            <div class="card-body">
-                <h5 class="card-title"><i class="fas fa-calendar-check"></i> Запланировано</h5>
-                <h2 class="card-text">{{ scheduled_content }}</h2>
-                <p class="card-text">предстоящих публикаций</p>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-3">
-        <div class="card bg-info text-white mb-3">
-            <div class="card-body">
-                <h5 class="card-title"><i class="fas fa-chart-line"></i> Конверсия</h5>
-                <h2 class="card-text">8.5%</h2>
-                <p class="card-text">средняя вовлеченность</p>
-            </div>
-        </div>
-    </div>
-</div>
+</section>
 
-<!-- Блок предстоящих публикаций -->
-<div class="row mt-4">
-    <div class="col-12">
-        <div class="card">
-            <div class="card-header">
-                <h5><i class="fas fa-calendar-alt"></i> Предстоящие публикации</h5>
+<section class="landing-section">
+    <h2 class="page-title mb-2">FAQ и работа с возражениями</h2>
+    <p class="section-lead">
+        Прозрачные ответы повышают доверие: что можно, какие ограничения есть и как защищаются доступы.
+    </p>
+
+    <div class="accordion mb-4" id="faqAccordion">
+        <div class="accordion-item">
+            <h2 class="accordion-header" id="faqOne">
+                <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#faqCollapseOne">
+                    Не заблокируют ли аккаунт за автопостинг?
+                </button>
+            </h2>
+            <div id="faqCollapseOne" class="accordion-collapse collapse show" data-bs-parent="#faqAccordion">
+                <div class="accordion-body">
+                    Публикации идут через официальные механики API/токенов платформ и ваши права доступа.
+                    Важно соблюдать правила самих соцсетей по частоте и типам контента.
+                </div>
             </div>
-            <div class="card-body">
-                {% if upcoming_posts %}
-                <div class="table-responsive">
-                    <table class="table table-hover">
-                        <thead>
-                            <tr>
-                                <th>Время</th>
-                                <th>Канал</th>
-                                <th>Тема</th>
-                                <th>Статус</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for post in upcoming_posts %}
-                            <tr>
-                                <td>{{ post.scheduled_time.strftime('%d.%m.%Y %H:%M') }}</td>
-                                <td>{{ post.channel.name if post.channel else 'Не указан' }}</td>
-                                <td>{{ post.content.title[:50] if post.content else 'Без названия' }}...</td>
-                                <td>
-                                    <span class="badge bg-warning">Запланировано</span>
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
+        </div>
+        <div class="accordion-item">
+            <h2 class="accordion-header" id="faqTwo">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faqCollapseTwo">
+                    Как вы храните доступы и токены?
+                </button>
+            </h2>
+            <div id="faqCollapseTwo" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
+                <div class="accordion-body">
+                    Используются ограниченные токены доступа, разграничение прав и журналы системных/клиентских событий.
+                    Критичные поля не логируются в открытом виде.
                 </div>
+            </div>
+        </div>
+        <div class="accordion-item">
+            <h2 class="accordion-header" id="faqThree">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faqCollapseThree">
+                    Какие сети и форматы поддерживаются сейчас?
+                </button>
+            </h2>
+            <div id="faqCollapseThree" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
+                <div class="accordion-body">
+                    Сейчас основной фокус на {{ supported_networks|join(", ") }}. Часть форматов (например stories/reels)
+                    может требовать доработки под конкретную платформу и API-ограничения.
+                </div>
+            </div>
+        </div>
+        <div class="accordion-item">
+            <h2 class="accordion-header" id="faqFour">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faqCollapseFour">
+                    Можно ли редактировать пост после планирования?
+                </button>
+            </h2>
+            <div id="faqCollapseFour" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
+                <div class="accordion-body">
+                    Да, до момента фактической отправки пост можно обновить в плане.
+                    Для команд доступна история правок и контроль изменений.
+                </div>
+            </div>
+        </div>
+        <div class="accordion-item">
+            <h2 class="accordion-header" id="faqFive">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faqCollapseFive">
+                    Есть ли trial, поддержка и возврат?
+                </button>
+            </h2>
+            <div id="faqCollapseFive" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
+                <div class="accordion-body">
+                    Trial действует {{ trial_days_default }} дней без привязки карты. Поддержка доступна в рабочем контуре.
+                    Условия оплаты и возврата фиксируются в оферте/договоре.
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="faq-note">
+        <strong>Честные ограничения:</strong> набор форматов и глубина автопубликации зависит от API конкретной соцсети.
+        Мы явно показываем, что доступно сейчас, а что в роадмапе.
+    </div>
+</section>
+
+<section class="landing-section">
+    <div class="card border-0 shadow-sm">
+        <div class="card-body p-4 p-lg-5 text-center">
+            <h2 class="page-title mb-2">Запустите первый поток публикаций уже сегодня</h2>
+            <p class="section-lead mx-auto mb-3">
+                Подключите канал, поставьте публикации в план и получите первый отчет в этот же день.
+            </p>
+            <div class="d-flex flex-wrap justify-content-center gap-2">
+                {% if current_user.is_authenticated %}
+                    <a href="{{ url_for('channels') }}" class="btn btn-primary">
+                        <i class="fas fa-broadcast-tower me-1"></i> Открыть каналы
+                    </a>
                 {% else %}
-                <div class="text-center py-4 text-muted">
-                    <i class="fas fa-calendar-times fa-2x"></i>
-                    <p class="mt-2">Нет запланированных публикаций</p>
-                </div>
+                    <a href="{{ url_for('register') }}" class="btn btn-primary">
+                        <i class="fas fa-rocket me-1"></i> Попробовать бесплатно
+                    </a>
+                    <a href="{{ url_for('login') }}" class="btn btn-outline-primary">
+                        <i class="fas fa-sign-in-alt me-1"></i> Войти в кабинет
+                    </a>
                 {% endif %}
             </div>
         </div>
     </div>
+</section>
+
+<section class="landing-section">
+    <h2 class="page-title mb-2">Футер доверия: контакты и юридическая прозрачность</h2>
+    <p class="section-lead">Ключевая информация, которую ожидают увидеть на сервисе автопостинга.</p>
+    <div class="trust-grid">
+        <div class="trust-card">
+            <h6><i class="fas fa-address-book me-1"></i> Контакты</h6>
+            <ul>
+                <li>support@snoomi.ru</li>
+                <li>Telegram: @snoomi_support</li>
+                <li>Ответ в рабочие часы</li>
+            </ul>
+        </div>
+        <div class="trust-card">
+            <h6><i class="fas fa-scale-balanced me-1"></i> Юридическая часть</h6>
+            <ul>
+                <li>Политика обработки данных</li>
+                <li>Публичная оферта</li>
+                <li>Условия trial и тарифа</li>
+            </ul>
+        </div>
+        <div class="trust-card">
+            <h6><i class="fas fa-shield me-1"></i> Безопасность</h6>
+            <ul>
+                <li>Роли и разграничение доступов</li>
+                <li>Журналы действий</li>
+                <li>Ограниченные токены доступа</li>
+            </ul>
+        </div>
+        <div class="trust-card">
+            <h6><i class="fas fa-book-open me-1"></i> Поддержка и база знаний</h6>
+            <ul>
+                <li>FAQ по подключению сетей</li>
+                <li>Инструкции по токенам</li>
+                <li>Роадмап “что скоро”</li>
+            </ul>
+        </div>
+    </div>
+</section>
+
+<div class="modal fade" id="demoModal" tabindex="-1" aria-labelledby="demoModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="demoModalLabel">
+                    <i class="fas fa-circle-play me-2"></i>Демо: сценарий автопостинга за 15-30 секунд
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+            </div>
+            <div class="modal-body">
+                <video class="w-100 rounded mb-3" controls preload="none" playsinline>
+                    <source src="{{ url_for('static', filename='media/demo-autopost-22s.mp4') }}" type="video/mp4">
+                    Ваш браузер не поддерживает видео.
+                </video>
+                <div class="faq-note">
+                    <strong>Сценарий демо:</strong> создали пост → поставили в расписание → получили публикацию →
+                    проверили отчет и экспортировали данные.
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    (function () {
+        const switchButtons = document.querySelectorAll('.segment-switch-btn');
+        const views = {
+            business: document.getElementById('segment-business'),
+            experts: document.getElementById('segment-experts')
+        };
+
+        function setSegment(segment) {
+            switchButtons.forEach((btn) => {
+                const isActive = btn.dataset.segment === segment;
+                btn.classList.toggle('active', isActive);
+                btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+            });
+            Object.entries(views).forEach(([key, view]) => {
+                if (!view) return;
+                view.classList.toggle('active', key === segment);
+            });
+        }
+
+        switchButtons.forEach((btn) => {
+            btn.addEventListener('click', () => setSegment(btn.dataset.segment || 'business'));
+        });
+
+        setSegment('business');
+    })();
+</script>
 {% endblock %}

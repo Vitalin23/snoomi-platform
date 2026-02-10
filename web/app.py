@@ -1331,7 +1331,30 @@ def logout():
 # -------------------- ОСНОВНЫЕ СТРАНИЦЫ --------------------
 @app.route("/")
 def index():
-    return render_template("index.html")
+    try:
+        total_posts = ChannelPost.query.count()
+        active_clients = Client.query.filter_by(status="active").count()
+        active_channels = ClientChannel.query.filter_by(is_active=True).count()
+    except Exception as exc:
+        system_logger.warning("index_metrics_fallback error=%s", exc)
+        total_posts = 0
+        active_clients = 0
+        active_channels = 0
+
+    supported_networks = []
+    if "telegram" in SUPPORTED_PLATFORMS:
+        supported_networks.append("Telegram")
+    if "vk" in SUPPORTED_PLATFORMS:
+        supported_networks.append("ВКонтакте")
+
+    return render_template(
+        "index.html",
+        total_posts=total_posts,
+        active_clients=active_clients,
+        active_channels=active_channels,
+        supported_networks=supported_networks,
+        trial_days_default=14 if 14 in TRIAL_OPTIONS_DAYS else min(TRIAL_OPTIONS_DAYS),
+    )
 
 
 @app.route("/dashboard")
