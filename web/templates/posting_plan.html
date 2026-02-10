@@ -1,0 +1,383 @@
+{% extends "layout.html" %}
+
+{% block title %}Snoomi Platform - Шаг 3: Календарь публикаций{% endblock %}
+
+{% block extra_css %}
+<style>
+    .plan-row-input {
+        min-width: 150px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title"><i class="fas fa-calendar-check me-2"></i>Шаг 3. Календарь публикаций</h1>
+        <p class="page-subtitle">Сформируйте расписание публикаций на базе тем и частоты канала.</p>
+    </div>
+</div>
+
+{% if not channels %}
+<div class="card content-card">
+    <div class="card-body">
+        <div class="operator-empty-state">
+            <i class="fas fa-plug-circle-xmark"></i>
+            <h6>Нет активных каналов для планирования</h6>
+            <p>Сначала завершите шаг 1 и шаг 2, затем вернитесь к календарю публикаций.</p>
+            <a href="{{ url_for('channels') }}" class="btn btn-primary">
+                <i class="fas fa-arrow-left me-1"></i>К шагу 1
+            </a>
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="row g-4">
+    <div class="col-xl-4">
+        <div class="card content-card h-100">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="fas fa-cogs me-1"></i>Параметры календаря</h5>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="form-label">Канал *</label>
+                    <select class="form-control" id="planChannelSelect">
+                        {% for channel in channels %}
+                        <option
+                            value="{{ channel.id }}"
+                            data-frequency="{{ channel.publish_frequency or 'daily' }}"
+                            data-hour="{{ channel.publish_hour if channel.publish_hour is not none else 10 }}"
+                        >
+                            {{ channel.channel_name }} ({{ channel.platform|upper }})
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Дата старта</label>
+                    <input type="date" class="form-control" id="planStartDate">
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Частота</label>
+                    <select class="form-control" id="planFrequency">
+                        <option value="daily">Каждый день</option>
+                        <option value="every_other_day">Через день</option>
+                        <option value="every_two_days">Через 2 дня</option>
+                    </select>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Час публикации</label>
+                    <input type="number" min="0" max="23" class="form-control" id="planHour" value="10">
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Количество публикаций</label>
+                    <input type="number" min="1" max="60" class="form-control" id="planCount" value="14">
+                </div>
+
+                <div class="d-grid gap-2">
+                    <button type="button" class="btn btn-primary" id="planPreviewBtn">
+                        <i class="fas fa-calendar-day me-1"></i>Сформировать календарь
+                    </button>
+                    <a href="{{ url_for('posting_setup') }}" class="btn btn-outline-primary">
+                        <i class="fas fa-arrow-left me-1"></i>Вернуться к шагу 2
+                    </a>
+                    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">
+                        <i class="fas fa-tachometer-alt me-1"></i>В дашборд
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-xl-8">
+        <div class="card content-card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="fas fa-list-check me-1"></i>План публикаций</h5>
+                <span class="badge bg-light text-dark" id="planItemsCount">0 публикаций</span>
+            </div>
+            <div class="card-body">
+                <div id="planResultBox"></div>
+
+                <div class="table-shell">
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover align-middle">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Дата</th>
+                                    <th>Время</th>
+                                    <th>Тема</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody id="planItemsBody">
+                                <tr>
+                                    <td colspan="5">
+                                        <div class="operator-empty-state">
+                                            <i class="fas fa-calendar-plus"></i>
+                                            <h6>Календарь пока не построен</h6>
+                                            <p>Нажмите “Сформировать календарь” и проверьте предложенные публикации.</p>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="d-flex flex-wrap gap-2 mt-3">
+                    <button type="button" class="btn btn-outline-primary" id="planAddRowBtn">
+                        <i class="fas fa-plus me-1"></i>Добавить строку
+                    </button>
+                    <button type="button" class="btn btn-success" id="planSaveBtn">
+                        <i class="fas fa-save me-1"></i>Сохранить черновик календаря
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+{% if channels %}
+<script>
+    let postingPlanItems = [];
+
+    function escapeHtml(value) {
+        return (value || "")
+            .toString()
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+    }
+
+    function planMessage(text, kind) {
+        const cls = kind === "success" ? "success" : (kind === "warning" ? "warning" : "danger");
+        document.getElementById("planResultBox").innerHTML = `
+            <div class="alert alert-${cls} mb-3">${escapeHtml(text)}</div>
+        `;
+    }
+
+    function updatePlanCount() {
+        const count = postingPlanItems.length;
+        const suffix = count === 1 ? "публикация" : (count >= 2 && count <= 4 ? "публикации" : "публикаций");
+        document.getElementById("planItemsCount").textContent = `${count} ${suffix}`;
+    }
+
+    function frequencyToInterval(frequency) {
+        if (frequency === "every_other_day") return 2;
+        if (frequency === "every_two_days") return 3;
+        return 1;
+    }
+
+    function syncChannelDefaults() {
+        const channelSelect = document.getElementById("planChannelSelect");
+        const selected = channelSelect.options[channelSelect.selectedIndex];
+        const frequency = selected?.dataset?.frequency || "daily";
+        const hour = selected?.dataset?.hour || "10";
+        document.getElementById("planFrequency").value = frequency;
+        document.getElementById("planHour").value = hour;
+    }
+
+    function renderPlanRows() {
+        const tbody = document.getElementById("planItemsBody");
+        updatePlanCount();
+        if (!postingPlanItems.length) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="5">
+                        <div class="operator-empty-state">
+                            <i class="fas fa-calendar-plus"></i>
+                            <h6>Список публикаций пуст</h6>
+                            <p>Сформируйте календарь или добавьте строки вручную.</p>
+                        </div>
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+
+        tbody.innerHTML = postingPlanItems.map((item, idx) => `
+            <tr>
+                <td>${idx + 1}</td>
+                <td>
+                    <input
+                        type="date"
+                        class="form-control form-control-sm plan-row-input"
+                        value="${escapeHtml(item.publish_date || '')}"
+                        onchange="updatePlanItemDate(${idx}, this.value)"
+                    >
+                </td>
+                <td>
+                    <input
+                        type="time"
+                        class="form-control form-control-sm plan-row-input"
+                        value="${escapeHtml(item.publish_time || '10:00')}"
+                        onchange="updatePlanItemTime(${idx}, this.value)"
+                    >
+                </td>
+                <td>
+                    <input
+                        type="text"
+                        class="form-control form-control-sm"
+                        value="${escapeHtml(item.topic || '')}"
+                        onchange="updatePlanItemTopic(${idx}, this.value)"
+                    >
+                </td>
+                <td>
+                    <button class="btn btn-sm btn-outline-danger" type="button" onclick="removePlanItem(${idx})">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </td>
+            </tr>
+        `).join("");
+    }
+
+    function updatePlanItemDate(index, value) {
+        if (!postingPlanItems[index]) return;
+        postingPlanItems[index].publish_date = (value || "").trim();
+    }
+
+    function updatePlanItemTime(index, value) {
+        if (!postingPlanItems[index]) return;
+        postingPlanItems[index].publish_time = (value || "").trim();
+    }
+
+    function updatePlanItemTopic(index, value) {
+        if (!postingPlanItems[index]) return;
+        postingPlanItems[index].topic = (value || "").trim();
+    }
+
+    function removePlanItem(index) {
+        postingPlanItems.splice(index, 1);
+        renderPlanRows();
+    }
+
+    function addPlanRow() {
+        const frequency = document.getElementById("planFrequency").value;
+        const interval = frequencyToInterval(frequency);
+        const hour = String(Math.min(Math.max(Number(document.getElementById("planHour").value || 10), 0), 23)).padStart(2, "0");
+
+        let nextDate = new Date();
+        if (postingPlanItems.length) {
+            const lastItem = postingPlanItems[postingPlanItems.length - 1];
+            const datePart = lastItem.publish_date || "";
+            const parsed = new Date(`${datePart}T00:00:00`);
+            if (!Number.isNaN(parsed.getTime())) {
+                nextDate = parsed;
+                nextDate.setDate(nextDate.getDate() + interval);
+            }
+        }
+        const nextDateIso = nextDate.toISOString().slice(0, 10);
+
+        postingPlanItems.push({
+            publish_date: nextDateIso,
+            publish_time: `${hour}:00`,
+            topic: "Новая тема публикации"
+        });
+        renderPlanRows();
+    }
+
+    async function generatePlanPreview() {
+        const channelId = document.getElementById("planChannelSelect").value;
+        const startDate = document.getElementById("planStartDate").value;
+        const postsCount = Number(document.getElementById("planCount").value || 14);
+        const publishFrequency = document.getElementById("planFrequency").value;
+        const publishHour = Number(document.getElementById("planHour").value || 10);
+        const button = document.getElementById("planPreviewBtn");
+
+        button.disabled = true;
+        button.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Собираем...';
+        document.getElementById("planResultBox").innerHTML = "";
+
+        try {
+            const response = await fetch("/api/posting-plan/preview", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    channel_id: channelId,
+                    start_date: startDate,
+                    posts_count: postsCount,
+                    publish_frequency: publishFrequency,
+                    publish_hour: publishHour
+                })
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                planMessage(data.error || "Не удалось сформировать календарь публикаций", "danger");
+                return;
+            }
+
+            postingPlanItems = (data.plan_items || []).map((item) => ({
+                publish_date: item.publish_date || "",
+                publish_time: item.publish_time || "10:00",
+                topic: item.topic || ""
+            }));
+            renderPlanRows();
+            planMessage(`Календарь сформирован: ${postingPlanItems.length} публикаций. Проверьте и сохраните.`, "success");
+        } catch (error) {
+            planMessage(`Ошибка сети: ${error}`, "danger");
+        } finally {
+            button.disabled = false;
+            button.innerHTML = '<i class="fas fa-calendar-day me-1"></i>Сформировать календарь';
+        }
+    }
+
+    async function savePlanDraft() {
+        const channelId = document.getElementById("planChannelSelect").value;
+        const publishFrequency = document.getElementById("planFrequency").value;
+        const publishHour = Number(document.getElementById("planHour").value || 10);
+        const button = document.getElementById("planSaveBtn");
+
+        if (!postingPlanItems.length) {
+            planMessage("Добавьте хотя бы одну публикацию перед сохранением.", "warning");
+            return;
+        }
+
+        button.disabled = true;
+        button.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Сохраняем...';
+        try {
+            const response = await fetch("/api/posting-plan/save", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    channel_id: channelId,
+                    publish_frequency: publishFrequency,
+                    publish_hour: publishHour,
+                    plan_items: postingPlanItems
+                })
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                planMessage(data.error || "Не удалось сохранить календарь", "danger");
+                return;
+            }
+            planMessage(`Черновик сохранен: ${data.saved_items} публикаций для канала «${data.channel_name}».`, "success");
+        } catch (error) {
+            planMessage(`Ошибка сети: ${error}`, "danger");
+        } finally {
+            button.disabled = false;
+            button.innerHTML = '<i class="fas fa-save me-1"></i>Сохранить черновик календаря';
+        }
+    }
+
+    document.getElementById("planChannelSelect").addEventListener("change", syncChannelDefaults);
+    document.getElementById("planPreviewBtn").addEventListener("click", generatePlanPreview);
+    document.getElementById("planAddRowBtn").addEventListener("click", addPlanRow);
+    document.getElementById("planSaveBtn").addEventListener("click", savePlanDraft);
+
+    const today = new Date().toISOString().slice(0, 10);
+    document.getElementById("planStartDate").value = today;
+    syncChannelDefaults();
+    renderPlanRows();
+</script>
+{% endif %}
+{% endblock %}

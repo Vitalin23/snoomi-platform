@@ -127,6 +127,11 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('posting_plan') }}">
+                            <i class="fas fa-calendar-check"></i> Шаг 3
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link" href="{{ url_for('statistics') }}">
                             <i class="fas fa-chart-bar"></i> Аналитика
                         </a>
@@ -190,6 +195,9 @@
                 {% if channels %}
                 <a href="{{ url_for('posting_setup') }}" class="btn btn-primary">
                     <i class="fas fa-arrow-right me-1"></i>Шаг 2: настройка постинга
+                </a>
+                <a href="{{ url_for('posting_plan') }}" class="btn btn-outline-primary">
+                    <i class="fas fa-calendar-check me-1"></i>Шаг 3: календарь публикаций
                 </a>
                 {% endif %}
                 <a href="{{ specialist_telegram_link }}" target="_blank" class="btn btn-warning">

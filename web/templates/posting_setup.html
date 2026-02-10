@@ -86,6 +86,9 @@
                     <button type="button" class="btn btn-primary" id="plannerGenerateBtn">
                         <i class="fas fa-wand-magic-sparkles me-1"></i>Сгенерировать темы
                     </button>
+                    <a href="{{ url_for('posting_plan') }}" class="btn btn-outline-primary">
+                        <i class="fas fa-calendar-check me-1"></i>Шаг 3: календарь публикаций
+                    </a>
                     <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">
                         <i class="fas fa-tachometer-alt me-1"></i>Перейти в дашборд
                     </a>
@@ -104,22 +107,14 @@
                 <div id="plannerResultBox"></div>
 
                 <div class="alert alert-secondary" id="plannerInsightsBox" style="display:none;">
-                    <div><strong>Источник генерации:</strong> <span id="plannerSource">—</span></div>
                     <div><strong>Канал:</strong> <span id="plannerChannelName">—</span></div>
-                    <div class="mt-1"><strong>Стилистика:</strong> <span id="plannerStyleSummary">—</span></div>
-                    <div class="mt-1"><strong>Ядро тематики:</strong> <span id="plannerSemanticCore">—</span></div>
-                    <div class="mt-1"><strong>Ключевые слова:</strong> <span id="plannerKeywords">—</span></div>
-                    <div class="mt-1"><strong>Поисковые запросы:</strong> <span id="plannerSearchQueries">—</span></div>
+                    <div class="mt-1"><strong>Тематика канала:</strong> <span id="plannerSemanticCore">—</span></div>
+                    <div class="mt-1"><strong>Ориентир по стилю:</strong> <span id="plannerStyleSummary">—</span></div>
                 </div>
 
                 <div class="alert alert-info" id="plannerQuestionsBox" style="display:none;">
-                    <strong>Актуальные вопросы аудитории:</strong>
+                    <strong>Топ-5 актуальных вопросов аудитории:</strong>
                     <ul class="mb-0 mt-2" id="plannerQuestionsList"></ul>
-                </div>
-
-                <div class="alert alert-light border" id="plannerProcessBox" style="display:none;">
-                    <strong>Как формируется результат “Сгенерировать темы”:</strong>
-                    <ol class="mb-0 mt-2" id="plannerProcessList"></ol>
                 </div>
 
                 <div id="plannerTopicsContainer">
@@ -176,58 +171,35 @@
         const insights = document.getElementById("plannerInsightsBox");
         const hasData = payload && (
             payload.style_summary ||
-            (payload.keywords || []).length ||
             (payload.semantic_core || []).length
         );
         if (!hasData) {
             insights.style.display = "none";
             document.getElementById("plannerQuestionsBox").style.display = "none";
-            document.getElementById("plannerProcessBox").style.display = "none";
             return;
         }
         insights.style.display = "";
-        const sourceMode = payload.source || "unknown";
-        const sourceLabel = sourceMode === "yandexgpt_web_search"
-            ? "YandexGPT + web search"
-            : "Резервный режим (эвристика + публичный web-поиск)";
-        document.getElementById("plannerSource").textContent = sourceLabel;
         document.getElementById("plannerChannelName").textContent = payload.channel_name || "—";
         document.getElementById("plannerStyleSummary").textContent = payload.style_summary || "Без явного стилевого маркера";
         document.getElementById("plannerSemanticCore").textContent = (payload.semantic_core || []).slice(0, 6).join(" · ") || "—";
-        document.getElementById("plannerKeywords").textContent = (payload.keywords || []).slice(0, 12).join(", ") || "—";
-        document.getElementById("plannerSearchQueries").textContent = (payload.search_queries || []).slice(0, 6).join(" | ") || "—";
 
         const questions = payload.actual_questions || [];
         const questionsBox = document.getElementById("plannerQuestionsBox");
         const questionsList = document.getElementById("plannerQuestionsList");
         if (questions.length) {
             questionsList.innerHTML = questions
-                .slice(0, 12)
+                .slice(0, 5)
                 .map((questionItem) => {
                     const questionText = typeof questionItem === "string"
                         ? questionItem
                         : (questionItem.question || "");
-                    const sourceHint = typeof questionItem === "string"
-                        ? ""
-                        : (questionItem.source_hint || "");
-                    return `<li>${escapeHtml(questionText)}${sourceHint ? ` <span class="text-muted">(${escapeHtml(sourceHint)})</span>` : ""}</li>`;
+                    return `<li>${escapeHtml(questionText)}</li>`;
                 })
                 .join("");
             questionsBox.style.display = "";
         } else {
             questionsList.innerHTML = "";
             questionsBox.style.display = "none";
-        }
-
-        const processSteps = payload.process_steps || [];
-        const processBox = document.getElementById("plannerProcessBox");
-        const processList = document.getElementById("plannerProcessList");
-        if (processSteps.length) {
-            processList.innerHTML = processSteps.map((step) => `<li>${escapeHtml(step)}</li>`).join("");
-            processBox.style.display = "";
-        } else {
-            processList.innerHTML = "";
-            processBox.style.display = "none";
         }
     }
 
@@ -247,26 +219,41 @@
         }
 
         container.innerHTML = plannedTopics.map((topic, idx) => {
-            const safeTitle = (topic.title || "").replace(/"/g, "&quot;");
+            const safeTitle = escapeHtml(topic.title || "");
+            const safeKeyword = escapeHtml(topic.keyword || "");
             const questions = (topic.questions || [])
-                .map((q) => `<li>${q}</li>`)
+                .map((q) => `<li>${escapeHtml(q)}</li>`)
                 .join("");
+            const safeRationale = escapeHtml(topic.rationale || "");
+            const collapseId = `topicDetails_${idx}`;
+            const hasDetails = Boolean(questions || safeRationale);
             return `
                 <div class="topic-item-card p-3 mb-3" data-idx="${idx}">
-                    <div class="d-flex justify-content-between align-items-start gap-2">
-                        <div class="topic-meta">Тема #${idx + 1}${topic.keyword ? ` · ключ: ${topic.keyword}` : ""}</div>
-                        <button class="btn btn-sm btn-outline-danger" type="button" onclick="removeTopic(${idx})">
-                            <i class="fas fa-trash"></i>
-                        </button>
+                    <div class="d-flex justify-content-between align-items-center gap-2 mb-2">
+                        <div class="topic-meta">Тема #${idx + 1}${safeKeyword ? ` · ${safeKeyword}` : ""}</div>
+                        <div class="d-flex gap-2">
+                            ${hasDetails ? `
+                            <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}">
+                                <i class="fas fa-chevron-down me-1"></i>Пояснение
+                            </button>
+                            ` : ""}
+                            <button class="btn btn-sm btn-outline-danger" type="button" onclick="removeTopic(${idx})">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </div>
                     </div>
-                    <textarea
-                        class="form-control mt-2 planner-topic-title"
-                        rows="2"
+                    <input
+                        class="form-control planner-topic-title"
                         data-idx="${idx}"
+                        value="${safeTitle}"
                         onchange="updateTopicTitle(${idx}, this.value)"
-                    >${safeTitle}</textarea>
-                    ${questions ? `<ul class="mt-2 mb-0 small">${questions}</ul>` : ""}
-                    ${topic.rationale ? `<div class="topic-meta mt-2">${topic.rationale}</div>` : ""}
+                    />
+                    ${hasDetails ? `
+                    <div class="collapse mt-2" id="${collapseId}">
+                        ${questions ? `<ul class="mb-2 small">${questions}</ul>` : ""}
+                        ${safeRationale ? `<div class="topic-meta">${safeRationale}</div>` : ""}
+                    </div>
+                    ` : ""}
                 </div>
             `;
         }).join("");

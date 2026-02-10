@@ -1497,6 +1497,29 @@ def _fetch_public_web_question_hints(query_text, limit=12):
     return _normalize_actual_questions(raw_questions, limit=limit)
 
 
+def _collect_top_web_questions(query_candidates, limit=5):
+    merged_questions = []
+    normalized_queries = _normalize_phrase_list(query_candidates, limit=12)
+    current_year = datetime.utcnow().year
+
+    for base_query in normalized_queries:
+        # Приоритет актуальности: сначала запрос с текущим годом.
+        query_variants = [
+            f"{base_query} {current_year} вопросы аудитории",
+            f"{base_query} актуальные вопросы аудитории",
+            base_query,
+        ]
+        for query in query_variants:
+            hints = _fetch_public_web_question_hints(query, limit=max(limit * 2, 10))
+            merged_questions = _normalize_actual_questions(
+                [*merged_questions, *hints],
+                limit=limit,
+            )
+            if len(merged_questions) >= limit:
+                return merged_questions[:limit]
+    return merged_questions[:limit]
+
+
 def _ai_topic_plan_with_web_search(
     channel_name,
     platform,
@@ -1521,6 +1544,7 @@ def _ai_topic_plan_with_web_search(
         if post_text:
             posts_block.append(f"{idx}. {post_text[:450]}")
     posts_text = "\n".join(posts_block) if posts_block else "Посты недоступны."
+    current_year = datetime.utcnow().year
 
     prompt = f"""
 Сформируй контент-план для канала. Работай как стратег-контентолог.
@@ -1529,6 +1553,8 @@ def _ai_topic_plan_with_web_search(
 1) Сначала выдели ЕДИНУЮ тематику канала (ниша, ЦА, задачи), не распадай ее на отдельные несвязанные ключи.
 2) Используй web search, чтобы найти актуальные вопросы аудитории по этой тематике.
 3) Верни результат СТРОГО в JSON (без markdown и комментариев).
+4) Приоритет по данным: актуальные материалы {current_year} года и последних 12 месяцев.
+5) Устаревшие примеры (2024 и ранее) включай только если это базовая справка, а не тренд.
 
 Формат JSON:
 {{
@@ -1642,6 +1668,7 @@ def _build_topic_planner_payload(channel, focus_text="", desired_count=8):
     desired_count = min(max(int(desired_count or 8), 3), 20)
     focus_text = (focus_text or "").strip()
     extra = _channel_extra_config(channel)
+    current_year = datetime.utcnow().year
 
     channel_client_description = (extra.get("channel_description") or "").strip()
     channel_external_description = (extra.get("channel_external_description") or "").strip()
@@ -1652,26 +1679,19 @@ def _build_topic_planner_payload(channel, focus_text="", desired_count=8):
     if not recent_posts and channel_external_description:
         recent_posts = [channel_external_description]
 
-    process_steps = [
-        "Собираем полный контекст канала: описание клиента, публичное описание и последние посты.",
-    ]
-
     style_profile = _ai_style_profile(
         channel_name=channel.channel_name,
         platform=channel.platform,
         channel_description=channel_external_description or channel_client_description,
         recent_posts=recent_posts,
     )
-    if style_profile:
-        process_steps.append("Стиль и тон канала определены через YandexGPT-анализ последних публикаций.")
-    else:
+    if not style_profile:
         style_profile = _heuristic_style_profile(
             channel_name=channel.channel_name,
             platform=channel.platform,
             channel_description=channel_external_description or channel_client_description,
             recent_posts=recent_posts,
         )
-        process_steps.append("YandexGPT-анализ недоступен, применен эвристический анализ стиля канала.")
 
     style_summary = (style_profile.get("summary") or "").strip()
     semantic_core = []
@@ -1694,51 +1714,18 @@ def _build_topic_planner_payload(channel, focus_text="", desired_count=8):
     if ai_plan:
         source_mode = "yandexgpt_web_search"
         semantic_core = ai_plan.get("semantic_core") or []
-        actual_questions = ai_plan.get("actual_questions") or []
         search_queries = ai_plan.get("search_queries") or []
         topic_items = ai_plan.get("topics") or []
 
-        min_questions = max(6, desired_count)
-        if len(actual_questions) < min_questions:
-            query_for_boost = " ".join(search_queries[:2]) or " ".join(semantic_core[:2]) or channel.channel_name
-            boosted_questions = _fetch_public_web_question_hints(query_for_boost, limit=min_questions)
-            actual_questions = _normalize_actual_questions(
-                [*actual_questions, *boosted_questions],
-                limit=min_questions + 6,
-            )
-            if boosted_questions:
-                process_steps.append(
-                    "Список вопросов дополнен публичным веб-поиском для расширения охвата аудитории."
-                )
-
-        if len(actual_questions) < min_questions:
-            fallback_core = semantic_core or [channel.channel_name]
-            template_questions = []
-            for semantic_item in fallback_core:
-                template_questions.extend(
-                    [
-                        f"С чего начать работу по теме «{semantic_item}»?",
-                        f"Какие частые ошибки встречаются в теме «{semantic_item}»?",
-                        f"Какие практические шаги дают результат в «{semantic_item}»?",
-                    ]
-                )
-            actual_questions = _normalize_actual_questions(
-                [*actual_questions, *template_questions],
-                limit=min_questions + 6,
-            )
-
-        process_steps.extend(
-            [
-                "YandexGPT выделил единую тематическую ось канала (semantic core).",
-                "Через web search собраны актуальные вопросы аудитории по тематике канала.",
-                "На базе тематики + вопросов сформирован список тем для публикаций.",
-            ]
-        )
+        query_candidates = [
+            *search_queries,
+            *semantic_core,
+            f"{channel.channel_name} {focus_text} {current_year}".strip(),
+            f"{channel.channel_name} {current_year}".strip(),
+            channel.channel_name,
+        ]
+        actual_questions = _collect_top_web_questions(query_candidates, limit=5)
     else:
-        process_steps.append(
-            "YandexGPT web-search недоступен: построение плана выполнено в резервном режиме."
-        )
-
         semantic_seed_text = " ".join(
             part
             for part in [
@@ -1768,46 +1755,47 @@ def _build_topic_planner_payload(channel, focus_text="", desired_count=8):
             limit=7,
         )
         query_text = " ".join(query_keywords[:5]) or channel.channel_name
-        search_queries = [query_text]
-        actual_questions = _fetch_public_web_question_hints(
+        search_queries = [
+            f"{query_text} {current_year}",
+            f"{query_text} актуальные вопросы аудитории",
             query_text,
-            limit=max(desired_count + 4, 10),
+        ]
+        actual_questions = _collect_top_web_questions(
+            [*search_queries, *semantic_core, channel.channel_name],
+            limit=5,
         )
-        if actual_questions:
-            process_steps.append("Для актуальных вопросов использован публичный веб-поиск по теме канала.")
-        else:
-            actual_questions = _normalize_actual_questions(
-                [
-                    f"Какие ключевые проблемы аудитории в теме «{semantic_core[0]}»?",
-                    f"Что чаще всего спрашивают подписчики про «{semantic_core[0]}»?",
-                    f"Какие ошибки мешают получить результат в «{semantic_core[0]}»?",
-                ],
-                limit=8,
-            )
-            process_steps.append(
-                "Публичный веб-поиск недоступен, использованы вопросы из тематического шаблона."
-            )
 
         for idx in range(desired_count):
             semantic_vector = semantic_core[idx % len(semantic_core)]
             base_question = actual_questions[idx % len(actual_questions)] if actual_questions else {}
             question_text = (base_question.get("question") or "").strip()
-
             if question_text:
                 short_question = question_text.rstrip("?")
                 title = f"{semantic_vector}: {short_question[:95]}"
+                questions = [question_text]
             else:
                 title = f"Практический разбор по теме «{semantic_vector}»"
-
+                questions = []
             topic_items.append(
                 {
                     "id": idx + 1,
                     "title": title,
                     "keyword": semantic_vector,
-                    "questions": [question_text] if question_text else [],
-                    "rationale": (
-                        "Тема построена из общего контекста канала и подтверждена актуальными вопросами аудитории."
-                    ),
+                    "questions": questions,
+                    "rationale": "Тема сформирована на базе тематики канала и текущего спроса аудитории.",
+                }
+            )
+
+    if not topic_items:
+        semantic_stub = semantic_core[0] if semantic_core else channel.channel_name
+        for idx in range(desired_count):
+            topic_items.append(
+                {
+                    "id": idx + 1,
+                    "title": f"{semantic_stub}: выпуск #{idx + 1}",
+                    "keyword": semantic_stub,
+                    "questions": [],
+                    "rationale": "",
                 }
             )
 
@@ -1823,11 +1811,10 @@ def _build_topic_planner_payload(channel, focus_text="", desired_count=8):
         "style_summary": style_summary,
         "keywords": keywords_for_ui,
         "semantic_core": semantic_core[:12],
-        "actual_questions": actual_questions[:20],
+        "actual_questions": actual_questions[:5],
         "search_queries": search_queries[:10],
         "topics": topic_items[:desired_count],
         "source": source_mode,
-        "process_steps": process_steps,
     }
 
 
@@ -1846,6 +1833,158 @@ def _normalize_topic_items(raw_topics):
             continue
         normalized.append(title)
         if len(normalized) >= 30:
+            break
+    return normalized
+
+
+def _frequency_to_interval_days(publish_frequency):
+    normalized = _normalize_frequency(publish_frequency) or "daily"
+    return {
+        "daily": 1,
+        "every_other_day": 2,
+        "every_two_days": 3,
+    }.get(normalized, 1)
+
+
+def _extract_channel_topics_for_plan(channel):
+    topics = []
+    seen = set()
+
+    active_topics = (
+        ChannelTopic.query.filter_by(channel_id=channel.id, is_active=True)
+        .order_by(ChannelTopic.priority.desc(), ChannelTopic.created_at.asc())
+        .all()
+    )
+    for item in active_topics:
+        topic_text = (item.topic or "").strip()
+        if not topic_text:
+            continue
+        key = topic_text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        topics.append(topic_text)
+
+    if not topics:
+        settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
+        if settings and settings.topics:
+            try:
+                parsed_topics = json.loads(settings.topics)
+            except Exception:
+                parsed_topics = []
+            for topic_text in _normalize_topic_items(parsed_topics):
+                key = topic_text.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                topics.append(topic_text)
+
+    if not topics:
+        extra = _channel_extra_config(channel)
+        topic_plan = extra.get("topic_plan") or {}
+        for topic_text in _normalize_topic_items(topic_plan.get("topics") or []):
+            key = topic_text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            topics.append(topic_text)
+
+    if not topics:
+        topics = [f"Контент-публикация для канала «{channel.channel_name}»"]
+
+    return topics[:60]
+
+
+def _build_posting_plan_preview_payload(
+    channel,
+    start_date=None,
+    posts_count=14,
+    publish_frequency=None,
+    publish_hour=None,
+):
+    posts_count = min(max(int(posts_count or 14), 1), 60)
+    settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
+    extra = _channel_extra_config(channel)
+
+    resolved_frequency = _normalize_frequency(
+        publish_frequency
+        or (settings.publish_frequency if settings else None)
+        or extra.get("publish_frequency")
+        or "daily"
+    ) or "daily"
+
+    if publish_hour is None:
+        resolved_hour = settings.publish_hour if settings and settings.publish_hour is not None else extra.get("publish_hour", 10)
+    else:
+        resolved_hour = publish_hour
+    try:
+        resolved_hour = int(resolved_hour)
+    except (TypeError, ValueError):
+        resolved_hour = 10
+    resolved_hour = min(max(resolved_hour, 0), 23)
+
+    if start_date:
+        try:
+            start_day = datetime.fromisoformat(str(start_date)).date()
+        except Exception:
+            start_day = datetime.utcnow().date()
+    else:
+        start_day = datetime.utcnow().date()
+
+    interval_days = _frequency_to_interval_days(resolved_frequency)
+    topics = _extract_channel_topics_for_plan(channel)
+
+    plan_items = []
+    for idx in range(posts_count):
+        publish_day = start_day + timedelta(days=idx * interval_days)
+        topic_text = topics[idx % len(topics)]
+        plan_items.append(
+            {
+                "index": idx + 1,
+                "publish_date": publish_day.isoformat(),
+                "publish_time": f"{resolved_hour:02d}:00",
+                "topic": topic_text,
+            }
+        )
+
+    return {
+        "channel_id": channel.id,
+        "channel_name": channel.channel_name,
+        "platform": channel.platform,
+        "publish_frequency": resolved_frequency,
+        "publish_frequency_label": _frequency_to_human(resolved_frequency),
+        "publish_hour": resolved_hour,
+        "start_date": start_day.isoformat(),
+        "interval_days": interval_days,
+        "plan_items": plan_items,
+    }
+
+
+def _normalize_posting_plan_items_for_save(raw_items):
+    normalized = []
+    for item in raw_items or []:
+        if not isinstance(item, dict):
+            continue
+
+        publish_date = str(item.get("publish_date") or "").strip()
+        publish_time = str(item.get("publish_time") or "").strip()
+        topic = str(item.get("topic") or "").strip()
+        if not publish_date or not publish_time or not topic:
+            continue
+
+        try:
+            datetime.fromisoformat(f"{publish_date}T{publish_time}")
+        except Exception:
+            continue
+
+        normalized.append(
+            {
+                "publish_date": publish_date,
+                "publish_time": publish_time,
+                "topic": topic,
+            }
+        )
+        if len(normalized) >= 120:
             break
     return normalized
 
@@ -2163,6 +2302,28 @@ def posting_setup():
     return render_template("posting_setup.html", channels=channels_payload, user=current_user)
 
 
+@app.route("/posting-plan")
+@login_required
+def posting_plan():
+    if is_admin_user(current_user):
+        channels_data = (
+            ClientChannel.query.filter_by(is_active=True)
+            .order_by(ClientChannel.created_at.desc())
+            .all()
+        )
+    elif current_user.client_id:
+        channels_data = (
+            ClientChannel.query.filter_by(client_id=current_user.client_id, is_active=True)
+            .order_by(ClientChannel.created_at.desc())
+            .all()
+        )
+    else:
+        channels_data = []
+
+    channels_payload = [_serialize_channel(ch, include_client_name=True) for ch in channels_data]
+    return render_template("posting_plan.html", channels=channels_payload, user=current_user)
+
+
 @app.route("/content")
 @login_required
 def content():
@@ -2470,7 +2631,18 @@ def api_posting_setup_plan():
         focus_text=focus_text,
         desired_count=desired_count,
     )
-    return jsonify({"success": True, **planner_payload})
+    return jsonify(
+        {
+            "success": True,
+            "channel_id": planner_payload.get("channel_id"),
+            "channel_name": planner_payload.get("channel_name"),
+            "platform": planner_payload.get("platform"),
+            "style_summary": planner_payload.get("style_summary", ""),
+            "semantic_core": planner_payload.get("semantic_core", [])[:8],
+            "actual_questions": planner_payload.get("actual_questions", [])[:5],
+            "topics": planner_payload.get("topics", []),
+        }
+    )
 
 
 @app.route("/api/posting-setup/topics", methods=["POST"])
@@ -2533,6 +2705,106 @@ def api_posting_setup_save_topics():
         {
             "success": True,
             "saved_topics": len(normalized_topics),
+            "channel_id": channel.id,
+            "channel_name": channel.channel_name,
+        }
+    )
+
+
+@app.route("/api/posting-plan/preview", methods=["POST"])
+@login_required
+def api_posting_plan_preview():
+    data = request.get_json(silent=True) or {}
+    channel_id = data.get("channel_id")
+    start_date = (data.get("start_date") or "").strip() or None
+    posts_count = data.get("posts_count", 14)
+    publish_frequency = data.get("publish_frequency")
+    publish_hour = data.get("publish_hour")
+
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный channel_id"}), 400
+
+    try:
+        posts_count = int(posts_count)
+    except (TypeError, ValueError):
+        posts_count = 14
+
+    channel = _get_accessible_channel(channel_id)
+    if not channel.is_active:
+        return jsonify({"success": False, "error": "Канал отключен. Включите его перед шагом 3."}), 400
+
+    preview_payload = _build_posting_plan_preview_payload(
+        channel=channel,
+        start_date=start_date,
+        posts_count=posts_count,
+        publish_frequency=publish_frequency,
+        publish_hour=publish_hour,
+    )
+    return jsonify({"success": True, **preview_payload})
+
+
+@app.route("/api/posting-plan/save", methods=["POST"])
+@login_required
+def api_posting_plan_save():
+    data = request.get_json(silent=True) or {}
+    channel_id = data.get("channel_id")
+    raw_plan_items = data.get("plan_items") or []
+    publish_frequency = data.get("publish_frequency")
+    publish_hour = data.get("publish_hour")
+
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный channel_id"}), 400
+
+    channel = _get_accessible_channel(channel_id)
+    if not channel.is_active:
+        return jsonify({"success": False, "error": "Канал отключен. Включите его перед сохранением плана."}), 400
+
+    normalized_items = _normalize_posting_plan_items_for_save(raw_plan_items)
+    if not normalized_items:
+        return jsonify({"success": False, "error": "Список публикаций пуст или содержит некорректные данные"}), 400
+
+    normalized_frequency = _normalize_frequency(publish_frequency) or "daily"
+    try:
+        normalized_hour = int(publish_hour)
+    except (TypeError, ValueError):
+        normalized_hour = 10
+    normalized_hour = min(max(normalized_hour, 0), 23)
+
+    settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
+    if not settings:
+        settings = ChannelSetting(
+            channel_id=channel.id,
+            publish_hour=normalized_hour,
+            publish_frequency=normalized_frequency,
+            topics=json.dumps(_extract_channel_topics_for_plan(channel), ensure_ascii=False),
+            hashtags=json.dumps([], ensure_ascii=False),
+            max_posts_per_day=1,
+            is_auto_generate=True,
+            use_ai_images=True,
+        )
+        db.session.add(settings)
+    else:
+        settings.publish_hour = normalized_hour
+        settings.publish_frequency = normalized_frequency
+
+    extra = _channel_extra_config(channel)
+    extra["posting_plan_draft"] = {
+        "updated_at": datetime.utcnow().isoformat(),
+        "publish_frequency": normalized_frequency,
+        "publish_hour": normalized_hour,
+        "plan_items": normalized_items,
+    }
+    channel.additional_config = json.dumps(extra, ensure_ascii=False)
+
+    db.session.commit()
+    return jsonify(
+        {
+            "success": True,
+            "saved_items": len(normalized_items),
             "channel_id": channel.id,
             "channel_name": channel.channel_name,
         }
