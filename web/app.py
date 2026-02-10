@@ -471,7 +471,7 @@ def load_user(user_id):
     return db.session.get(User, int(user_id))
 
 
-# Импорт модулей Snoomi (fallback на заглушки если модулей нет)
+# Импорт модулей Snoomi (fallback на заглушки если модулей нет/не настроены ключи)
 try:
     from ai.text_generator import TextGenerator
     from ai.image_generator import ImageGenerator
@@ -479,8 +479,8 @@ try:
     text_gen = TextGenerator()
     img_gen = ImageGenerator()
     logger.info("✅ AI-модули загружены")
-except ImportError as e:
-    logger.warning(f"⚠️ AI-модули не найдены: {e}")
+except Exception as e:
+    logger.warning(f"⚠️ AI-модули недоступны, используется fallback: {e}")
 
     class TextGenerator:
         def generate_for_topic(self, topic):
