@@ -915,7 +915,11 @@ def _send_registration_email(email_to, username, password, client_name, trial_da
         return False, "email_empty"
 
     smtp_host = (os.environ.get("SMTP_HOST") or "").strip()
-    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    smtp_port_raw = (os.environ.get("SMTP_PORT") or "587").strip()
+    try:
+        smtp_port = int(smtp_port_raw)
+    except (TypeError, ValueError):
+        smtp_port = 587
     smtp_user = (os.environ.get("SMTP_USER") or "").strip()
     smtp_password = (os.environ.get("SMTP_PASSWORD") or "").strip()
     smtp_from = (os.environ.get("SMTP_FROM_EMAIL") or smtp_user or "noreply@snoomi.local").strip()
@@ -928,7 +932,21 @@ def _send_registration_email(email_to, username, password, client_name, trial_da
         return False, "smtp_not_configured"
 
     subject = "Добро пожаловать в Snoomi Platform"
-    login_url = f"http://{os.environ.get('WEB_HOST', 'localhost')}:{os.environ.get('WEB_PORT', '5000')}/login"
+    public_base_url = (os.environ.get("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if public_base_url:
+        if not public_base_url.startswith(("http://", "https://")):
+            public_base_url = f"http://{public_base_url}"
+        login_url = f"{public_base_url}/login"
+    else:
+        web_host = (os.environ.get("WEB_HOST") or "localhost").strip()
+        if web_host in {"0.0.0.0", "::", "[::]"}:
+            web_host = "localhost"
+        web_port_raw = (os.environ.get("WEB_PORT") or "5000").strip()
+        try:
+            web_port = int(web_port_raw)
+        except (TypeError, ValueError):
+            web_port = 5000
+        login_url = f"http://{web_host}:{web_port}/login"
     support_link = _specialist_telegram_link()
 
     plain_body = f"""

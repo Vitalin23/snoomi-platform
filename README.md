@@ -1,13 +1,110 @@
-# 🤖 Snoomi Platform
+# Snoomi Platform
 
-**Multi-Platform Content Automation System**
+Платформа для автопостинга и управления публикациями в соцсетях (Telegram/VK) с веб-интерфейсом,
+планировщиком, аналитикой и онбордингом клиентов.
 
-## 🚀 Quick Start
+---
+
+## 1) Обновить локальный проект
 
 ```bash
-# Install dependencies
+git fetch origin cursor/-bc-f477b4da-9d10-4f5f-9066-24192a0b661a-0bde
+git pull origin cursor/-bc-f477b4da-9d10-4f5f-9066-24192a0b661a-0bde
+```
+
+---
+
+## 2) Подготовка окружения
+
+```bash
+# Python dependencies
 pip install -r requirements.txt
 pip install -r Bot/requirements.txt
+```
 
-# Run application
-python run.py
+Скопируйте шаблон env и заполните своими ключами:
+
+```bash
+cp .env.example .env
+```
+
+---
+
+## 3) Запуск "с нуля" (новая регистрация)
+
+### Вариант A: полностью с чистой БД (рекомендуется для локального smoke-test)
+
+```bash
+# если хотите полностью новый старт, удалите локальную БД
+rm -f snoomi_channels.db
+```
+
+Дополнительно:
+- выйдите из аккаунта в браузере;
+- очистите cookies/Local Storage для `localhost:5000` (если сессия кэшируется).
+
+### Вариант B: отдельная тестовая БД без удаления основной
+
+```bash
+export WEB_DATABASE_URL=sqlite:////absolute/path/to/snoomi_channels_fresh.db
+```
+
+---
+
+## 4) Включить отправку письма при регистрации
+
+В `.env` заполните SMTP-параметры (минимум `SMTP_HOST`, обычно также `SMTP_USER`/`SMTP_PASSWORD`):
+
+```env
+SMTP_HOST=smtp.your-provider.com
+SMTP_PORT=587
+SMTP_USER=your-login
+SMTP_PASSWORD=your-password-or-app-password
+SMTP_FROM_EMAIL=no-reply@your-domain.com
+SMTP_FROM_NAME=Snoomi Platform
+SMTP_USE_SSL=False
+SMTP_USE_TLS=True
+
+# чтобы ссылка в письме была правильной для локалки:
+PUBLIC_BASE_URL=http://localhost:5000
+```
+
+> Если используете SSL-порт (обычно 465), выставьте:
+> `SMTP_USE_SSL=True` и `SMTP_USE_TLS=False`.
+
+---
+
+## 5) Запуск веб-панели
+
+```bash
+python run_web.py
+```
+
+Откройте:
+- `http://localhost:5000/register` — регистрация,
+- `http://localhost:5000/login` — вход.
+
+После регистрации:
+- создается клиент + пользователь,
+- активируется trial,
+- отправляется регистрационное письмо на email (если SMTP настроен).
+
+---
+
+## 6) Быстрый чек проблем с email
+
+Если письмо не ушло:
+1. Проверьте `SMTP_HOST` и порт.
+2. Проверьте `SMTP_USE_SSL` / `SMTP_USE_TLS` (не включайте оба сразу).
+3. Проверьте лог ошибок: `logs/errors.log`.
+4. Проверьте системный лог: `logs/system.log`.
+
+---
+
+## 7) Точки запуска компонентов
+
+```bash
+python run_site_bot.py        # только Telegram-бот сайта
+python run_monetization.py    # только планировщик автопостинга
+python run_web.py             # только веб-панель
+```
