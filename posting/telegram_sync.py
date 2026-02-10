@@ -52,92 +52,131 @@ class TelegramSyncPoster:
     
     def _send_photo_with_caption(self, image_path, caption):
         """Отправляет фото с подписью в канал"""
+        temp_files = []
         try:
             url = f"{self.base_url}/sendPhoto"
-            
+
             # Проверяем файл
             if not os.path.exists(image_path):
                 print(f"❌ Файл не найден: {image_path}")
                 return None
-            
+
             file_size = os.path.getsize(image_path)
             print(f"📊 Размер файла: {file_size // 1024} KB")
-            
+
             if file_size > 10 * 1024 * 1024:  # 10 MB limit
                 print(f"❌ Файл слишком большой: {file_size // 1024} KB")
                 return None
-            
-            # Сжимаем изображение если оно больше 2MB
-            if file_size > 2 * 1024 * 1024:
-                print("🔄 Сжимаю изображение...")
-                compressed_path = self._compress_image(image_path)
-                if compressed_path:
-                    image_path = compressed_path
-                    file_size = os.path.getsize(image_path)
-                    print(f"📊 Новый размер: {file_size // 1024} KB")
-            
-            print(f"📤 Отправка фото с подписью ({file_size // 1024} KB)...")
-            
+
             # Форматируем подпись (без лишнего экранирования)
             caption = self._clean_text_for_caption(caption)
             if len(caption) > 1024:
                 caption = caption[:1020] + "..."
-            
-            # Подготавливаем данные
-            data = {
-                'chat_id': self.channel_id,
-                'caption': caption,
-                'parse_mode': 'HTML',
-                'disable_notification': False
-            }
-            
-            # Открываем файл и отправляем с увеличенным таймаутом
-            with open(image_path, 'rb') as photo:
-                files = {'photo': photo}
-                
-                # Увеличиваем таймаут для больших файлов
-                timeout = 60 if file_size > 500 * 1024 else 30
-                
-                print(f"⏱️  Таймаут установлен: {timeout} секунд")
-                start_time = time.time()
-                
-                response = requests.post(url, data=data, files=files, timeout=timeout)
-                
-                elapsed = time.time() - start_time
-                print(f"📡 Ответ Telegram: {response.status_code} (за {elapsed:.1f} сек)")
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    if result.get('ok'):
-                        message_id = result['result'].get('message_id')
-                        print(f"✅ Фото с подписью отправлено, message_id: {message_id}")
-                        return message_id
-                    else:
-                        error_desc = result.get('description', 'Unknown error')
-                        print(f"❌ Ошибка Telegram API: {error_desc}")
-                        
-                        # Fallback: пробуем без HTML разметки
-                        print("🔄 Пробую отправить без HTML разметки...")
-                        data['parse_mode'] = None
-                        response2 = requests.post(url, data=data, files=files, timeout=timeout)
-                        if response2.status_code == 200:
-                            result2 = response2.json()
-                            if result2.get('ok'):
-                                message_id = result2['result'].get('message_id')
-                                print(f"✅ Фото отправлено без HTML, message_id: {message_id}")
-                                return message_id
-                        
-                        return None
-                else:
-                    print(f"❌ HTTP ошибка: {response.status_code}")
-                    return None
-                    
-        except requests.exceptions.Timeout:
-            print("❌ Таймаут при отправке фото.")
+
+            # Готовим список кандидатов файла: оригинал + варианты сжатия.
+            upload_candidates = [image_path]
+            if file_size > 2 * 1024 * 1024:
+                print("🔄 Сжимаю изображение (первичный проход)...")
+                compressed_path = self._compress_image(image_path, max_size_kb=1500)
+                if compressed_path and compressed_path not in upload_candidates:
+                    upload_candidates.append(compressed_path)
+                    temp_files.append(compressed_path)
+            if file_size > 900 * 1024:
+                compressed_small = self._compress_image(image_path, max_size_kb=900)
+                if compressed_small and compressed_small not in upload_candidates:
+                    upload_candidates.append(compressed_small)
+                    temp_files.append(compressed_small)
+
+            parse_modes = ["HTML", None]
+            last_error = None
+
+            for candidate_index, candidate_path in enumerate(upload_candidates, start=1):
+                if not os.path.exists(candidate_path):
+                    continue
+                candidate_size = os.path.getsize(candidate_path)
+                print(
+                    f"📤 Кандидат {candidate_index}/{len(upload_candidates)}: "
+                    f"{os.path.basename(candidate_path)} ({candidate_size // 1024} KB)"
+                )
+
+                # Для крупных файлов увеличиваем read timeout.
+                read_timeout = 180 if candidate_size > 700 * 1024 else 120
+                timeout = (20, read_timeout)  # connect timeout, read timeout
+                print(f"⏱️  Таймаут установлен: connect=20s read={read_timeout}s")
+
+                for parse_mode in parse_modes:
+                    mode_label = "HTML" if parse_mode else "без parse_mode"
+                    for attempt in range(1, 4):
+                        data = {
+                            "chat_id": self.channel_id,
+                            "caption": caption,
+                            "disable_notification": False,
+                        }
+                        if parse_mode:
+                            data["parse_mode"] = parse_mode
+
+                        try:
+                            print(f"🚀 sendPhoto попытка {attempt}/3 ({mode_label})...")
+                            start_time = time.time()
+                            # Каждый retry открывает файл заново — это важно для multipart upload.
+                            with open(candidate_path, "rb") as photo:
+                                files = {"photo": photo}
+                                response = requests.post(url, data=data, files=files, timeout=timeout)
+
+                            elapsed = time.time() - start_time
+                            print(f"📡 Ответ Telegram: {response.status_code} (за {elapsed:.1f} сек)")
+
+                            if response.status_code == 200:
+                                result = response.json()
+                                if result.get("ok"):
+                                    message_id = result["result"].get("message_id")
+                                    print(f"✅ Фото с подписью отправлено, message_id: {message_id}")
+                                    return message_id
+
+                                error_desc = result.get("description", "Unknown error")
+                                last_error = error_desc
+                                print(f"❌ Ошибка Telegram API: {error_desc}")
+
+                                # Retry-after для flood control.
+                                retry_after = None
+                                params = result.get("parameters") or {}
+                                if isinstance(params, dict):
+                                    retry_after = params.get("retry_after")
+                                if retry_after:
+                                    wait_s = min(max(int(retry_after), 1), 30)
+                                    print(f"⏳ Telegram просит подождать {wait_s} сек...")
+                                    time.sleep(wait_s)
+                                    continue
+
+                            else:
+                                last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+                                print(f"❌ HTTP ошибка: {response.status_code}")
+
+                        except requests.exceptions.Timeout as e:
+                            last_error = f"Timeout: {e}"
+                            print(f"⚠️ Таймаут при sendPhoto (попытка {attempt}/3): {e}")
+                        except requests.exceptions.ConnectionError as e:
+                            last_error = f"ConnectionError: {e}"
+                            print(f"⚠️ Сетевая ошибка при sendPhoto (попытка {attempt}/3): {e}")
+                        except Exception as e:
+                            last_error = f"{type(e).__name__}: {e}"
+                            print(f"⚠️ Ошибка sendPhoto (попытка {attempt}/3): {last_error}")
+
+                        # Экспоненциальная пауза между попытками.
+                        if attempt < 3:
+                            wait_s = 2 ** attempt
+                            print(f"🔄 Повтор через {wait_s} сек...")
+                            time.sleep(wait_s)
+
+            print(f"❌ Не удалось отправить фото после всех попыток. Последняя ошибка: {last_error}")
             return None
+
         except Exception as e:
             print(f"❌ Ошибка отправки фото: {type(e).__name__}: {e}")
             return None
+        finally:
+            for temp_file in temp_files:
+                self._safe_remove_file(temp_file)
     
     def _compress_image(self, image_path, max_size_kb=1500):
         """Сжимает изображение до указанного размера"""
@@ -161,7 +200,8 @@ class TelegramSyncPoster:
                     
                     if size_kb <= max_size_kb:
                         # Сохраняем сжатый файл
-                        compressed_path = image_path.replace('.jpg', f'_compressed_{quality}.jpg')
+                        base_name, _ = os.path.splitext(image_path)
+                        compressed_path = f"{base_name}_compressed_{max_size_kb}kb_q{quality}.jpg"
                         with open(compressed_path, 'wb') as f:
                             f.write(buffer.getvalue())
                         print(f"✅ Сжато до {size_kb} KB (качество: {quality}%)")
@@ -180,7 +220,8 @@ class TelegramSyncPoster:
                 print(f"🔄 Изменен размер: {width}x{height} → {new_width}x{new_height}")
             
             # Сохраняем
-            compressed_path = image_path.replace('.jpg', '_compressed.jpg').replace('.png', '_compressed.jpg')
+            base_name, _ = os.path.splitext(image_path)
+            compressed_path = f"{base_name}_compressed_{max_size_kb}kb.jpg"
             img.save(compressed_path, format='JPEG', quality=85, optimize=True)
             
             size_kb = os.path.getsize(compressed_path) // 1024
@@ -194,6 +235,16 @@ class TelegramSyncPoster:
         except Exception as e:
             print(f"❌ Ошибка сжатия изображения: {e}")
             return None
+
+    def _safe_remove_file(self, file_path):
+        """Безопасно удаляет временный файл."""
+        if not file_path:
+            return
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception:
+            pass
     
     def _send_message_only(self, text):
         """Отправляет только текстовое сообщение (без фото)"""
