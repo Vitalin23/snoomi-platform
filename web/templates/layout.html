@@ -196,6 +196,19 @@
 
     <script>
         (function () {
+            function cleanupOrphanedModalBackdrop() {
+                const hasVisibleModal = !!document.querySelector(".modal.show");
+                if (hasVisibleModal) {
+                    return;
+                }
+
+                // Bootstrap иногда может оставить backdrop/modal-open после переходов.
+                document.querySelectorAll(".modal-backdrop").forEach((node) => node.remove());
+                document.body.classList.remove("modal-open");
+                document.body.style.removeProperty("overflow");
+                document.body.style.removeProperty("padding-right");
+            }
+
             const MAX_EVENTS_PER_PAGE = 120;
             let sentEvents = 0;
 
@@ -234,10 +247,20 @@
             window.__sendClientEvent = sendClientEvent;
 
             document.addEventListener("DOMContentLoaded", function () {
+                cleanupOrphanedModalBackdrop();
                 sendClientEvent("page_view", {
                     title: safeText(document.title, 120),
                     referrer: safeText(document.referrer, 200)
                 });
+            });
+
+            // Для сценариев BFCache/возврата страницы.
+            window.addEventListener("pageshow", function () {
+                cleanupOrphanedModalBackdrop();
+            });
+
+            document.addEventListener("hidden.bs.modal", function () {
+                setTimeout(cleanupOrphanedModalBackdrop, 0);
             });
 
             document.addEventListener("submit", function (event) {
