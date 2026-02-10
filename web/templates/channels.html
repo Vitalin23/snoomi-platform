@@ -209,9 +209,9 @@
                 {% endif %}
                 <div class="channels-steps">
                     <ol>
-                        <li>Выберите платформу и вставьте ссылку/ник канала.</li>
-                        <li>Для Telegram используйте только `https://t.me/...` или `@username`, затем нажмите «Проверить канал».</li>
-                        <li>После проверки сохраните подключение: имя и описание из канала фиксируются автоматически, а вы добавляете свое описание (20+ слов).</li>
+                        <li id="channelsStep1">Выберите платформу и вставьте ссылку/ник канала.</li>
+                        <li id="channelsStep2">Для Telegram используйте только `https://t.me/...` или `@username`, затем нажмите «Проверить канал».</li>
+                        <li id="channelsStep3">После проверки сохраните подключение: имя и описание из канала фиксируются автоматически, а вы добавляете свое описание (20+ слов).</li>
                     </ol>
                 </div>
                 <form id="autopostChannelForm" class="row g-3">
@@ -579,6 +579,9 @@
             const hiddenPlatform = document.getElementById('autopostPlatform');
             const tgBtn = document.getElementById('platformBtnTelegram');
             const vkBtn = document.getElementById('platformBtnVk');
+            const step1 = document.getElementById('channelsStep1');
+            const step2 = document.getElementById('channelsStep2');
+            const step3 = document.getElementById('channelsStep3');
             const referenceLabel = document.getElementById('autopostReferenceLabel');
             const tokenLabel = document.getElementById('autopostTokenLabel');
             const tokenHelpLink = document.getElementById('autopostTokenHelpLink');
@@ -593,6 +596,9 @@
             hiddenPlatform.value = platform;
 
             if (platform === 'telegram') {
+                step1.textContent = 'Выберите Telegram и вставьте ссылку t.me или @username канала.';
+                step2.textContent = 'Публичная проверка Telegram работает по `https://t.me/...` или `@username`.';
+                step3.textContent = 'После проверки имя и описание из канала заполняются автоматически, а вы добавляете свое описание (20+ слов).';
                 tgBtn.className = 'btn btn-primary';
                 vkBtn.className = 'btn btn-outline-primary';
                 referenceLabel.textContent = 'Ссылка https://t.me/... или @username *';
@@ -602,6 +608,9 @@
                 tokenHelpLink.textContent = 'Как получить Telegram bot token?';
                 tokenHint.textContent = 'Проверка Telegram-канала выполняется публично без токена; токен обязателен при сохранении для публикации.';
             } else {
+                step1.textContent = 'Выберите VK и вставьте ссылку сообщества (или short name).';
+                step2.textContent = 'Проверка VK выполняется публично по адресу `https://vk.com/...` без API-токена.';
+                step3.textContent = 'После проверки имя и описание из VK фиксируются автоматически, а вы добавляете свое описание (20+ слов).';
                 tgBtn.className = 'btn btn-outline-primary';
                 vkBtn.className = 'btn btn-primary';
                 referenceLabel.textContent = 'Ссылка VK-группы (или short name) *';
