@@ -376,7 +376,7 @@ class TelegramSyncPoster:
                 print(f"📷 Отправка фото с текстом...")
                 
                 # Обрезаем текст для подписи (макс 1024 символа)
-                caption = article_text
+                caption = format_article_for_telegram(article_text, max_length=980)
                 if len(caption) > 1000:
                     # Пробуем найти хорошее место для обрезки
                     if '\n\n' in caption:
@@ -391,24 +391,14 @@ class TelegramSyncPoster:
                 
                 if message_id:
                     print(f"✅ Статья с изображением опубликована. Message ID: {message_id}")
-                    
-                    # 2. Если текст длинный, отправляем остаток отдельным сообщением
-                    if len(article_text) > 1000:
-                        print("📝 Текст длинный, отправляю продолжение...")
-                        
-                        # Вырезаем уже отправленную часть
-                        remaining_text = article_text[len(caption):].strip()
-                        if remaining_text and len(remaining_text) > 50:
-                            self._send_long_text(remaining_text)
-                    
+                    # Важный UX: единый пост (картинка + подпись), без отправки продолжений.
                     return message_id
                 else:
                     print("⚠️  Не удалось отправить с изображением, пробую только текст...")
             
             # 3. Fallback: отправляем только текст
             print("📝 Отправка только текста...")
-            sent_ids = self._send_long_text(article_text)
-            message_id = sent_ids[0] if sent_ids else None
+            message_id = self._send_message_only(format_article_for_telegram(article_text, max_length=3800))
             
             if message_id:
                 print(f"✅ Текст опубликован. Message ID: {message_id}")

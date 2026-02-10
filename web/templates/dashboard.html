@@ -272,7 +272,8 @@
                 {% if has_any_channels %}
                     <div class="d-flex flex-column gap-3">
                         <p class="mb-0 text-muted">
-                            Выберите один или несколько каналов. В выбранные каналы уйдет одинаковая статья (и одна тема).
+                            Выберите один или несколько каналов. Можно задать одну тему, а текст будет адаптирован
+                            отдельно под платформу и специфику каждого канала.
                         </p>
 
                         <div class="row g-3">
@@ -285,7 +286,8 @@
                                     placeholder="Например: 5 ошибок при выборе матраса для боли в спине"
                                 >
                                 <div class="form-text">
-                                    Если поле пустое, система возьмет первую тему из сохраненных шагов 2/3.
+                                    Если поле пустое, система возьмет тему из сохраненных шагов 2/3.
+                                    Для Telegram пост публикуется единым сообщением вместе с картинкой (без продолжений).
                                 </div>
                             </div>
                             <div class="col-12">
@@ -604,8 +606,8 @@ function publishNow(buttonElement) {
     const topicInput = document.getElementById('publishNowTopic');
     const manualTopic = topicInput ? topicInput.value.trim() : '';
     const confirmText = manualTopic
-        ? `Запустить публикацию сейчас в ${selectedChannelIds.length} канал(а/ов) по теме «${manualTopic}»?`
-        : `Запустить публикацию сейчас в ${selectedChannelIds.length} канал(а/ов)?`;
+        ? `Запустить публикацию в ${selectedChannelIds.length} канал(а/ов) по теме «${manualTopic}»? Текст будет адаптирован под каждый канал.`
+        : `Запустить публикацию в ${selectedChannelIds.length} канал(а/ов)? Тексты будут адаптированы под каналы и платформы.`;
     if (!confirm(confirmText)) {
         return;
     }

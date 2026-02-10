@@ -2070,18 +2070,117 @@ def _extract_saved_posting_plan_draft(channel):
     }
 
 
+def _compact_text_for_limit(text, max_len):
+    source = re.sub(r"\n{3,}", "\n\n", (text or "").strip())
+    if len(source) <= max_len:
+        return source
+
+    for separator in ("\n\n", "\n", ". ", "! ", "? ", " "):
+        cut_pos = source.rfind(separator, 0, max_len)
+        if cut_pos >= int(max_len * 0.6):
+            return source[:cut_pos].rstrip() + "..."
+    return source[: max_len - 3].rstrip() + "..."
+
+
+def _platform_content_principles(platform):
+    if platform == "vk":
+        return (
+            "Платформа VK. Формат: сильный крючок в первых 1-2 строках, далее короткие абзацы "
+            "и списки, одна понятная CTA в конце. Добавь вопрос для вовлечения и 2-5 релевантных "
+            "хэштегов по теме. Не перегружай внешними ссылками, ориентируйся на пользу читателю."
+        )
+    if platform == "telegram":
+        return (
+            "Платформа Telegram. Формат: первое предложение самое сильное, короткие строки и абзацы, "
+            "умеренный эмфазис, мягкая CTA в конце. Текст должен быть целостным и поместиться в один "
+            "пост вместе с картинкой: максимум ~900 символов, без продолжений."
+        )
+    return (
+        "Платформа соцсетей. Текст должен быть практичным, структурированным, с ясной пользой и "
+        "одним целевым действием в конце."
+    )
+
+
+def _channel_publication_context(channel):
+    extra = _channel_extra_config(channel)
+    style_profile = extra.get("style_profile") if isinstance(extra.get("style_profile"), dict) else {}
+    topic_plan = extra.get("topic_plan") if isinstance(extra.get("topic_plan"), dict) else {}
+
+    client_description = (extra.get("channel_description") or "").strip()
+    channel_external_description = (extra.get("channel_external_description") or "").strip()
+    style_summary = (
+        (topic_plan.get("style_summary") or "").strip()
+        or (style_profile.get("summary") or "").strip()
+    )
+    semantic_core = _normalize_phrase_list(topic_plan.get("semantic_core") or [], limit=6)
+    top_questions = _question_text_list(topic_plan.get("actual_questions") or [], limit=3)
+
+    context_lines = [f"Канал: {channel.channel_name}", f"Платформа: {channel.platform}"]
+    if client_description:
+        context_lines.append(f"Описание от клиента: {client_description}")
+    if channel_external_description:
+        context_lines.append(f"Публичное описание канала: {channel_external_description}")
+    if style_summary:
+        context_lines.append(f"Ориентир по стилю: {style_summary}")
+    if semantic_core:
+        context_lines.append(f"Семантическое ядро: {', '.join(semantic_core)}")
+    if top_questions:
+        context_lines.append(f"Вопросы аудитории: {', '.join(top_questions)}")
+
+    return "\n".join(context_lines)
+
+
+def _build_manual_generation_prompt(channel, topic_text):
+    platform = (channel.platform or "").strip().lower()
+    principles = _platform_content_principles(platform)
+    channel_context = _channel_publication_context(channel)
+    return (
+        f"Тема публикации: {topic_text}\n\n"
+        f"{channel_context}\n\n"
+        f"{principles}\n\n"
+        "Важно: не писать про внутренние задачи бизнеса ('продвижение магазина', 'продажи любой ценой'). "
+        "Пиши как эксперт для конечной аудитории канала: проблемы, решения, практические шаги. "
+        "Текст должен быть готов к немедленной публикации без технических пояснений. "
+        f"Сделай формулировки уникальными именно для канала «{channel.channel_name}», чтобы не было дословных дублей."
+    )
+
+
+def _platform_text_limit(platform):
+    if platform == "telegram":
+        return 900
+    if platform == "vk":
+        return 1800
+    return 1400
+
+
+def _normalize_publication_text(raw_text, topic_text, platform):
+    normalized = re.sub(r"<[^>]+>", "", str(raw_text or "")).strip()
+    normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = re.sub(r"[ \t]+\n", "\n", normalized)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
+
+    if _count_words(normalized) < 15:
+        normalized = (
+            f"{topic_text}\n\n"
+            "Короткий практический разбор по теме с акцентом на пользу для читателя. "
+            "Сохраните пост и примените рекомендации на практике."
+        )
+
+    return _compact_text_for_limit(normalized, _platform_text_limit(platform))
+
+
 def _generate_manual_publication_text(channel, topic_text):
     topic_text = (topic_text or "").strip() or f"Публикация для канала {channel.channel_name}"
-    # Для ручного запуска опираемся на тему, а не на клиентское описание канала,
-    # чтобы контент не уходил в "продвижение магазина" вместо темы публикации.
-    keywords = _extract_keywords(topic_text, limit=8)
+    platform = (channel.platform or "").strip().lower()
+    generation_prompt = _build_manual_generation_prompt(channel, topic_text)
+    keywords = _extract_keywords(f"{topic_text} {channel.channel_name}", limit=10)
 
     generated_text = ""
     try:
         if hasattr(text_gen, "create_article_with_research"):
-            generated_text = text_gen.create_article_with_research(topic_text, keywords=keywords)
+            generated_text = text_gen.create_article_with_research(generation_prompt, keywords=keywords)
         elif hasattr(text_gen, "generate_for_topic"):
-            generated_text = text_gen.generate_for_topic(topic_text)
+            generated_text = text_gen.generate_for_topic(generation_prompt)
     except Exception as e:
         system_logger.warning(
             "manual_publish_generation_failed channel_id=%s topic=%s error=%s",
@@ -2090,14 +2189,7 @@ def _generate_manual_publication_text(channel, topic_text):
             e,
         )
 
-    generated_text = (generated_text or "").strip()
-    if _count_words(generated_text) < 15:
-        generated_text = (
-            f"{topic_text}\n\n"
-            f"Канал: {channel.channel_name}. Подготовлен краткий практический пост по теме. "
-            "Проверьте формулировки и при необходимости дополните деталями перед следующими публикациями."
-        )
-    return generated_text
+    return _normalize_publication_text(generated_text, topic_text, platform)
 
 
 def _resolve_manual_publish_topic(channel, explicit_topic=""):
@@ -3825,28 +3917,16 @@ def api_publish_now():
     successful_count = 0
     failed_count = 0
     generated_images = 0
-    shared_topic = _resolve_manual_publish_topic(channels[0], explicit_topic)
-    shared_text = None
-    shared_image_path = None
-
-    if shared_article:
-        shared_text = _generate_manual_publication_text(channels[0], shared_topic)
-        if any(_channel_uses_ai_images(channel) for channel in channels):
-            shared_image_path = _generate_manual_publication_image(shared_topic, shared_text)
-            if shared_image_path:
-                generated_images = 1
+    shared_topic = _resolve_manual_publish_topic(channels[0], explicit_topic) if shared_article else None
 
     for channel in channels:
         topic_text = shared_topic if shared_article else _resolve_manual_publish_topic(channel, explicit_topic)
-        content_text = shared_text if shared_article else _generate_manual_publication_text(channel, topic_text)
+        content_text = _generate_manual_publication_text(channel, topic_text)
         image_path = None
         if _channel_uses_ai_images(channel):
-            if shared_article:
-                image_path = shared_image_path
-            else:
-                image_path = _generate_manual_publication_image(topic_text, content_text)
-                if image_path:
-                    generated_images += 1
+            image_path = _generate_manual_publication_image(topic_text, content_text)
+            if image_path:
+                generated_images += 1
         hashtags = _channel_hashtags(channel)
 
         channel_info = {
@@ -3893,12 +3973,10 @@ def api_publish_now():
             }
         )
 
-        if image_path and not shared_article:
+        if image_path:
             _cleanup_temp_generated_image(image_path)
 
     db.session.commit()
-    if shared_image_path:
-        _cleanup_temp_generated_image(shared_image_path)
 
     if successful_count == 0:
         return jsonify(
