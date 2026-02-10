@@ -1339,6 +1339,304 @@ def _serialize_user(user):
     }
 
 
+def _normalize_phrase_list(raw_items, limit=12):
+    phrases = []
+    seen = set()
+    for item in raw_items or []:
+        if isinstance(item, str):
+            candidate = item
+        elif isinstance(item, dict):
+            candidate = (
+                item.get("phrase")
+                or item.get("title")
+                or item.get("text")
+                or item.get("keyword")
+                or ""
+            )
+        else:
+            candidate = ""
+        candidate = re.sub(r"^[\-\d\)\.\s]+", "", str(candidate or "").strip())
+        candidate = re.sub(r"\s+", " ", candidate).strip(" \n\t-.,;")
+        if not candidate:
+            continue
+        key = candidate.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        phrases.append(candidate)
+        if len(phrases) >= limit:
+            break
+    return phrases
+
+
+def _normalize_actual_questions(raw_items, limit=15):
+    normalized = []
+    seen = set()
+    for item in raw_items or []:
+        if isinstance(item, str):
+            question = item.strip()
+            intent = ""
+            source_hint = ""
+        elif isinstance(item, dict):
+            question = str(item.get("question") or item.get("q") or item.get("title") or "").strip()
+            intent = str(item.get("intent") or "").strip()
+            source_hint = str(item.get("source_hint") or item.get("source") or "").strip()
+        else:
+            continue
+
+        if not question:
+            continue
+        if not question.endswith("?"):
+            question = question.rstrip(".!") + "?"
+
+        key = question.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(
+            {
+                "question": question,
+                "intent": intent,
+                "source_hint": source_hint,
+            }
+        )
+        if len(normalized) >= limit:
+            break
+    return normalized
+
+
+def _normalize_topic_plan_items(raw_items, desired_count, semantic_core):
+    topics = []
+    seen = set()
+    semantic_core = semantic_core or []
+    for idx, item in enumerate(raw_items or []):
+        if isinstance(item, str):
+            title = item.strip()
+            why = ""
+            keyword = semantic_core[idx % len(semantic_core)] if semantic_core else ""
+            questions = []
+        elif isinstance(item, dict):
+            title = str(item.get("title") or item.get("topic") or "").strip()
+            why = str(item.get("why") or item.get("rationale") or "").strip()
+            keyword = str(item.get("keyword") or item.get("cluster") or "").strip()
+            questions = _normalize_phrase_list(item.get("questions") or item.get("audience_questions") or [], limit=4)
+        else:
+            continue
+
+        if not title:
+            continue
+        dedupe_key = title.lower()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+
+        if not keyword and semantic_core:
+            keyword = semantic_core[idx % len(semantic_core)]
+
+        topics.append(
+            {
+                "id": len(topics) + 1,
+                "title": title,
+                "keyword": keyword,
+                "questions": questions,
+                "rationale": why,
+            }
+        )
+        if len(topics) >= desired_count:
+            break
+    return topics
+
+
+def _fetch_public_web_question_hints(query_text, limit=12):
+    query_text = (query_text or "").strip()
+    if not query_text:
+        return []
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        )
+    }
+    try:
+        response = requests.get(
+            "https://duckduckgo.com/html/",
+            params={"q": query_text, "kl": "ru-ru"},
+            timeout=(6, 12),
+            headers=headers,
+        )
+    except Exception:
+        return []
+
+    if response.status_code != 200:
+        return []
+
+    html_text = response.text or ""
+    snippet_matches = re.findall(
+        r'result__snippet[^>]*>(.*?)</(?:a|div)>',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    title_matches = re.findall(
+        r'result__a[^>]*>(.*?)</a>',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    raw_questions = []
+    for block in [*title_matches, *snippet_matches]:
+        clean_text = _strip_html(block)
+        if not clean_text:
+            continue
+        question_fragments = re.findall(r"[^?]{8,180}\?", clean_text)
+        for fragment in question_fragments:
+            fragment = re.sub(r"\s+", " ", fragment).strip()
+            if fragment:
+                raw_questions.append(fragment)
+
+    return _normalize_actual_questions(raw_questions, limit=limit)
+
+
+def _ai_topic_plan_with_web_search(
+    channel_name,
+    platform,
+    channel_client_description,
+    channel_external_description,
+    recent_posts,
+    style_summary,
+    focus_text,
+    desired_count,
+):
+    try:
+        from config import Config
+    except Exception:
+        return None
+
+    if not (getattr(Config, "YANDEX_API_KEY", "") and getattr(Config, "YANDEX_FOLDER_ID", "")):
+        return None
+
+    posts_block = []
+    for idx, post in enumerate((recent_posts or [])[:10], start=1):
+        post_text = str(post).strip()
+        if post_text:
+            posts_block.append(f"{idx}. {post_text[:450]}")
+    posts_text = "\n".join(posts_block) if posts_block else "Посты недоступны."
+
+    prompt = f"""
+Сформируй контент-план для канала. Работай как стратег-контентолог.
+
+ВАЖНО:
+1) Сначала выдели ЕДИНУЮ тематику канала (ниша, ЦА, задачи), не распадай ее на отдельные несвязанные ключи.
+2) Используй web search, чтобы найти актуальные вопросы аудитории по этой тематике.
+3) Верни результат СТРОГО в JSON (без markdown и комментариев).
+
+Формат JSON:
+{{
+  "semantic_core": ["фраза 1", "фраза 2"],
+  "audience_profile": "краткое описание аудитории",
+  "search_queries": ["поисковый запрос 1", "поисковый запрос 2"],
+  "actual_questions": [
+    {{"question":"...", "intent":"...", "source_hint":"..."}}
+  ],
+  "topic_plan": [
+    {{
+      "title":"...",
+      "why":"почему это важно аудитории",
+      "keyword":"кластер/вектор темы",
+      "questions":["вопрос 1","вопрос 2"]
+    }}
+  ]
+}}
+
+Количество тем в topic_plan: ровно {desired_count}
+
+КОНТЕКСТ КАНАЛА:
+Платформа: {platform}
+Название: {channel_name}
+Описание от клиента: {channel_client_description or "нет"}
+Публичное описание канала: {channel_external_description or "нет"}
+Сводка стиля: {style_summary or "нет"}
+Фокус пользователя на период: {focus_text or "не задан"}
+Последние посты:
+{posts_text}
+""".strip()
+
+    payload = {
+        "modelUri": f"gpt://{Config.YANDEX_FOLDER_ID}/yandexgpt",
+        "completionOptions": {
+            "stream": False,
+            "temperature": 0.2,
+            "maxTokens": 3500,
+            "useWebSearch": True,
+            "searchRegion": "ru",
+        },
+        "messages": [
+            {
+                "role": "system",
+                "text": (
+                    "Ты senior контент-стратег. Отвечай только JSON, "
+                    "без markdown, пояснений и служебного текста."
+                ),
+            },
+            {"role": "user", "text": prompt},
+        ],
+    }
+    headers = {
+        "Authorization": f"Api-Key {Config.YANDEX_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        response = requests.post(
+            "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
+            headers=headers,
+            json=payload,
+            timeout=70,
+        )
+        if response.status_code != 200:
+            return None
+        raw_text = (
+            response.json()
+            .get("result", {})
+            .get("alternatives", [{}])[0]
+            .get("message", {})
+            .get("text", "")
+        )
+    except Exception:
+        return None
+
+    parsed = _extract_json_object(raw_text)
+    if not isinstance(parsed, dict):
+        return None
+
+    semantic_core = _normalize_phrase_list(
+        parsed.get("semantic_core") or parsed.get("semantic_vectors") or [],
+        limit=12,
+    )
+    audience_profile = str(parsed.get("audience_profile") or "").strip()
+    search_queries = _normalize_phrase_list(parsed.get("search_queries") or [], limit=10)
+    actual_questions = _normalize_actual_questions(
+        parsed.get("actual_questions") or parsed.get("audience_questions") or [],
+        limit=max(desired_count + 4, 10),
+    )
+    topic_items = _normalize_topic_plan_items(
+        parsed.get("topic_plan") or parsed.get("topics") or [],
+        desired_count=desired_count,
+        semantic_core=semantic_core,
+    )
+
+    if not topic_items:
+        return None
+
+    return {
+        "semantic_core": semantic_core,
+        "audience_profile": audience_profile,
+        "search_queries": search_queries,
+        "actual_questions": actual_questions,
+        "topics": topic_items,
+    }
+
+
 def _build_topic_planner_payload(channel, focus_text="", desired_count=8):
     """Готовит идеи тем для шага 2 (настройка постинга)."""
     desired_count = min(max(int(desired_count or 8), 3), 20)
@@ -1351,9 +1649,12 @@ def _build_topic_planner_payload(channel, focus_text="", desired_count=8):
     if not isinstance(recent_posts_raw, list):
         recent_posts_raw = []
     recent_posts = [str(item).strip() for item in recent_posts_raw if str(item).strip()][:10]
-
     if not recent_posts and channel_external_description:
         recent_posts = [channel_external_description]
+
+    process_steps = [
+        "Собираем полный контекст канала: описание клиента, публичное описание и последние посты.",
+    ]
 
     style_profile = _ai_style_profile(
         channel_name=channel.channel_name,
@@ -1361,100 +1662,172 @@ def _build_topic_planner_payload(channel, focus_text="", desired_count=8):
         channel_description=channel_external_description or channel_client_description,
         recent_posts=recent_posts,
     )
-    if not style_profile:
+    if style_profile:
+        process_steps.append("Стиль и тон канала определены через YandexGPT-анализ последних публикаций.")
+    else:
         style_profile = _heuristic_style_profile(
             channel_name=channel.channel_name,
             platform=channel.platform,
             channel_description=channel_external_description or channel_client_description,
             recent_posts=recent_posts,
         )
+        process_steps.append("YandexGPT-анализ недоступен, применен эвристический анализ стиля канала.")
 
     style_summary = (style_profile.get("summary") or "").strip()
-
-    keyword_pool = []
-    planner_stop_words = {
-        "больше",
-        "тема",
-        "темы",
-        "канал",
-        "канала",
-        "контент",
-        "пост",
-        "посты",
-        "публикация",
-        "публикации",
-    }
-    keyword_sources = [
-        focus_text,
-        channel_client_description,
-        channel_external_description,
-        " ".join(recent_posts),
-        " ".join(style_profile.get("keywords") or []),
-    ]
-    for source_text in keyword_sources:
-        for keyword in _extract_keywords(source_text, limit=12):
-            normalized = keyword.lower().strip()
-            if not normalized:
-                continue
-            if normalized in planner_stop_words:
-                continue
-            if normalized in keyword_pool:
-                continue
-            keyword_pool.append(normalized)
-
-    fallback_keywords = [
-        "контент план",
-        "боли аудитории",
-        "практические кейсы",
-        "ошибки новичков",
-        "тренды ниши",
-        "вопросы подписчиков",
-        "полезные инструменты",
-        "разбор стратегии",
-    ]
-    for fallback_keyword in fallback_keywords:
-        if fallback_keyword not in keyword_pool:
-            keyword_pool.append(fallback_keyword)
-
-    topic_templates = [
-        "Практический разбор: {keyword} для аудитории канала",
-        "Чек-лист по теме «{keyword}»: что сделать за 7 дней",
-        "Топ ошибок в теме «{keyword}» и как их исправить",
-        "Кейс подписчика: как применить «{keyword}» на практике",
-        "Тренды 2026: что меняется в «{keyword}» прямо сейчас",
-        "Пошаговая инструкция по теме «{keyword}» для начинающих",
-    ]
-    question_templates = [
-        "С чего начать в теме «{keyword}» без лишних затрат?",
-        "Какие частые ошибки мешают получить результат в «{keyword}»?",
-        "Как измерить эффективность подхода по теме «{keyword}»?",
-    ]
-
+    semantic_core = []
+    actual_questions = []
+    search_queries = []
     topic_items = []
-    for idx in range(desired_count):
-        keyword = keyword_pool[idx % len(keyword_pool)]
-        title = topic_templates[idx % len(topic_templates)].format(keyword=keyword)
-        topic_items.append(
-            {
-                "id": idx + 1,
-                "title": title,
-                "keyword": keyword,
-                "questions": [q.format(keyword=keyword) for q in question_templates],
-                "rationale": (
-                    f"Тема сформирована на базе анализа канала «{channel.channel_name}» "
-                    f"и пользовательского фокуса."
-                ),
-            }
+    source_mode = "heuristic_fallback"
+
+    ai_plan = _ai_topic_plan_with_web_search(
+        channel_name=channel.channel_name,
+        platform=channel.platform,
+        channel_client_description=channel_client_description,
+        channel_external_description=channel_external_description,
+        recent_posts=recent_posts,
+        style_summary=style_summary,
+        focus_text=focus_text,
+        desired_count=desired_count,
+    )
+
+    if ai_plan:
+        source_mode = "yandexgpt_web_search"
+        semantic_core = ai_plan.get("semantic_core") or []
+        actual_questions = ai_plan.get("actual_questions") or []
+        search_queries = ai_plan.get("search_queries") or []
+        topic_items = ai_plan.get("topics") or []
+
+        min_questions = max(6, desired_count)
+        if len(actual_questions) < min_questions:
+            query_for_boost = " ".join(search_queries[:2]) or " ".join(semantic_core[:2]) or channel.channel_name
+            boosted_questions = _fetch_public_web_question_hints(query_for_boost, limit=min_questions)
+            actual_questions = _normalize_actual_questions(
+                [*actual_questions, *boosted_questions],
+                limit=min_questions + 6,
+            )
+            if boosted_questions:
+                process_steps.append(
+                    "Список вопросов дополнен публичным веб-поиском для расширения охвата аудитории."
+                )
+
+        if len(actual_questions) < min_questions:
+            fallback_core = semantic_core or [channel.channel_name]
+            template_questions = []
+            for semantic_item in fallback_core:
+                template_questions.extend(
+                    [
+                        f"С чего начать работу по теме «{semantic_item}»?",
+                        f"Какие частые ошибки встречаются в теме «{semantic_item}»?",
+                        f"Какие практические шаги дают результат в «{semantic_item}»?",
+                    ]
+                )
+            actual_questions = _normalize_actual_questions(
+                [*actual_questions, *template_questions],
+                limit=min_questions + 6,
+            )
+
+        process_steps.extend(
+            [
+                "YandexGPT выделил единую тематическую ось канала (semantic core).",
+                "Через web search собраны актуальные вопросы аудитории по тематике канала.",
+                "На базе тематики + вопросов сформирован список тем для публикаций.",
+            ]
         )
+    else:
+        process_steps.append(
+            "YandexGPT web-search недоступен: построение плана выполнено в резервном режиме."
+        )
+
+        semantic_seed_text = " ".join(
+            part
+            for part in [
+                focus_text,
+                channel_client_description,
+                channel_external_description,
+                style_summary,
+            ]
+            if part
+        )
+        semantic_core = _normalize_phrase_list(
+            [s.strip() for s in re.split(r"[.\n;:]+", semantic_seed_text) if _count_words(s) >= 3],
+            limit=8,
+        )
+        if not semantic_core:
+            fallback_keywords = _extract_keywords(
+                f"{channel.channel_name} {semantic_seed_text} {' '.join(recent_posts)}",
+                limit=8,
+            )
+            if fallback_keywords:
+                semantic_core = [", ".join(fallback_keywords[:4])]
+            else:
+                semantic_core = [f"Контент по тематике канала «{channel.channel_name}»"]
+
+        query_keywords = _extract_keywords(
+            f"{channel.channel_name} {semantic_seed_text}",
+            limit=7,
+        )
+        query_text = " ".join(query_keywords[:5]) or channel.channel_name
+        search_queries = [query_text]
+        actual_questions = _fetch_public_web_question_hints(
+            query_text,
+            limit=max(desired_count + 4, 10),
+        )
+        if actual_questions:
+            process_steps.append("Для актуальных вопросов использован публичный веб-поиск по теме канала.")
+        else:
+            actual_questions = _normalize_actual_questions(
+                [
+                    f"Какие ключевые проблемы аудитории в теме «{semantic_core[0]}»?",
+                    f"Что чаще всего спрашивают подписчики про «{semantic_core[0]}»?",
+                    f"Какие ошибки мешают получить результат в «{semantic_core[0]}»?",
+                ],
+                limit=8,
+            )
+            process_steps.append(
+                "Публичный веб-поиск недоступен, использованы вопросы из тематического шаблона."
+            )
+
+        for idx in range(desired_count):
+            semantic_vector = semantic_core[idx % len(semantic_core)]
+            base_question = actual_questions[idx % len(actual_questions)] if actual_questions else {}
+            question_text = (base_question.get("question") or "").strip()
+
+            if question_text:
+                short_question = question_text.rstrip("?")
+                title = f"{semantic_vector}: {short_question[:95]}"
+            else:
+                title = f"Практический разбор по теме «{semantic_vector}»"
+
+            topic_items.append(
+                {
+                    "id": idx + 1,
+                    "title": title,
+                    "keyword": semantic_vector,
+                    "questions": [question_text] if question_text else [],
+                    "rationale": (
+                        "Тема построена из общего контекста канала и подтверждена актуальными вопросами аудитории."
+                    ),
+                }
+            )
+
+    keywords_for_ui = _normalize_phrase_list(
+        [*(style_profile.get("keywords") or []), *semantic_core],
+        limit=12,
+    )
 
     return {
         "channel_id": channel.id,
         "channel_name": channel.channel_name,
         "platform": channel.platform,
         "style_summary": style_summary,
-        "keywords": keyword_pool[:12],
-        "topics": topic_items,
-        "source": "ai+heuristic",
+        "keywords": keywords_for_ui,
+        "semantic_core": semantic_core[:12],
+        "actual_questions": actual_questions[:20],
+        "search_queries": search_queries[:10],
+        "topics": topic_items[:desired_count],
+        "source": source_mode,
+        "process_steps": process_steps,
     }
 
 

@@ -104,9 +104,22 @@
                 <div id="plannerResultBox"></div>
 
                 <div class="alert alert-secondary" id="plannerInsightsBox" style="display:none;">
+                    <div><strong>Источник генерации:</strong> <span id="plannerSource">—</span></div>
                     <div><strong>Канал:</strong> <span id="plannerChannelName">—</span></div>
                     <div class="mt-1"><strong>Стилистика:</strong> <span id="plannerStyleSummary">—</span></div>
+                    <div class="mt-1"><strong>Ядро тематики:</strong> <span id="plannerSemanticCore">—</span></div>
                     <div class="mt-1"><strong>Ключевые слова:</strong> <span id="plannerKeywords">—</span></div>
+                    <div class="mt-1"><strong>Поисковые запросы:</strong> <span id="plannerSearchQueries">—</span></div>
+                </div>
+
+                <div class="alert alert-info" id="plannerQuestionsBox" style="display:none;">
+                    <strong>Актуальные вопросы аудитории:</strong>
+                    <ul class="mb-0 mt-2" id="plannerQuestionsList"></ul>
+                </div>
+
+                <div class="alert alert-light border" id="plannerProcessBox" style="display:none;">
+                    <strong>Как формируется результат “Сгенерировать темы”:</strong>
+                    <ol class="mb-0 mt-2" id="plannerProcessList"></ol>
                 </div>
 
                 <div id="plannerTopicsContainer">
@@ -137,10 +150,20 @@
 <script>
     let plannedTopics = [];
 
+    function escapeHtml(value) {
+        return (value || "")
+            .toString()
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+    }
+
     function plannerMessage(text, kind) {
         const cls = kind === "success" ? "success" : (kind === "warning" ? "warning" : "danger");
         document.getElementById("plannerResultBox").innerHTML = `
-            <div class="alert alert-${cls} mb-3">${text}</div>
+            <div class="alert alert-${cls} mb-3">${escapeHtml(text)}</div>
         `;
     }
 
@@ -151,15 +174,61 @@
 
     function setPlannerInsights(payload) {
         const insights = document.getElementById("plannerInsightsBox");
-        const hasData = payload && (payload.style_summary || (payload.keywords || []).length);
+        const hasData = payload && (
+            payload.style_summary ||
+            (payload.keywords || []).length ||
+            (payload.semantic_core || []).length
+        );
         if (!hasData) {
             insights.style.display = "none";
+            document.getElementById("plannerQuestionsBox").style.display = "none";
+            document.getElementById("plannerProcessBox").style.display = "none";
             return;
         }
         insights.style.display = "";
+        const sourceMode = payload.source || "unknown";
+        const sourceLabel = sourceMode === "yandexgpt_web_search"
+            ? "YandexGPT + web search"
+            : "Резервный режим (эвристика + публичный web-поиск)";
+        document.getElementById("plannerSource").textContent = sourceLabel;
         document.getElementById("plannerChannelName").textContent = payload.channel_name || "—";
         document.getElementById("plannerStyleSummary").textContent = payload.style_summary || "Без явного стилевого маркера";
+        document.getElementById("plannerSemanticCore").textContent = (payload.semantic_core || []).slice(0, 6).join(" · ") || "—";
         document.getElementById("plannerKeywords").textContent = (payload.keywords || []).slice(0, 12).join(", ") || "—";
+        document.getElementById("plannerSearchQueries").textContent = (payload.search_queries || []).slice(0, 6).join(" | ") || "—";
+
+        const questions = payload.actual_questions || [];
+        const questionsBox = document.getElementById("plannerQuestionsBox");
+        const questionsList = document.getElementById("plannerQuestionsList");
+        if (questions.length) {
+            questionsList.innerHTML = questions
+                .slice(0, 12)
+                .map((questionItem) => {
+                    const questionText = typeof questionItem === "string"
+                        ? questionItem
+                        : (questionItem.question || "");
+                    const sourceHint = typeof questionItem === "string"
+                        ? ""
+                        : (questionItem.source_hint || "");
+                    return `<li>${escapeHtml(questionText)}${sourceHint ? ` <span class="text-muted">(${escapeHtml(sourceHint)})</span>` : ""}</li>`;
+                })
+                .join("");
+            questionsBox.style.display = "";
+        } else {
+            questionsList.innerHTML = "";
+            questionsBox.style.display = "none";
+        }
+
+        const processSteps = payload.process_steps || [];
+        const processBox = document.getElementById("plannerProcessBox");
+        const processList = document.getElementById("plannerProcessList");
+        if (processSteps.length) {
+            processList.innerHTML = processSteps.map((step) => `<li>${escapeHtml(step)}</li>`).join("");
+            processBox.style.display = "";
+        } else {
+            processList.innerHTML = "";
+            processBox.style.display = "none";
+        }
     }
 
     function renderTopics() {
@@ -197,6 +266,7 @@
                         onchange="updateTopicTitle(${idx}, this.value)"
                     >${safeTitle}</textarea>
                     ${questions ? `<ul class="mt-2 mb-0 small">${questions}</ul>` : ""}
+                    ${topic.rationale ? `<div class="topic-meta mt-2">${topic.rationale}</div>` : ""}
                 </div>
             `;
         }).join("");
@@ -252,7 +322,7 @@
                 title: topic.title || "",
                 keyword: topic.keyword || "",
                 questions: topic.questions || [],
-                rationale: topic.rationale || ""
+                rationale: topic.rationale || topic.why || ""
             }));
             setPlannerInsights(data);
             renderTopics();
