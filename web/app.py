@@ -2314,6 +2314,146 @@ def _question_text_list(raw_questions, limit=5):
     return [item.get("question") for item in normalized_questions if item.get("question")]
 
 
+def _normalize_selected_channel_ids(raw_ids):
+    selected_ids = []
+    for value in raw_ids or []:
+        try:
+            channel_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if channel_id not in selected_ids:
+            selected_ids.append(channel_id)
+    return selected_ids
+
+
+def _resolve_publish_target_channels(selected_channel_ids, admin_client_id=None):
+    channels_query = ClientChannel.query.filter_by(is_active=True)
+
+    if is_admin_user(current_user):
+        if selected_channel_ids:
+            channels_query = channels_query.filter(ClientChannel.id.in_(selected_channel_ids))
+        if admin_client_id is not None:
+            try:
+                admin_client_id = int(admin_client_id)
+            except (TypeError, ValueError):
+                return None, (jsonify({"success": False, "error": "Некорректный client_id"}), 400)
+            channels_query = channels_query.filter_by(client_id=admin_client_id)
+        elif current_user.client_id:
+            channels_query = channels_query.filter_by(client_id=current_user.client_id)
+        elif not selected_channel_ids:
+            return (
+                None,
+                (
+                    jsonify(
+                        {
+                            "success": False,
+                            "error": "Выберите хотя бы один канал для ручной публикации в админ-режиме.",
+                        }
+                    ),
+                    400,
+                ),
+            )
+    else:
+        if not current_user.client_id:
+            return None, (jsonify({"success": False, "error": "Ваш аккаунт не привязан к клиенту"}), 400)
+        channels_query = channels_query.filter_by(client_id=current_user.client_id)
+        if selected_channel_ids:
+            channels_query = channels_query.filter(ClientChannel.id.in_(selected_channel_ids))
+
+    channels = channels_query.order_by(ClientChannel.created_at.asc()).all()
+    if not channels:
+        return None, (jsonify({"success": False, "error": "Нет активных каналов для публикации"}), 400)
+    return channels, None
+
+
+def _planned_topics_for_test_batch(channel, limit=3):
+    limit = max(1, min(int(limit or 3), 10))
+    topics = []
+    seen = set()
+
+    extra = _channel_extra_config(channel)
+    draft = extra.get("posting_plan_draft") if isinstance(extra.get("posting_plan_draft"), dict) else {}
+    plan_items = _normalize_posting_plan_items_for_save(draft.get("plan_items") or [])
+    plan_items = sorted(plan_items, key=lambda item: f"{item.get('publish_date','')} {item.get('publish_time','')}")
+
+    for item in plan_items:
+        topic_text = str(item.get("topic") or "").strip()
+        if not topic_text:
+            continue
+        key = topic_text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        topics.append(topic_text)
+        if len(topics) >= limit:
+            return topics
+
+    for topic_text in _extract_channel_topics_for_plan(channel):
+        key = topic_text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        topics.append(topic_text)
+        if len(topics) >= limit:
+            return topics
+
+    if not topics:
+        topics = [f"Тестовый пост для канала «{channel.channel_name}»"]
+
+    while len(topics) < limit:
+        topics.append(topics[len(topics) % len(topics)])
+    return topics[:limit]
+
+
+def _publish_generated_post_for_channel(channel, publisher, topic_text):
+    content_text = _generate_manual_publication_text(channel, topic_text)
+    image_path = None
+    if _channel_uses_ai_images(channel):
+        image_path = _generate_manual_publication_image(topic_text, content_text)
+
+    channel_info = {
+        "platform": channel.platform,
+        "platform_channel_id": channel.channel_id,
+        "channel_name": channel.channel_name,
+        "access_token": channel.access_token,
+        "hashtags": _channel_hashtags(channel),
+    }
+
+    publish_result = publisher.publish_to_channel(channel_info, content_text, image_path=image_path)
+    success = bool(publish_result.get("success"))
+    error_text = str(publish_result.get("error") or "").strip() or None
+
+    post_record = ChannelPost(
+        channel_id=channel.id,
+        topic=topic_text,
+        content=content_text,
+        success=success,
+        views=0,
+        likes=0,
+        shares=0,
+        comments=0,
+        published_at=datetime.utcnow(),
+        error_message=error_text,
+    )
+
+    payload = {
+        "channel_id": channel.id,
+        "channel_name": channel.channel_name,
+        "platform": channel.platform,
+        "success": success,
+        "post_id": publish_result.get("post_id"),
+        "error": error_text,
+        "topic": topic_text,
+        "image_used": bool(image_path),
+        "post_record": post_record,
+    }
+
+    if image_path:
+        _cleanup_temp_generated_image(image_path)
+
+    return payload
+
+
 def _get_accessible_channel(channel_id):
     channel = ClientChannel.query.get_or_404(channel_id)
     if is_admin_user(current_user):
@@ -3873,46 +4013,14 @@ def api_publish_now():
     admin_client_id = data.get("client_id")
     explicit_topic = (data.get("topic") or "").strip()
     shared_article = bool(data.get("shared_article", True))
-    selected_channel_ids_raw = data.get("channel_ids") or []
+    selected_channel_ids = _normalize_selected_channel_ids(data.get("channel_ids") or [])
 
-    selected_channel_ids = []
-    for value in selected_channel_ids_raw:
-        try:
-            channel_id = int(value)
-        except (TypeError, ValueError):
-            continue
-        if channel_id not in selected_channel_ids:
-            selected_channel_ids.append(channel_id)
-
-    channels_query = ClientChannel.query.filter_by(is_active=True)
-    if is_admin_user(current_user):
-        if selected_channel_ids:
-            channels_query = channels_query.filter(ClientChannel.id.in_(selected_channel_ids))
-        if admin_client_id is not None:
-            try:
-                admin_client_id = int(admin_client_id)
-            except (TypeError, ValueError):
-                return jsonify({"success": False, "error": "Некорректный client_id"}), 400
-            channels_query = channels_query.filter_by(client_id=admin_client_id)
-        elif current_user.client_id:
-            channels_query = channels_query.filter_by(client_id=current_user.client_id)
-        elif not selected_channel_ids:
-            return jsonify(
-                {
-                    "success": False,
-                    "error": "Выберите хотя бы один канал для ручной публикации в админ-режиме.",
-                }
-            ), 400
-    else:
-        if not current_user.client_id:
-            return jsonify({"success": False, "error": "Ваш аккаунт не привязан к клиенту"}), 400
-        channels_query = channels_query.filter_by(client_id=current_user.client_id)
-        if selected_channel_ids:
-            channels_query = channels_query.filter(ClientChannel.id.in_(selected_channel_ids))
-
-    channels = channels_query.order_by(ClientChannel.created_at.asc()).all()
-    if not channels:
-        return jsonify({"success": False, "error": "Нет активных каналов для публикации"}), 400
+    channels, error_response = _resolve_publish_target_channels(
+        selected_channel_ids=selected_channel_ids,
+        admin_client_id=admin_client_id,
+    )
+    if error_response:
+        return error_response
 
     try:
         from posting.multi_publisher import MultiPlatformPublisher
@@ -3930,60 +4038,18 @@ def api_publish_now():
 
     for channel in channels:
         topic_text = shared_topic if shared_article else _resolve_manual_publish_topic(channel, explicit_topic)
-        content_text = _generate_manual_publication_text(channel, topic_text)
-        image_path = None
-        if _channel_uses_ai_images(channel):
-            image_path = _generate_manual_publication_image(topic_text, content_text)
-            if image_path:
-                generated_images += 1
-        hashtags = _channel_hashtags(channel)
+        publish_payload = _publish_generated_post_for_channel(channel, publisher, topic_text)
+        db.session.add(publish_payload["post_record"])
 
-        channel_info = {
-            "platform": channel.platform,
-            "platform_channel_id": channel.channel_id,
-            "channel_name": channel.channel_name,
-            "access_token": channel.access_token,
-            "hashtags": hashtags,
-        }
-
-        publish_result = publisher.publish_to_channel(channel_info, content_text, image_path=image_path)
-        success = bool(publish_result.get("success"))
-        error_text = str(publish_result.get("error") or "").strip() or None
-
-        post_record = ChannelPost(
-            channel_id=channel.id,
-            topic=topic_text,
-            content=content_text,
-            success=success,
-            views=0,
-            likes=0,
-            shares=0,
-            comments=0,
-            published_at=datetime.utcnow(),
-            error_message=error_text,
-        )
-        db.session.add(post_record)
-
-        if success:
+        if publish_payload["success"]:
             successful_count += 1
         else:
             failed_count += 1
+        if publish_payload["image_used"]:
+            generated_images += 1
 
-        results.append(
-            {
-                "channel_id": channel.id,
-                "channel_name": channel.channel_name,
-                "platform": channel.platform,
-                "success": success,
-                "post_id": publish_result.get("post_id"),
-                "error": error_text,
-                "topic": topic_text,
-                "image_used": bool(image_path),
-            }
-        )
-
-        if image_path:
-            _cleanup_temp_generated_image(image_path)
+        result_item = {k: v for k, v in publish_payload.items() if k != "post_record"}
+        results.append(result_item)
 
     db.session.commit()
 
@@ -4008,6 +4074,90 @@ def api_publish_now():
             "failed": failed_count,
             "generated_images": generated_images,
             "topic": shared_topic if shared_article else None,
+            "results": results,
+        }
+    )
+
+
+@app.route("/api/publish_test_triplet", methods=["POST"])
+@login_required
+def api_publish_test_triplet():
+    data = request.get_json(silent=True) or {}
+    admin_client_id = data.get("client_id")
+    selected_channel_ids = _normalize_selected_channel_ids(data.get("channel_ids") or [])
+    requested_count = data.get("posts_per_channel", 3)
+    try:
+        posts_per_channel = int(requested_count)
+    except (TypeError, ValueError):
+        posts_per_channel = 3
+    posts_per_channel = min(max(posts_per_channel, 1), 5)
+
+    channels, error_response = _resolve_publish_target_channels(
+        selected_channel_ids=selected_channel_ids,
+        admin_client_id=admin_client_id,
+    )
+    if error_response:
+        return error_response
+
+    try:
+        from posting.multi_publisher import MultiPlatformPublisher
+
+        publisher = MultiPlatformPublisher()
+    except Exception as e:
+        error_logger.error("test_triplet_publish_init_failed user_id=%s error=%s", current_user.id, e)
+        return jsonify({"success": False, "error": f"Не удалось инициализировать публикатор: {e}"}), 500
+
+    results = []
+    successful_count = 0
+    failed_count = 0
+    generated_images = 0
+    attempted_posts = 0
+
+    for channel in channels:
+        topics_for_channel = _planned_topics_for_test_batch(channel, limit=posts_per_channel)
+        for batch_index, topic_text in enumerate(topics_for_channel, start=1):
+            attempted_posts += 1
+            publish_payload = _publish_generated_post_for_channel(channel, publisher, topic_text)
+            db.session.add(publish_payload["post_record"])
+
+            if publish_payload["success"]:
+                successful_count += 1
+            else:
+                failed_count += 1
+            if publish_payload["image_used"]:
+                generated_images += 1
+
+            result_item = {k: v for k, v in publish_payload.items() if k != "post_record"}
+            result_item["batch_index"] = batch_index
+            result_item["batch_total"] = len(topics_for_channel)
+            results.append(result_item)
+
+    db.session.commit()
+
+    if successful_count == 0:
+        return jsonify(
+            {
+                "success": False,
+                "error": "Тестовый прогон не опубликовал ни одного поста. Проверьте токены и доступы каналов.",
+                "attempted_posts": attempted_posts,
+                "published": successful_count,
+                "failed": failed_count,
+                "generated_images": generated_images,
+                "channels_count": len(channels),
+                "posts_per_channel": posts_per_channel,
+                "results": results,
+            }
+        ), 400
+
+    return jsonify(
+        {
+            "success": True,
+            "attempted_posts": attempted_posts,
+            "published": successful_count,
+            "failed": failed_count,
+            "generated_images": generated_images,
+            "channels_count": len(channels),
+            "posts_per_channel": posts_per_channel,
             "results": results,
         }
     )

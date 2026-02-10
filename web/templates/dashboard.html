@@ -326,6 +326,12 @@
                             <button class="btn btn-primary" onclick="publishNow(this)">
                                 <i class="fas fa-paper-plane me-2"></i>Опубликовать сейчас
                             </button>
+                            <button class="btn btn-outline-warning" onclick="publishTestTriplet(this)">
+                                <i class="fas fa-flask me-2"></i>Тест: 3 поста из плана
+                            </button>
+                        </div>
+                        <div class="form-text">
+                            Временная тестовая кнопка: публикует по 3 поста из сохраненного плана для каждого выбранного канала.
                         </div>
                     </div>
                 {% else %}
@@ -656,6 +662,68 @@ function publishNow(buttonElement) {
     })
     .catch(error => {
         showNotification('danger', 'Ошибка', 'Не удалось выполнить публикацию');
+        console.error('Error:', error);
+    })
+    .finally(() => {
+        button.innerHTML = originalText;
+        button.disabled = false;
+    });
+}
+
+function publishTestTriplet(buttonElement) {
+    const selectedChannelIds = getSelectedPublishChannelIds();
+    if (!selectedChannelIds.length) {
+        showNotification('warning', 'Выберите каналы', 'Отметьте хотя бы один канал для тестового прогона');
+        return;
+    }
+
+    const confirmText =
+        `Запустить тестовый прогон? Будут сразу опубликованы 3 поста из плана для каждого выбранного канала (${selectedChannelIds.length}).`;
+    if (!confirm(confirmText)) {
+        return;
+    }
+
+    const button = buttonElement || document.querySelector('button[onclick*="publishTestTriplet"]');
+    if (!button) {
+        return;
+    }
+    const originalText = button.innerHTML;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Тестирую...';
+    button.disabled = true;
+
+    fetch('/api/publish_test_triplet', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            channel_ids: selectedChannelIds,
+            posts_per_channel: 3
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            const attempted = Number(data.attempted_posts || 0);
+            const published = Number(data.published || 0);
+            const failed = Number(data.failed || 0);
+            const generatedImages = Number(data.generated_images || 0);
+            showNotification(
+                'success',
+                'Тестовый прогон завершен',
+                `Попыток: ${attempted}. Успешно: ${published}. Ошибок: ${failed}. Картинок: ${generatedImages}.`
+            );
+            loadRecentPublications();
+        } else {
+            showNotification(
+                'danger',
+                'Ошибка тестового прогона',
+                data.error || 'Не удалось выполнить тестовую публикацию'
+            );
+        }
+    })
+    .catch(error => {
+        showNotification('danger', 'Ошибка', 'Не удалось выполнить тестовый прогон');
         console.error('Error:', error);
     })
     .finally(() => {
