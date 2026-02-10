@@ -210,7 +210,7 @@
                 <div class="channels-steps">
                     <ol>
                         <li>Выберите платформу и вставьте ссылку/ник канала.</li>
-                        <li>Для Telegram используйте только `https://tg.me/...` или `@username`, затем нажмите «Проверить канал».</li>
+                        <li>Для Telegram используйте только `https://t.me/...` или `@username`, затем нажмите «Проверить канал».</li>
                         <li>После проверки сохраните подключение: имя и описание из канала фиксируются автоматически, а вы добавляете свое описание (20+ слов).</li>
                     </ol>
                 </div>
@@ -228,12 +228,12 @@
                         </div>
                     </div>
                     <div class="col-md-8">
-                        <label class="form-label" id="autopostReferenceLabel">Ссылка https://tg.me/... или @username *</label>
+                        <label class="form-label" id="autopostReferenceLabel">Ссылка https://t.me/... или @username *</label>
                         <input
                             type="text"
                             class="form-control"
                             id="autopostChannelReference"
-                            placeholder="@mag_snoomi или https://tg.me/mag_snoomi"
+                            placeholder="@mag_snoomi или https://t.me/mag_snoomi"
                             required
                         >
                         <div class="form-text">Без публичной проверки ссылка/ник не добавляются в автопостинг</div>
@@ -260,7 +260,7 @@
                             type="text"
                             class="form-control"
                             id="autopostVerifiedSourceUrl"
-                            placeholder="https://tg.me/..."
+                            placeholder="https://t.me/..."
                             readonly
                         >
                     </div>
@@ -461,7 +461,7 @@
                 }
                 return '';
             }
-            const match = raw.match(/^https:\/\/(?:www\.)?tg\.me\/([A-Za-z0-9_-]{4,64})(?:[/?#].*)?$/i);
+            const match = raw.match(/^https:\/\/(?:www\.)?t\.me\/([A-Za-z0-9_-]{4,64})(?:[/?#].*)?$/i);
             if (!match) {
                 return '';
             }
@@ -519,8 +519,8 @@
             if (platform === 'telegram') {
                 tgBtn.className = 'btn btn-primary';
                 vkBtn.className = 'btn btn-outline-primary';
-                referenceLabel.textContent = 'Ссылка https://tg.me/... или @username *';
-                referenceInput.placeholder = '@mag_snoomi или https://tg.me/mag_snoomi';
+                referenceLabel.textContent = 'Ссылка https://t.me/... или @username *';
+                referenceInput.placeholder = '@mag_snoomi или https://t.me/mag_snoomi';
                 tokenLabel.textContent = 'Telegram bot token для публикации *';
                 tokenHelpLink.href = tokenHelpLinks.telegram;
                 tokenHelpLink.textContent = 'Как получить Telegram bot token?';
@@ -530,10 +530,10 @@
                 vkBtn.className = 'btn btn-primary';
                 referenceLabel.textContent = 'Ссылка VK-группы (или short name) *';
                 referenceInput.placeholder = 'https://vk.com/club123456 или shortname';
-                tokenLabel.textContent = 'VK access token для проверки и публикации *';
+                tokenLabel.textContent = 'VK access token для публикации *';
                 tokenHelpLink.href = tokenHelpLinks.vk;
                 tokenHelpLink.textContent = 'Как получить VK access token?';
-                tokenHint.textContent = '';
+                tokenHint.textContent = 'Проверка VK-ссылки выполняется публично без токена; токен обязателен при сохранении для публикации.';
             }
         }
 
@@ -549,13 +549,9 @@
             }
             if (platform === 'telegram' && !telegramReferenceKey(channelReference)) {
                 showAutopostResult(
-                    'Для Telegram используйте только ссылку вида https://tg.me/channel или ник вида @channel.',
+                    'Для Telegram используйте только ссылку вида https://t.me/channel или ник вида @channel.',
                     false
                 );
-                return;
-            }
-            if (platform === 'vk' && !accessToken) {
-                showAutopostResult('Укажите access token для обработчика.', false);
                 return;
             }
 
@@ -616,11 +612,6 @@
         document.getElementById('platformBtnVk').addEventListener('click', () => setPlatform('vk'));
         document.getElementById('autopostVerifyBtn').addEventListener('click', verifyChannel);
         document.getElementById('autopostChannelReference').addEventListener('input', clearVerificationState);
-        document.getElementById('autopostAccessToken').addEventListener('input', () => {
-            if (document.getElementById('autopostPlatform').value === 'vk') {
-                clearVerificationState();
-            }
-        });
         document.getElementById('autopostDescription').addEventListener('input', refreshDescriptionCounter);
         setPlatform('telegram');
         refreshDescriptionCounter();

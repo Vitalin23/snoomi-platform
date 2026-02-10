@@ -493,11 +493,11 @@ def _extract_telegram_username(channel_reference):
     if raw_reference.startswith("@"):
         candidate = raw_reference[1:]
     else:
-        # Поддерживаем только публичный формат ссылки https://tg.me/<username>.
+        # Поддерживаем только публичный формат ссылки https://t.me/<username>.
         if not raw_reference.startswith("https://"):
             return None
         parsed = urlparse(raw_reference)
-        if parsed.netloc.lower() not in {"tg.me", "www.tg.me"}:
+        if parsed.netloc.lower() not in {"t.me", "www.t.me"}:
             return None
 
         path_parts = [part for part in parsed.path.split("/") if part]
@@ -564,10 +564,10 @@ def _fetch_telegram_channel_preview(channel_reference, access_token=None):
     if not username:
         return {
             "success": False,
-            "error": "Для Telegram укажите ссылку вида https://tg.me/channel или ник вида @channel",
+            "error": "Для Telegram укажите ссылку вида https://t.me/channel или ник вида @channel",
         }
 
-    source_url = f"https://tg.me/{username}"
+    source_url = f"https://t.me/{username}"
     channel_name = f"@{username}"
     channel_description = ""
     recent_posts = []
@@ -614,12 +614,12 @@ def _fetch_telegram_channel_preview(channel_reference, access_token=None):
             verification_errors.append(f"{label}: {request_error}")
         return False
 
-    # Сначала проверяем канонический адрес tg.me.
+    # Сначала проверяем канонический адрес t.me.
     primary_ok = _try_public_url(source_url, "публичная ссылка")
-    # Если tg.me недоступен/не прошел, пробуем технический fallback t.me.
+    # Если t.me недоступен/не прошел, пробуем технический fallback tg.me.
     if not primary_ok:
-        fallback_public_url = f"https://t.me/{username}"
-        fallback_ok = _try_public_url(fallback_public_url, "fallback t.me")
+        fallback_public_url = f"https://tg.me/{username}"
+        fallback_ok = _try_public_url(fallback_public_url, "fallback tg.me")
         if fallback_ok:
             system_logger.warning(
                 "telegram_public_verify_fallback_used username=%s canonical=%s fallback=%s",
@@ -654,7 +654,7 @@ def _fetch_telegram_channel_preview(channel_reference, access_token=None):
     if not verified:
         error_hint = (
             "Не удалось проверить публичную ссылку Telegram-канала. "
-            "Проверьте адрес в формате https://tg.me/channel или @channel и повторите попытку."
+            "Проверьте адрес в формате https://t.me/channel или @channel и повторите попытку."
         )
         if verification_errors:
             error_hint += f" Детали: {' | '.join(verification_errors[:2])}"
@@ -687,98 +687,142 @@ def _fetch_telegram_channel_preview(channel_reference, access_token=None):
     }
 
 def _fetch_vk_channel_preview(channel_reference, access_token):
-    if not access_token:
-        return {"success": False, "error": "Для VK нужно указать access token для проверки группы"}
-
     vk_identifier = _extract_vk_identifier(channel_reference)
     if not vk_identifier:
         return {"success": False, "error": "Укажите корректную ссылку VK-группы или идентификатор"}
 
-    try:
-        group_resp = requests.get(
-            "https://api.vk.com/method/groups.getById",
-            params={
-                "group_id": vk_identifier,
-                "fields": "description,screen_name",
-                "access_token": access_token,
-                "v": "5.199",
-            },
-            timeout=20,
+    # Верификация VK выполняется публично (без VK API).
+    _ = access_token
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
         )
-        group_payload = group_resp.json()
-    except Exception as e:
-        return {"success": False, "error": f"Не удалось проверить VK-группу: {e}"}
+    }
+    raw_reference = (channel_reference or "").strip()
+    verification_errors = []
 
-    if group_payload.get("error"):
-        error_text = group_payload["error"].get("error_msg", "VK API error")
-        if "invalid access_token" in (error_text or "").lower():
-            return {
-                "success": False,
-                "error": "VK access token невалидный или просрочен. Сгенерируйте новый token и повторите проверку.",
-            }
-        return {"success": False, "error": f"VK API: {error_text}"}
+    def _build_candidate_urls():
+        candidates = []
 
-    response_data = group_payload.get("response")
-    groups = []
-    if isinstance(response_data, list):
-        groups = response_data
-    elif isinstance(response_data, dict):
-        groups = response_data.get("groups") or response_data.get("items") or []
+        if raw_reference.startswith(("http://", "https://")):
+            parsed = urlparse(raw_reference)
+            if "vk.com" in parsed.netloc.lower():
+                path_parts = [part for part in parsed.path.split("/") if part]
+                if path_parts:
+                    candidates.append(f"https://vk.com/{path_parts[0]}")
 
-    if not groups:
-        return {"success": False, "error": "VK не вернул данные группы по указанной ссылке"}
+        if re.fullmatch(r"(club|public|event)\d+", vk_identifier):
+            candidates.append(f"https://vk.com/{vk_identifier}")
+        elif vk_identifier.isdigit():
+            candidates.append(f"https://vk.com/club{vk_identifier}")
+            candidates.append(f"https://vk.com/public{vk_identifier}")
+        else:
+            candidates.append(f"https://vk.com/{vk_identifier}")
 
-    group = groups[0]
-    group_id = int(group.get("id", 0))
-    if group_id <= 0:
-        return {"success": False, "error": "Некорректный VK group_id"}
+        unique_candidates = []
+        seen = set()
+        for candidate_url in candidates:
+            normalized = candidate_url.rstrip("/")
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            unique_candidates.append(normalized)
+        return unique_candidates
 
-    screen_name = group.get("screen_name") or f"club{group_id}"
-    source_url = f"https://vk.com/{screen_name}"
+    def _normalize_vk_source_url(url_value):
+        parsed = urlparse(url_value)
+        if "vk.com" not in parsed.netloc.lower():
+            return ""
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if not path_parts:
+            return "https://vk.com"
+        return f"https://vk.com/{path_parts[0]}"
 
-    recent_posts = []
-    try:
-        wall_resp = requests.get(
-            "https://api.vk.com/method/wall.get",
-            params={
-                "owner_id": -group_id,
-                "count": 10,
-                "filter": "owner",
-                "access_token": access_token,
-                "v": "5.199",
-            },
-            timeout=20,
+    def _is_vk_missing_page(page_html, final_url):
+        page_text = (page_html or "").lower()
+        final_link = (final_url or "").lower()
+        markers = (
+            "такой страницы нет",
+            "страница удалена",
+            "page not found",
+            "error 404",
+            "cannot find page",
         )
-        wall_payload = wall_resp.json()
-        if not wall_payload.get("error"):
-            wall_response = wall_payload.get("response", {})
-            items = wall_response.get("items", []) if isinstance(wall_response, dict) else []
-            for item in items:
-                text = (item.get("text") or "").strip()
-                if _count_words(text) >= 5:
-                    recent_posts.append(text)
-    except Exception:
-        # Ошибка получения стены не должна ломать всю верификацию группы.
-        pass
+        if any(marker in page_text for marker in markers):
+            return True
+        if "/404.php" in final_link:
+            return True
+        return False
 
-    if not recent_posts:
+    def _extract_vk_page_title(page_html):
+        og_title_match = re.search(r'<meta property="og:title" content="([^"]+)"', page_html)
+        title = _strip_html(og_title_match.group(1)) if og_title_match else ""
+        if not title:
+            title_match = re.search(r"<title>(.*?)</title>", page_html, flags=re.IGNORECASE | re.DOTALL)
+            title = _strip_html(title_match.group(1)) if title_match else ""
+        if title:
+            title = re.sub(r"\s*\|\s*(вконтакте|vk)\s*$", "", title, flags=re.IGNORECASE).strip()
+        return title
+
+    candidate_urls = _build_candidate_urls()
+    if not candidate_urls:
+        return {"success": False, "error": "Не удалось сформировать публичный адрес VK для проверки"}
+
+    for candidate_url in candidate_urls:
+        try:
+            response = requests.get(candidate_url, timeout=(6, 12), headers=headers, allow_redirects=True)
+        except Exception as e:
+            verification_errors.append(f"{candidate_url}: {e}")
+            continue
+
+        if response.status_code != 200:
+            verification_errors.append(f"{candidate_url}: HTTP {response.status_code}")
+            continue
+
+        page_html = response.text or ""
+        source_url = _normalize_vk_source_url(response.url or candidate_url) or candidate_url
+        if _is_vk_missing_page(page_html, source_url):
+            verification_errors.append(f"{candidate_url}: страница не найдена")
+            continue
+
+        channel_name = _extract_vk_page_title(page_html) or vk_identifier
+        desc_match = re.search(r'<meta property="og:description" content="([^"]*)"', page_html)
+        channel_description = _strip_html(desc_match.group(1)) if desc_match else ""
+
+        source_slug = source_url.rstrip("/").split("/")[-1]
+        numeric_source_match = re.fullmatch(r"(club|public|event)(\d+)", source_slug or "")
+        if numeric_source_match:
+            platform_channel_id = f"-{numeric_source_match.group(2)}"
+        elif vk_identifier.startswith("-") and vk_identifier[1:].isdigit():
+            platform_channel_id = vk_identifier
+        elif vk_identifier.isdigit():
+            platform_channel_id = f"-{vk_identifier}"
+        else:
+            platform_channel_id = source_slug or vk_identifier
+
+        recent_posts = []
+        if _count_words(channel_description) >= 5:
+            recent_posts.append(channel_description)
+        else:
+            recent_posts.append(
+                f"Публичная страница VK «{channel_name}». Для более точного анализа добавьте описание и открытые посты."
+            )
+
         return {
-            "success": False,
-            "error": (
-                "Не удалось получить последние посты VK-группы. "
-                "Проверьте права токена и доступность стены группы."
-            ),
+            "success": True,
+            "platform": "vk",
+            "channel_id": platform_channel_id,
+            "channel_name": channel_name,
+            "source_url": source_url,
+            "channel_external_description": channel_description,
+            "recent_posts": recent_posts[:10],
         }
 
-    return {
-        "success": True,
-        "platform": "vk",
-        "channel_id": f"-{group_id}",
-        "channel_name": (group.get("name") or "").strip() or f"VK group {group_id}",
-        "source_url": source_url,
-        "channel_external_description": (group.get("description") or "").strip(),
-        "recent_posts": recent_posts[:10],
-    }
+    error_hint = "Не удалось проверить публичную ссылку VK-сообщества. Проверьте адрес и повторите попытку."
+    if verification_errors:
+        error_hint += f" Детали: {' | '.join(verification_errors[:2])}"
+    return {"success": False, "error": error_hint}
 
 
 def _heuristic_style_profile(channel_name, platform, channel_description, recent_posts):
