@@ -51,11 +51,23 @@ export WEB_DATABASE_URL=sqlite:////absolute/path/to/snoomi_channels_fresh.db
 
 ---
 
-## 4) Включить отправку письма при регистрации
+## 4) Локальная заглушка почты (без SMTP-провайдера)
 
-В `.env` заполните SMTP-параметры (минимум `SMTP_HOST`, обычно также `SMTP_USER`/`SMTP_PASSWORD`):
+Для локального теста без сервера/провайдера в `.env` достаточно:
 
 ```env
+EMAIL_DELIVERY_MODE=stub
+PUBLIC_BASE_URL=http://localhost:5000
+```
+
+При регистрации письмо будет **не отправляться в интернет**, а сохраняться локально:
+- `logs/dev_outbox/*.eml` — само письмо,
+- `logs/dev_outbox.log` — индекс писем.
+
+### Когда будете подключать реальный SMTP
+
+```env
+EMAIL_DELIVERY_MODE=smtp
 SMTP_HOST=smtp.your-provider.com
 SMTP_PORT=587
 SMTP_USER=your-login
@@ -64,8 +76,6 @@ SMTP_FROM_EMAIL=no-reply@your-domain.com
 SMTP_FROM_NAME=Snoomi Platform
 SMTP_USE_SSL=False
 SMTP_USE_TLS=True
-
-# чтобы ссылка в письме была правильной для локалки:
 PUBLIC_BASE_URL=http://localhost:5000
 ```
 
@@ -87,13 +97,18 @@ python run_web.py
 После регистрации:
 - создается клиент + пользователь,
 - активируется trial,
-- отправляется регистрационное письмо на email (если SMTP настроен).
+- письмо сохраняется в локальную заглушку (`logs/dev_outbox`) или отправляется через SMTP
+  в зависимости от `EMAIL_DELIVERY_MODE`.
 
 ---
 
 ## 6) Быстрый чек проблем с email
 
-Если письмо не ушло:
+Если используете `EMAIL_DELIVERY_MODE=stub`:
+1. Проверьте, что появился файл в `logs/dev_outbox`.
+2. Проверьте запись в `logs/dev_outbox.log`.
+
+Если используете `EMAIL_DELIVERY_MODE=smtp`:
 1. Проверьте `SMTP_HOST` и порт.
 2. Проверьте `SMTP_USE_SSL` / `SMTP_USE_TLS` (не включайте оба сразу).
 3. Проверьте лог ошибок: `logs/errors.log`.

@@ -76,6 +76,9 @@ logger = logging.getLogger(__name__)
 
 LOGS_DIR = PROJECT_ROOT / "logs"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
+DEV_OUTBOX_DIR = LOGS_DIR / "dev_outbox"
+DEV_OUTBOX_DIR.mkdir(parents=True, exist_ok=True)
+DEV_OUTBOX_INDEX_FILE = LOGS_DIR / "dev_outbox.log"
 
 SYSTEM_LOG_FILE = LOGS_DIR / "system.log"
 ERROR_LOG_FILE = LOGS_DIR / "errors.log"
@@ -910,9 +913,44 @@ def _build_channel_intelligence(platform, channel_reference, access_token, run_a
     return verification
 
 
+def _build_login_url_for_email():
+    public_base_url = (os.environ.get("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if public_base_url:
+        if not public_base_url.startswith(("http://", "https://")):
+            public_base_url = f"http://{public_base_url}"
+        return f"{public_base_url}/login"
+
+    web_host = (os.environ.get("WEB_HOST") or "localhost").strip()
+    if web_host in {"0.0.0.0", "::", "[::]"}:
+        web_host = "localhost"
+    web_port_raw = (os.environ.get("WEB_PORT") or "5000").strip()
+    try:
+        web_port = int(web_port_raw)
+    except (TypeError, ValueError):
+        web_port = 5000
+    return f"http://{web_host}:{web_port}/login"
+
+
+def _save_email_to_local_outbox(message, email_to):
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+    safe_to = re.sub(r"[^A-Za-z0-9._-]+", "_", email_to or "unknown")[:80] or "unknown"
+    eml_path = DEV_OUTBOX_DIR / f"{timestamp}_{safe_to}.eml"
+    eml_path.write_bytes(message.as_bytes())
+
+    with DEV_OUTBOX_INDEX_FILE.open("a", encoding="utf-8") as outbox_index:
+        outbox_index.write(
+            f"{datetime.utcnow().isoformat()} | to={email_to} | subject={message.get('Subject', '')} | file={eml_path}\n"
+        )
+    return str(eml_path)
+
+
 def _send_registration_email(email_to, username, password, client_name, trial_days):
     if not email_to:
         return False, "email_empty"
+
+    email_mode = (os.environ.get("EMAIL_DELIVERY_MODE") or "auto").strip().lower()
+    if email_mode not in {"auto", "smtp", "stub"}:
+        email_mode = "auto"
 
     smtp_host = (os.environ.get("SMTP_HOST") or "").strip()
     smtp_port_raw = (os.environ.get("SMTP_PORT") or "587").strip()
@@ -927,26 +965,8 @@ def _send_registration_email(email_to, username, password, client_name, trial_da
     smtp_use_ssl = (os.environ.get("SMTP_USE_SSL", "False").strip().lower() == "true")
     smtp_use_tls = (os.environ.get("SMTP_USE_TLS", "True").strip().lower() == "true")
 
-    if not smtp_host:
-        system_logger.warning("SMTP is not configured, registration email skipped")
-        return False, "smtp_not_configured"
-
     subject = "Добро пожаловать в Snoomi Platform"
-    public_base_url = (os.environ.get("PUBLIC_BASE_URL") or "").strip().rstrip("/")
-    if public_base_url:
-        if not public_base_url.startswith(("http://", "https://")):
-            public_base_url = f"http://{public_base_url}"
-        login_url = f"{public_base_url}/login"
-    else:
-        web_host = (os.environ.get("WEB_HOST") or "localhost").strip()
-        if web_host in {"0.0.0.0", "::", "[::]"}:
-            web_host = "localhost"
-        web_port_raw = (os.environ.get("WEB_PORT") or "5000").strip()
-        try:
-            web_port = int(web_port_raw)
-        except (TypeError, ValueError):
-            web_port = 5000
-        login_url = f"http://{web_host}:{web_port}/login"
+    login_url = _build_login_url_for_email()
     support_link = _specialist_telegram_link()
 
     plain_body = f"""
@@ -996,6 +1016,24 @@ def _send_registration_email(email_to, username, password, client_name, trial_da
     message["To"] = email_to
     message.set_content(plain_body)
     message.add_alternative(html_body, subtype="html")
+
+    use_local_stub = email_mode == "stub" or (email_mode == "auto" and not smtp_host)
+    if use_local_stub:
+        try:
+            eml_path = _save_email_to_local_outbox(message, email_to)
+            system_logger.info(
+                "Registration email stored in local outbox for %s: %s",
+                email_to,
+                eml_path,
+            )
+            return True, f"stub_saved:{eml_path}"
+        except Exception as e:
+            error_logger.error("Registration email stub save failed for %s: %s", email_to, e)
+            return False, f"stub_error:{e}"
+
+    if not smtp_host:
+        system_logger.warning("SMTP is not configured, registration email skipped")
+        return False, "smtp_not_configured"
 
     ssl_context = ssl.create_default_context()
     try:
@@ -1322,11 +1360,23 @@ def register():
             f"Регистрация успешна! Вам активирован бесплатный тестовый период на {trial_days} дней.",
             "success",
         )
-        if email and email_sent:
+        if email and email_sent and str(email_status).startswith("stub_saved:"):
+            stub_path = str(email_status).split(":", 1)[1].strip()
+            stub_filename = Path(stub_path).name if stub_path else "registration_email.eml"
+            flash(
+                f"Письмо сохранено в локальную заглушку: logs/dev_outbox/{stub_filename}",
+                "info",
+            )
+        elif email and email_sent:
             flash("Данные для входа отправлены на указанную почту.", "success")
         elif email and email_status == "smtp_not_configured":
             flash(
                 "Регистрация выполнена, но почта не отправлена: SMTP пока не настроен в окружении.",
+                "warning",
+            )
+        elif email and str(email_status).startswith("stub_error:"):
+            flash(
+                "Регистрация выполнена, но письмо не удалось сохранить в локальный outbox.",
                 "warning",
             )
         elif email and not email_sent:
