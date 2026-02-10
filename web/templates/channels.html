@@ -210,8 +210,8 @@
                 <div class="channels-steps">
                     <ol>
                         <li>Выберите платформу и вставьте ссылку/ник канала.</li>
-                        <li>Нажмите «Проверить канал»: для Telegram сначала используется публичная проверка без ключа.</li>
-                        <li>Заполните описание (20+ слов), укажите токен для публикации и сохраните подключение.</li>
+                        <li>Для Telegram используйте только `https://tg.me/...` или `@username`, затем нажмите «Проверить канал».</li>
+                        <li>После проверки сохраните подключение: имя и описание из канала фиксируются автоматически, а вы добавляете свое описание (20+ слов).</li>
                     </ol>
                 </div>
                 <form id="autopostChannelForm" class="row g-3">
@@ -228,21 +228,51 @@
                         </div>
                     </div>
                     <div class="col-md-8">
-                        <label class="form-label" id="autopostReferenceLabel">Ссылка или @username канала *</label>
+                        <label class="form-label" id="autopostReferenceLabel">Ссылка https://tg.me/... или @username *</label>
                         <input
                             type="text"
                             class="form-control"
                             id="autopostChannelReference"
-                            placeholder="@channel или https://t.me/channel"
+                            placeholder="@mag_snoomi или https://tg.me/mag_snoomi"
                             required
                         >
-                        <div class="form-text">Без проверки ссылки канал не добавляется в автопостинг</div>
+                        <div class="form-text">Без публичной проверки ссылка/ник не добавляются в автопостинг</div>
                     </div>
                     <div class="col-md-4 d-grid">
                         <label class="form-label opacity-0">Проверка</label>
                         <button type="button" class="btn btn-outline-primary" id="autopostVerifyBtn">
                             <i class="fas fa-check-circle"></i> Проверить канал
                         </button>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Проверенное имя канала (read-only)</label>
+                        <input
+                            type="text"
+                            class="form-control"
+                            id="autopostVerifiedChannelName"
+                            placeholder="Заполнится после успешной проверки"
+                            readonly
+                        >
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Проверенный публичный адрес (read-only)</label>
+                        <input
+                            type="text"
+                            class="form-control"
+                            id="autopostVerifiedSourceUrl"
+                            placeholder="https://tg.me/..."
+                            readonly
+                        >
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">Описание из канала (read-only)</label>
+                        <textarea
+                            class="form-control"
+                            rows="3"
+                            id="autopostVerifiedExternalDescription"
+                            placeholder="Если в канале есть публичное описание, оно появится после проверки."
+                            readonly
+                        ></textarea>
                     </div>
                     <div class="col-md-6">
                         <label class="form-label" id="autopostTokenLabel">Telegram bot token для публикации *</label>
@@ -273,11 +303,11 @@
                         <input type="number" min="0" max="23" value="10" class="form-control" id="autopostHour">
                     </div>
                     <div class="col-12">
-                        <label class="form-label">Специфика канала (минимум 20 слов) *</label>
+                        <label class="form-label">Ваше описание канала (минимум 20 слов) *</label>
                         <textarea class="form-control" rows="4" id="autopostDescription"
-                                  placeholder="Опишите тематику, аудиторию, стиль и ограничения контента..." required></textarea>
+                                  placeholder="Опишите от себя тематику, аудиторию, стиль и ограничения контента..." required></textarea>
                         <div class="form-text">
-                            Нужно минимум 20 слов, чтобы YandexGPT корректно подбирал темы, статьи и изображения.
+                            Это поле заполняете только вы. Минимум 20 слов, чтобы YandexGPT корректно подбирал темы, статьи и изображения.
                             <span id="descWordCounter">Слов: 0</span>
                         </div>
                     </div>
@@ -419,6 +449,36 @@
             return matches ? matches.length : 0;
         }
 
+        function telegramReferenceKey(value) {
+            const raw = (value || '').trim();
+            if (!raw) {
+                return '';
+            }
+            if (raw.startsWith('@')) {
+                const username = raw.slice(1).split(/[?#]/)[0].trim().replace(/-/g, '_').toLowerCase();
+                if (/^[a-z0-9_]{4,64}$/.test(username)) {
+                    return `@${username}`;
+                }
+                return '';
+            }
+            const match = raw.match(/^https:\/\/(?:www\.)?tg\.me\/([A-Za-z0-9_-]{4,64})(?:[/?#].*)?$/i);
+            if (!match) {
+                return '';
+            }
+            const username = (match[1] || '').replace(/-/g, '_').toLowerCase();
+            if (!/^[a-z0-9_]{4,64}$/.test(username)) {
+                return '';
+            }
+            return `@${username}`;
+        }
+
+        function referenceKey(platform, value) {
+            if (platform === 'telegram') {
+                return telegramReferenceKey(value);
+            }
+            return (value || '').trim().toLowerCase();
+        }
+
         function showAutopostResult(message, isSuccess) {
             const resultDiv = document.getElementById('autopostFormResult');
             const cls = isSuccess ? 'success' : 'danger';
@@ -438,6 +498,9 @@
             verifiedChannelState = null;
             document.getElementById('autopostStyleSummary').textContent = '';
             document.getElementById('autopostStyleBox').style.display = 'none';
+            document.getElementById('autopostVerifiedChannelName').value = '';
+            document.getElementById('autopostVerifiedSourceUrl').value = '';
+            document.getElementById('autopostVerifiedExternalDescription').value = '';
         }
 
         function setPlatform(platform) {
@@ -456,12 +519,12 @@
             if (platform === 'telegram') {
                 tgBtn.className = 'btn btn-primary';
                 vkBtn.className = 'btn btn-outline-primary';
-                referenceLabel.textContent = 'Ссылка или @username канала *';
-                referenceInput.placeholder = '@channel или https://t.me/channel';
+                referenceLabel.textContent = 'Ссылка https://tg.me/... или @username *';
+                referenceInput.placeholder = '@mag_snoomi или https://tg.me/mag_snoomi';
                 tokenLabel.textContent = 'Telegram bot token для публикации *';
                 tokenHelpLink.href = tokenHelpLinks.telegram;
                 tokenHelpLink.textContent = 'Как получить Telegram bot token?';
-                tokenHint.textContent = 'Проверка Telegram-канала доступна без токена, но для сохранения подключения токен обязателен.';
+                tokenHint.textContent = 'Проверка Telegram-канала выполняется публично без токена; токен обязателен при сохранении для публикации.';
             } else {
                 tgBtn.className = 'btn btn-outline-primary';
                 vkBtn.className = 'btn btn-primary';
@@ -482,6 +545,13 @@
 
             if (!channelReference) {
                 showAutopostResult('Введите ссылку или ник канала перед проверкой.', false);
+                return;
+            }
+            if (platform === 'telegram' && !telegramReferenceKey(channelReference)) {
+                showAutopostResult(
+                    'Для Telegram используйте только ссылку вида https://tg.me/channel или ник вида @channel.',
+                    false
+                );
                 return;
             }
             if (platform === 'vk' && !accessToken) {
@@ -512,23 +582,21 @@
 
                 verifiedChannelState = {
                     platform: platform,
-                    channel_reference: channelReference,
+                    reference_key: referenceKey(platform, channelReference),
                     channel_name: data.channel_name,
                     channel_id: data.channel_id,
                     source_url: data.source_url,
                     style_profile: data.style_profile || {}
                 };
 
+                document.getElementById('autopostVerifiedChannelName').value = data.channel_name || '';
+                document.getElementById('autopostVerifiedSourceUrl').value = data.source_url || '';
+                document.getElementById('autopostVerifiedExternalDescription').value = data.channel_external_description || '';
+
                 const styleSummary = data.style_summary || '';
                 if (styleSummary) {
                     document.getElementById('autopostStyleSummary').textContent = styleSummary;
                     document.getElementById('autopostStyleBox').style.display = '';
-                }
-
-                const descriptionEl = document.getElementById('autopostDescription');
-                if (countWords(descriptionEl.value) < 20 && data.auto_description) {
-                    descriptionEl.value = data.auto_description;
-                    refreshDescriptionCounter();
                 }
 
                 showAutopostResult(
@@ -548,7 +616,11 @@
         document.getElementById('platformBtnVk').addEventListener('click', () => setPlatform('vk'));
         document.getElementById('autopostVerifyBtn').addEventListener('click', verifyChannel);
         document.getElementById('autopostChannelReference').addEventListener('input', clearVerificationState);
-        document.getElementById('autopostAccessToken').addEventListener('input', clearVerificationState);
+        document.getElementById('autopostAccessToken').addEventListener('input', () => {
+            if (document.getElementById('autopostPlatform').value === 'vk') {
+                clearVerificationState();
+            }
+        });
         document.getElementById('autopostDescription').addEventListener('input', refreshDescriptionCounter);
         setPlatform('telegram');
         refreshDescriptionCounter();
@@ -575,7 +647,12 @@
                     showAutopostResult('Сначала выполните проверку ссылки канала.', false);
                     return;
                 }
-                if (verifiedChannelState.platform !== platform || verifiedChannelState.channel_reference !== channelReference) {
+                const currentReferenceKey = referenceKey(platform, channelReference);
+                if (!currentReferenceKey) {
+                    showAutopostResult('Некорректный формат ссылки/ника канала.', false);
+                    return;
+                }
+                if (verifiedChannelState.platform !== platform || verifiedChannelState.reference_key !== currentReferenceKey) {
                     showAutopostResult('После изменения ссылки/платформы нужно повторно нажать «Проверить канал».', false);
                     return;
                 }

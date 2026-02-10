@@ -493,24 +493,20 @@ def _extract_telegram_username(channel_reference):
     if raw_reference.startswith("@"):
         candidate = raw_reference[1:]
     else:
-        if not raw_reference.startswith(("http://", "https://")) and "/" not in raw_reference:
-            candidate = raw_reference
-        else:
-            candidate_reference = raw_reference
-            if not candidate_reference.startswith(("http://", "https://")):
-                candidate_reference = f"https://{candidate_reference}"
+        # Поддерживаем только публичный формат ссылки https://tg.me/<username>.
+        if not raw_reference.startswith("https://"):
+            return None
+        parsed = urlparse(raw_reference)
+        if parsed.netloc.lower() not in {"tg.me", "www.tg.me"}:
+            return None
 
-            parsed = urlparse(candidate_reference)
-            if "t.me" not in parsed.netloc and "telegram.me" not in parsed.netloc:
-                return None
-
-            path_parts = [part for part in parsed.path.split("/") if part]
-            if not path_parts:
-                return None
-            if path_parts[0] == "s" and len(path_parts) > 1:
-                candidate = path_parts[1]
-            else:
-                candidate = path_parts[0]
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if not path_parts:
+            return None
+        if path_parts[0] == "s":
+            # Нормализуем через прямой username-ссылочный формат без /s.
+            return None
+        candidate = path_parts[0]
 
     candidate = candidate.split("?")[0].split("#")[0].strip().lstrip("@")
     candidate = candidate.replace("-", "_")
@@ -566,10 +562,12 @@ def _extract_telegram_posts_from_html(page_html, limit=10):
 def _fetch_telegram_channel_preview(channel_reference, access_token=None):
     username = _extract_telegram_username(channel_reference)
     if not username:
-        return {"success": False, "error": "Укажите корректную ссылку или @username Telegram-канала"}
+        return {
+            "success": False,
+            "error": "Для Telegram укажите ссылку вида https://tg.me/channel или ник вида @channel",
+        }
 
-    source_url = f"https://t.me/{username}"
-    preview_url = f"https://t.me/s/{username}"
+    source_url = f"https://tg.me/{username}"
     channel_name = f"@{username}"
     channel_description = ""
     recent_posts = []
@@ -602,23 +600,19 @@ def _fetch_telegram_channel_preview(channel_reference, access_token=None):
             recent_posts = posts_from_page
             verified = True
 
-    # Приоритет №1: публичная проверка без ключа.
-    public_attempts = [
-        (source_url, "публичная ссылка"),
-        (preview_url, "публичная лента /s"),
-    ]
-    for attempt_url, attempt_label in public_attempts:
-        try:
-            response = requests.get(attempt_url, timeout=(6, 12), headers=headers)
-            if response.status_code == 200:
-                _absorb_page_data(response.text)
-            else:
-                verification_errors.append(f"{attempt_label}: HTTP {response.status_code}")
-        except Exception as e:
-            verification_errors.append(f"{attempt_label}: {e}")
+    # Сначала и обязательно проверяем публичную ссылку канала.
+    try:
+        response = requests.get(source_url, timeout=(6, 12), headers=headers)
+        if response.status_code == 200:
+            verified = True
+            _absorb_page_data(response.text)
+        else:
+            verification_errors.append(f"публичная ссылка: HTTP {response.status_code}")
+    except Exception as e:
+        verification_errors.append(f"публичная ссылка: {e}")
 
-    # Фолбэк: проверка через Bot API (если клиент добавил токен).
-    if access_token and (not verified or not channel_description):
+    # После успешной публичной проверки можно дополнить данные через Bot API.
+    if verified and access_token and not channel_description:
         try:
             bot_resp = requests.get(
                 f"https://api.telegram.org/bot{access_token}/getChat",
@@ -634,7 +628,6 @@ def _fetch_telegram_channel_preview(channel_reference, access_token=None):
                     channel_name = chat_title
                 if chat_description:
                     channel_description = chat_description
-                verified = True
             else:
                 bot_error = bot_payload.get("description") or f"HTTP {bot_resp.status_code}"
                 verification_errors.append(f"Bot API: {bot_error}")
@@ -642,45 +635,9 @@ def _fetch_telegram_channel_preview(channel_reference, access_token=None):
             verification_errors.append(f"Bot API недоступен: {e}")
 
     if not verified:
-        combined_errors = " | ".join(verification_errors).lower()
-        network_issue = any(
-            marker in combined_errors
-            for marker in (
-                "timed out",
-                "timeout",
-                "max retries exceeded",
-                "connection",
-                "temporarily unavailable",
-                "name or service not known",
-            )
-        )
-        hard_auth_issue = any(
-            marker in combined_errors
-            for marker in ("invalid token", "unauthorized", "chat not found", "forbidden")
-        )
-        if network_issue and not hard_auth_issue:
-            return {
-                "success": True,
-                "platform": "telegram",
-                "channel_id": f"@{username}",
-                "channel_name": f"@{username}",
-                "source_url": source_url,
-                "channel_external_description": (
-                    f"Telegram-канал @{username}. Сеть временно недоступна для расширенной проверки, "
-                    "поэтому используется ограниченная верификация."
-                ),
-                "recent_posts": [
-                    (
-                        f"Канал @{username}. Проверка выполнена в ограниченном режиме из-за сетевых ограничений "
-                        "доступа к Telegram."
-                    )
-                ],
-            }
-
         error_hint = (
-            "Не удалось проверить Telegram-канал. Проверьте ник/ссылку канала и публичность, "
-            "а при проверке через токен — права бота, "
-            "затем повторите попытку."
+            "Не удалось проверить публичную ссылку Telegram-канала. "
+            "Проверьте адрес в формате https://tg.me/channel или @channel и повторите попытку."
         )
         if verification_errors:
             error_hint += f" Детали: {' | '.join(verification_errors[:2])}"
@@ -700,9 +657,7 @@ def _fetch_telegram_channel_preview(channel_reference, access_token=None):
     if not channel_name:
         channel_name = f"@{username}"
     if not channel_description:
-        channel_description = (
-            f"Telegram-канал @{username}. Описание недоступно автоматически, стиль будет уточняться по публикациям."
-        )
+        channel_description = ""
 
     return {
         "success": True,
