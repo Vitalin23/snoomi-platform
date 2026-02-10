@@ -18,11 +18,22 @@
     .stat-card.likes { border-left-color: #f6c23e; }
     .stat-card.clients { border-left-color: #e74a3b; }
     .stat-card.users { border-left-color: #858796; }
+    .publish-channel-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+        gap: 0.5rem 0.75rem;
+    }
+    .publish-channel-item {
+        border: 1px solid var(--color-border, #e3e6f0);
+        border-radius: 0.5rem;
+        padding: 0.45rem 0.65rem;
+        background: var(--color-surface, #fff);
+    }
 </style>
 {% endblock %}
 
 {% block content %}
-{% set has_any_channels = (stats.active_channels | default(0) | int) > 0 %}
+{% set has_any_channels = (publish_channels | default([]) | length) > 0 %}
 <!-- Заголовок -->
 <div class="page-header">
     <div>
@@ -259,13 +270,61 @@
             </div>
             <div class="card-body">
                 {% if has_any_channels %}
-                    <div class="d-flex flex-wrap align-items-center gap-3">
+                    <div class="d-flex flex-column gap-3">
                         <p class="mb-0 text-muted">
-                            Используйте ручной запуск, если нужно сразу отправить публикации в активные каналы.
+                            Выберите один или несколько каналов. В выбранные каналы уйдет одинаковая статья (и одна тема).
                         </p>
-                        <button class="btn btn-primary" onclick="publishNow(this)">
-                            <i class="fas fa-paper-plane me-2"></i>Опубликовать сейчас
-                        </button>
+
+                        <div class="row g-3">
+                            <div class="col-12">
+                                <label for="publishNowTopic" class="form-label mb-1">Тема публикации (опционально)</label>
+                                <input
+                                    type="text"
+                                    class="form-control"
+                                    id="publishNowTopic"
+                                    placeholder="Например: 5 ошибок при выборе матраса для боли в спине"
+                                >
+                                <div class="form-text">
+                                    Если поле пустое, система возьмет первую тему из сохраненных шагов 2/3.
+                                </div>
+                            </div>
+                            <div class="col-12">
+                                <div class="d-flex align-items-center gap-3 mb-2">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" id="publishNowSelectAll" checked>
+                                        <label class="form-check-label" for="publishNowSelectAll">Отметить все каналы</label>
+                                    </div>
+                                    <small class="text-muted" id="publishNowSelectedCount"></small>
+                                </div>
+                                <div class="publish-channel-grid" id="publishNowChannelsGrid">
+                                    {% for channel in publish_channels %}
+                                    <label class="publish-channel-item form-check mb-0">
+                                        <input
+                                            class="form-check-input publish-now-channel-checkbox"
+                                            type="checkbox"
+                                            value="{{ channel.id }}"
+                                            checked
+                                        >
+                                        <span class="form-check-label">
+                                            <strong>{{ channel.name }}</strong>
+                                            <span class="badge bg-{{ 'info' if channel.platform == 'telegram' else 'primary' }} ms-1">
+                                                {{ channel.platform | upper }}
+                                            </span>
+                                            {% if channel.client_name %}
+                                            <span class="d-block text-muted small">{{ channel.client_name }}</span>
+                                            {% endif %}
+                                        </span>
+                                    </label>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="d-flex flex-wrap gap-2">
+                            <button class="btn btn-primary" onclick="publishNow(this)">
+                                <i class="fas fa-paper-plane me-2"></i>Опубликовать сейчас
+                            </button>
+                        </div>
                     </div>
                 {% else %}
                     <div class="alert alert-info mb-0">
@@ -493,12 +552,64 @@ function loadRecentPublications() {
         });
 }
 
-// Немедленная публикация
-function publishNow(buttonElement) {
-    if (!confirm('Запустить публикацию сейчас? Будет создан новый контент и опубликован во все активные каналы.')) {
+function getSelectedPublishChannelIds() {
+    return Array.from(document.querySelectorAll('.publish-now-channel-checkbox:checked'))
+        .map((checkbox) => Number(checkbox.value))
+        .filter((value) => Number.isFinite(value));
+}
+
+function updatePublishNowSelectionState() {
+    const checkboxes = Array.from(document.querySelectorAll('.publish-now-channel-checkbox'));
+    const selected = checkboxes.filter((item) => item.checked).length;
+    const total = checkboxes.length;
+    const selectAll = document.getElementById('publishNowSelectAll');
+    const selectedLabel = document.getElementById('publishNowSelectedCount');
+
+    if (selectedLabel) {
+        selectedLabel.textContent = `Выбрано: ${selected} из ${total}`;
+    }
+    if (selectAll) {
+        selectAll.checked = total > 0 && selected === total;
+        selectAll.indeterminate = selected > 0 && selected < total;
+    }
+}
+
+function initPublishNowSelectors() {
+    const selectAll = document.getElementById('publishNowSelectAll');
+    const checkboxes = Array.from(document.querySelectorAll('.publish-now-channel-checkbox'));
+    if (!checkboxes.length) {
         return;
     }
-    
+    if (selectAll) {
+        selectAll.addEventListener('change', function() {
+            checkboxes.forEach((checkbox) => {
+                checkbox.checked = selectAll.checked;
+            });
+            updatePublishNowSelectionState();
+        });
+    }
+    checkboxes.forEach((checkbox) => {
+        checkbox.addEventListener('change', updatePublishNowSelectionState);
+    });
+    updatePublishNowSelectionState();
+}
+
+// Немедленная публикация
+function publishNow(buttonElement) {
+    const selectedChannelIds = getSelectedPublishChannelIds();
+    if (!selectedChannelIds.length) {
+        showNotification('warning', 'Выберите каналы', 'Отметьте хотя бы один канал для публикации');
+        return;
+    }
+    const topicInput = document.getElementById('publishNowTopic');
+    const manualTopic = topicInput ? topicInput.value.trim() : '';
+    const confirmText = manualTopic
+        ? `Запустить публикацию сейчас в ${selectedChannelIds.length} канал(а/ов) по теме «${manualTopic}»?`
+        : `Запустить публикацию сейчас в ${selectedChannelIds.length} канал(а/ов)?`;
+    if (!confirm(confirmText)) {
+        return;
+    }
+
     const button = buttonElement || document.querySelector('button[onclick*="publishNow"]');
     if (!button) {
         return;
@@ -512,18 +623,26 @@ function publishNow(buttonElement) {
         headers: {
             'Content-Type': 'application/json',
         },
-        body: JSON.stringify({})
+        body: JSON.stringify({
+            channel_ids: selectedChannelIds,
+            topic: manualTopic,
+            shared_article: true
+        })
     })
     .then(response => response.json())
     .then(data => {
         if (data.success) {
             const published = Number(data.published || 0);
             const failed = Number(data.failed || 0);
+            const generatedImages = Number(data.generated_images || 0);
+            const detailSuffix = generatedImages > 0
+                ? ` Иллюстраций сгенерировано: ${generatedImages}.`
+                : '';
             showNotification('success', 
                 `Опубликовано в ${published} каналов`,
                 failed > 0
-                    ? `Часть каналов не прошла: ${failed}. Проверьте журнал публикации.`
-                    : 'Новый контент успешно создан и опубликован.'
+                    ? `Часть каналов не прошла: ${failed}. Проверьте журнал публикации.${detailSuffix}`
+                    : `Новый контент успешно создан и опубликован.${detailSuffix}`
             );
             loadRecentPublications(); // Обновляем список публикаций
         } else {
@@ -617,6 +736,7 @@ function showNotification(type, title, message) {
 document.addEventListener('DOMContentLoaded', function() {
     initChart();
     loadRecentPublications();
+    initPublishNowSelectors();
     
     // Обновляем каждые 5 минут
     setInterval(loadRecentPublications, 300000);

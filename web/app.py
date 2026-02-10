@@ -1219,7 +1219,7 @@ def _is_trial_active(client):
 
 
 def _ensure_channel_runtime_setup(channel_id, channel_description, publish_frequency, publish_hour=10):
-    """Создает/обновляет настройки и базовые темы канала для планировщика."""
+    """Создает/обновляет настройки канала для планировщика."""
     if not channel_description or _count_words(channel_description) < 20:
         channel_description = (
             "Канал клиента для автопостинга с регулярными экспертными публикациями, ориентированными "
@@ -1234,7 +1234,7 @@ def _ensure_channel_runtime_setup(channel_id, channel_description, publish_frequ
     publish_hour = min(max(publish_hour, 0), 23)
 
     settings = ChannelSetting.query.filter_by(channel_id=channel_id).first()
-    topics_json = json.dumps([channel_description], ensure_ascii=False)
+    topics_json = json.dumps([], ensure_ascii=False)
     hashtags_json = json.dumps([], ensure_ascii=False)
     if not settings:
         settings = ChannelSetting(
@@ -1257,15 +1257,14 @@ def _ensure_channel_runtime_setup(channel_id, channel_description, publish_frequ
 
     active_topics = ChannelTopic.query.filter_by(channel_id=channel_id, is_active=True).all()
     if not active_topics:
-        words = _word_tokens(channel_description)
-        short_topic = " ".join(words[:12]).strip()
-        if not short_topic:
-            short_topic = "Контент по тематике канала"
+        channel = ClientChannel.query.get(channel_id)
+        channel_name = channel.channel_name if channel else "канала"
+        short_topic = f"Актуальный контент для аудитории канала «{channel_name}»"
 
         topic = ChannelTopic(
             channel_id=channel_id,
             topic=short_topic,
-            keywords=json.dumps(_extract_keywords(channel_description), ensure_ascii=False),
+            keywords=json.dumps([], ensure_ascii=False),
             priority=8,
             is_active=True,
         )
@@ -1849,7 +1848,30 @@ def _frequency_to_interval_days(publish_frequency):
 def _extract_channel_topics_for_plan(channel):
     topics = []
     seen = set()
+    extra = _channel_extra_config(channel)
 
+    # 1) Сначала берём темы из сохраненного календаря (шаг 3), если он есть.
+    posting_draft = extra.get("posting_plan_draft") if isinstance(extra.get("posting_plan_draft"), dict) else {}
+    for item in _normalize_posting_plan_items_for_save(posting_draft.get("plan_items") or []):
+        topic_text = (item.get("topic") or "").strip()
+        if not topic_text:
+            continue
+        key = topic_text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        topics.append(topic_text)
+
+    # 2) Затем темы, сохраненные на шаге 2.
+    topic_plan = extra.get("topic_plan") if isinstance(extra.get("topic_plan"), dict) else {}
+    for topic_text in _normalize_topic_items(topic_plan.get("topics") or []):
+        key = topic_text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        topics.append(topic_text)
+
+    # 3) Активные темы канала.
     active_topics = (
         ChannelTopic.query.filter_by(channel_id=channel.id, is_active=True)
         .order_by(ChannelTopic.priority.desc(), ChannelTopic.created_at.asc())
@@ -1865,24 +1887,14 @@ def _extract_channel_topics_for_plan(channel):
         seen.add(key)
         topics.append(topic_text)
 
-    if not topics:
-        settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
-        if settings and settings.topics:
-            try:
-                parsed_topics = json.loads(settings.topics)
-            except Exception:
-                parsed_topics = []
-            for topic_text in _normalize_topic_items(parsed_topics):
-                key = topic_text.lower()
-                if key in seen:
-                    continue
-                seen.add(key)
-                topics.append(topic_text)
-
-    if not topics:
-        extra = _channel_extra_config(channel)
-        topic_plan = extra.get("topic_plan") or {}
-        for topic_text in _normalize_topic_items(topic_plan.get("topics") or []):
+    # 4) Темы из настроек.
+    settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
+    if settings and settings.topics:
+        try:
+            parsed_topics = json.loads(settings.topics)
+        except Exception:
+            parsed_topics = []
+        for topic_text in _normalize_topic_items(parsed_topics):
             key = topic_text.lower()
             if key in seen:
                 continue
@@ -1900,21 +1912,19 @@ def _extract_saved_topic_state(channel):
     topic_plan = extra.get("topic_plan") if isinstance(extra.get("topic_plan"), dict) else {}
     settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
 
-    active_topics = (
-        ChannelTopic.query.filter_by(channel_id=channel.id, is_active=True)
-        .order_by(ChannelTopic.priority.desc(), ChannelTopic.created_at.asc())
-        .all()
-    )
-    topics = []
-    if active_topics:
+    topics = _normalize_topic_items((topic_plan.get("topics") or []))
+    if not topics:
+        active_topics = (
+            ChannelTopic.query.filter_by(channel_id=channel.id, is_active=True)
+            .order_by(ChannelTopic.priority.desc(), ChannelTopic.created_at.asc())
+            .all()
+        )
         topics = [item.topic for item in active_topics if (item.topic or "").strip()]
-    else:
-        topics = _normalize_topic_items((topic_plan.get("topics") or []))
-        if not topics and settings and settings.topics:
-            try:
-                topics = _normalize_topic_items(json.loads(settings.topics))
-            except Exception:
-                topics = []
+    if not topics and settings and settings.topics:
+        try:
+            topics = _normalize_topic_items(json.loads(settings.topics))
+        except Exception:
+            topics = []
 
     return {
         "channel_id": channel.id,
@@ -2062,8 +2072,9 @@ def _extract_saved_posting_plan_draft(channel):
 
 def _generate_manual_publication_text(channel, topic_text):
     topic_text = (topic_text or "").strip() or f"Публикация для канала {channel.channel_name}"
-    channel_context = _channel_extra_config(channel).get("channel_description") or channel.channel_name
-    keywords = _extract_keywords(f"{topic_text}. {channel_context}", limit=8)
+    # Для ручного запуска опираемся на тему, а не на клиентское описание канала,
+    # чтобы контент не уходил в "продвижение магазина" вместо темы публикации.
+    keywords = _extract_keywords(topic_text, limit=8)
 
     generated_text = ""
     try:
@@ -2087,6 +2098,101 @@ def _generate_manual_publication_text(channel, topic_text):
             "Проверьте формулировки и при необходимости дополните деталями перед следующими публикациями."
         )
     return generated_text
+
+
+def _resolve_manual_publish_topic(channel, explicit_topic=""):
+    explicit_topic = (explicit_topic or "").strip()
+    if explicit_topic:
+        return explicit_topic
+
+    extra = _channel_extra_config(channel)
+    draft = extra.get("posting_plan_draft") if isinstance(extra.get("posting_plan_draft"), dict) else {}
+    draft_items = _normalize_posting_plan_items_for_save(draft.get("plan_items") or [])
+    today_iso = datetime.utcnow().date().isoformat()
+    for item in draft_items:
+        topic_text = (item.get("topic") or "").strip()
+        if not topic_text:
+            continue
+        if (item.get("publish_date") or "") >= today_iso:
+            return topic_text
+    if draft_items:
+        fallback_topic = (draft_items[0].get("topic") or "").strip()
+        if fallback_topic:
+            return fallback_topic
+
+    topics = _extract_channel_topics_for_plan(channel)
+    if topics:
+        return topics[0]
+
+    return f"Актуальный пост для канала «{channel.channel_name}»"
+
+
+def _channel_uses_ai_images(channel):
+    settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
+    return bool(settings.use_ai_images) if settings else True
+
+
+def _normalize_generated_image_path(raw_path):
+    path_value = str(raw_path or "").strip()
+    if not path_value:
+        return None
+
+    direct_path = Path(path_value)
+    if direct_path.exists():
+        return str(direct_path)
+    if not direct_path.is_absolute():
+        project_relative = PROJECT_ROOT / path_value
+        if project_relative.exists():
+            return str(project_relative)
+
+    if path_value.startswith("/static/"):
+        static_relative = path_value.replace("/static/", "", 1)
+        candidate = PROJECT_ROOT / "web" / "static" / static_relative
+        if candidate.exists():
+            return str(candidate)
+
+    return None
+
+
+def _generate_manual_publication_image(topic_text, article_text=""):
+    try:
+        image_path = None
+        if hasattr(img_gen, "create_image_for_article"):
+            image_path = img_gen.create_image_for_article(article_text or "", topic_text)
+            normalized = _normalize_generated_image_path(image_path)
+            if normalized:
+                return normalized
+    except Exception as e:
+        system_logger.warning("manual_publish_image_generation_failed topic=%s error=%s", topic_text, e)
+
+    try:
+        from ai.yandex_art_final import create_simple_image
+
+        simple_image = create_simple_image(topic_text)
+        normalized = _normalize_generated_image_path(simple_image)
+        if normalized:
+            return normalized
+    except Exception as e:
+        system_logger.warning("manual_publish_fallback_image_failed topic=%s error=%s", topic_text, e)
+
+    return None
+
+
+def _cleanup_temp_generated_image(image_path):
+    resolved = _normalize_generated_image_path(image_path)
+    if not resolved:
+        return
+    file_name = Path(resolved).name
+    if not (
+        file_name.startswith("yandex_art_")
+        or file_name.startswith("simple_")
+        or "_compressed_" in file_name
+    ):
+        return
+    try:
+        Path(resolved).unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def _channel_hashtags(channel):
@@ -2315,6 +2421,8 @@ def index():
 @app.route("/dashboard")
 @login_required
 def dashboard():
+    publish_channels_payload = []
+
     if is_admin_user(current_user):
         stats = {
             "total_clients": Client.query.count(),
@@ -2324,6 +2432,21 @@ def dashboard():
             ).count(),
             "total_users": User.query.filter(User.role != "admin").count(),
         }
+
+        publish_channels_data = (
+            ClientChannel.query.filter_by(is_active=True)
+            .order_by(ClientChannel.created_at.desc())
+            .all()
+        )
+        for channel in publish_channels_data:
+            publish_channels_payload.append(
+                {
+                    "id": channel.id,
+                    "name": channel.channel_name,
+                    "platform": channel.platform,
+                    "client_name": channel.client.name if channel.client else "",
+                }
+            )
     else:
         if current_user.client_id:
             total_channels = ClientChannel.query.filter_by(client_id=current_user.client_id).count()
@@ -2346,6 +2469,20 @@ def dashboard():
                 .first()
             )
             total_views, total_likes = totals
+
+            publish_channels_data = (
+                ClientChannel.query.filter_by(client_id=current_user.client_id, is_active=True)
+                .order_by(ClientChannel.created_at.desc())
+                .all()
+            )
+            for channel in publish_channels_data:
+                publish_channels_payload.append(
+                    {
+                        "id": channel.id,
+                        "name": channel.channel_name,
+                        "platform": channel.platform,
+                    }
+                )
         else:
             total_channels = active_channels = total_posts = total_views = total_likes = 0
 
@@ -2357,7 +2494,12 @@ def dashboard():
             "total_likes": total_likes or 0,
         }
 
-    return render_template("dashboard.html", stats=stats, user=current_user)
+    return render_template(
+        "dashboard.html",
+        stats=stats,
+        user=current_user,
+        publish_channels=publish_channels_payload,
+    )
 
 
 @app.route("/channels")
@@ -3628,9 +3770,23 @@ def api_topics_stub():
 def api_publish_now():
     data = request.get_json(silent=True) or {}
     admin_client_id = data.get("client_id")
+    explicit_topic = (data.get("topic") or "").strip()
+    shared_article = bool(data.get("shared_article", True))
+    selected_channel_ids_raw = data.get("channel_ids") or []
+
+    selected_channel_ids = []
+    for value in selected_channel_ids_raw:
+        try:
+            channel_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if channel_id not in selected_channel_ids:
+            selected_channel_ids.append(channel_id)
 
     channels_query = ClientChannel.query.filter_by(is_active=True)
     if is_admin_user(current_user):
+        if selected_channel_ids:
+            channels_query = channels_query.filter(ClientChannel.id.in_(selected_channel_ids))
         if admin_client_id is not None:
             try:
                 admin_client_id = int(admin_client_id)
@@ -3639,17 +3795,19 @@ def api_publish_now():
             channels_query = channels_query.filter_by(client_id=admin_client_id)
         elif current_user.client_id:
             channels_query = channels_query.filter_by(client_id=current_user.client_id)
-        else:
+        elif not selected_channel_ids:
             return jsonify(
                 {
                     "success": False,
-                    "error": "В админ-режиме укажите client_id или используйте клиентский аккаунт для публикации.",
+                    "error": "Выберите хотя бы один канал для ручной публикации в админ-режиме.",
                 }
             ), 400
     else:
         if not current_user.client_id:
             return jsonify({"success": False, "error": "Ваш аккаунт не привязан к клиенту"}), 400
         channels_query = channels_query.filter_by(client_id=current_user.client_id)
+        if selected_channel_ids:
+            channels_query = channels_query.filter(ClientChannel.id.in_(selected_channel_ids))
 
     channels = channels_query.order_by(ClientChannel.created_at.asc()).all()
     if not channels:
@@ -3666,11 +3824,29 @@ def api_publish_now():
     results = []
     successful_count = 0
     failed_count = 0
+    generated_images = 0
+    shared_topic = _resolve_manual_publish_topic(channels[0], explicit_topic)
+    shared_text = None
+    shared_image_path = None
+
+    if shared_article:
+        shared_text = _generate_manual_publication_text(channels[0], shared_topic)
+        if any(_channel_uses_ai_images(channel) for channel in channels):
+            shared_image_path = _generate_manual_publication_image(shared_topic, shared_text)
+            if shared_image_path:
+                generated_images = 1
 
     for channel in channels:
-        channel_topics = _extract_channel_topics_for_plan(channel)
-        topic_text = channel_topics[0] if channel_topics else f"Публикация для {channel.channel_name}"
-        content_text = _generate_manual_publication_text(channel, topic_text)
+        topic_text = shared_topic if shared_article else _resolve_manual_publish_topic(channel, explicit_topic)
+        content_text = shared_text if shared_article else _generate_manual_publication_text(channel, topic_text)
+        image_path = None
+        if _channel_uses_ai_images(channel):
+            if shared_article:
+                image_path = shared_image_path
+            else:
+                image_path = _generate_manual_publication_image(topic_text, content_text)
+                if image_path:
+                    generated_images += 1
         hashtags = _channel_hashtags(channel)
 
         channel_info = {
@@ -3681,7 +3857,7 @@ def api_publish_now():
             "hashtags": hashtags,
         }
 
-        publish_result = publisher.publish_to_channel(channel_info, content_text, image_path=None)
+        publish_result = publisher.publish_to_channel(channel_info, content_text, image_path=image_path)
         success = bool(publish_result.get("success"))
         error_text = str(publish_result.get("error") or "").strip() or None
 
@@ -3712,10 +3888,17 @@ def api_publish_now():
                 "success": success,
                 "post_id": publish_result.get("post_id"),
                 "error": error_text,
+                "topic": topic_text,
+                "image_used": bool(image_path),
             }
         )
 
+        if image_path and not shared_article:
+            _cleanup_temp_generated_image(image_path)
+
     db.session.commit()
+    if shared_image_path:
+        _cleanup_temp_generated_image(shared_image_path)
 
     if successful_count == 0:
         return jsonify(
@@ -3725,6 +3908,7 @@ def api_publish_now():
                 "published": successful_count,
                 "successful_posts": successful_count,
                 "failed": failed_count,
+                "generated_images": generated_images,
                 "results": results,
             }
         ), 400
@@ -3735,6 +3919,8 @@ def api_publish_now():
             "published": successful_count,
             "successful_posts": successful_count,
             "failed": failed_count,
+            "generated_images": generated_images,
+            "topic": shared_topic if shared_article else None,
             "results": results,
         }
     )

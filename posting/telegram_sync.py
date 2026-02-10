@@ -297,6 +297,65 @@ class TelegramSyncPoster:
             text = text[:4090] + "..."
         
         return text.strip()
+
+    def _split_long_text(self, text, max_chunk_len=3800):
+        """Разбивает длинный текст на несколько сообщений."""
+        source = (text or "").strip()
+        if not source:
+            return []
+
+        chunks = []
+        while source:
+            if len(source) <= max_chunk_len:
+                chunks.append(source)
+                break
+
+            window = source[:max_chunk_len]
+            split_at = window.rfind("\n\n")
+            if split_at < int(max_chunk_len * 0.55):
+                split_at = window.rfind("\n")
+            if split_at < int(max_chunk_len * 0.55):
+                split_at = window.rfind(". ")
+                if split_at > 0:
+                    split_at += 1
+            if split_at < int(max_chunk_len * 0.55):
+                split_at = window.rfind(" ")
+            if split_at < int(max_chunk_len * 0.55):
+                split_at = max_chunk_len
+
+            chunk = source[:split_at].strip()
+            if not chunk:
+                chunk = source[:max_chunk_len].strip()
+                split_at = len(chunk)
+
+            chunks.append(chunk)
+            source = source[split_at:].strip()
+
+        return chunks
+
+    def _send_long_text(self, text, prefix=""):
+        """Отправляет длинный текст в 1..N сообщений."""
+        chunks = self._split_long_text(text, max_chunk_len=3800)
+        if not chunks:
+            return []
+
+        sent_ids = []
+        total = len(chunks)
+        for idx, chunk in enumerate(chunks, start=1):
+            if total == 1:
+                payload = f"{prefix}{chunk}".strip()
+            elif idx == 1 and prefix:
+                payload = f"{prefix}{chunk}".strip()
+            else:
+                payload = f"📄 Продолжение ({idx}/{total}):\n\n{chunk}".strip()
+
+            message_id = self._send_message_only(payload)
+            if message_id:
+                sent_ids.append(message_id)
+            else:
+                print(f"⚠️ Не удалось отправить часть {idx}/{total}")
+
+        return sent_ids
     
     def post_article(self, article_text, image_path=None):
         """
@@ -340,9 +399,7 @@ class TelegramSyncPoster:
                         # Вырезаем уже отправленную часть
                         remaining_text = article_text[len(caption):].strip()
                         if remaining_text and len(remaining_text) > 50:
-                            # Добавляем пометку что это продолжение
-                            remaining_text = f"📄 Продолжение:\n\n{remaining_text}"
-                            self._send_message_only(remaining_text)
+                            self._send_long_text(remaining_text)
                     
                     return message_id
                 else:
@@ -350,7 +407,8 @@ class TelegramSyncPoster:
             
             # 3. Fallback: отправляем только текст
             print("📝 Отправка только текста...")
-            message_id = self._send_message_only(article_text)
+            sent_ids = self._send_long_text(article_text)
+            message_id = sent_ids[0] if sent_ids else None
             
             if message_id:
                 print(f"✅ Текст опубликован. Message ID: {message_id}")
