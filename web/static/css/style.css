@@ -540,6 +540,29 @@ h6 {
     box-shadow: var(--focus-ring);
 }
 
+.snoomi-guide-launcher {
+    position: fixed;
+    right: var(--space-4);
+    bottom: var(--space-4);
+    z-index: 1080;
+}
+
+.snoomi-guide-launcher .btn {
+    box-shadow: var(--shadow-2);
+}
+
+.snoomi-guide-popover {
+    max-width: min(360px, calc(100vw - 24px));
+}
+
+.snoomi-guide-highlight {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 45%, transparent), var(--shadow-2) !important;
+    border-radius: var(--radius-sm);
+    transition: box-shadow 0.15s ease;
+    position: relative;
+    z-index: 1060;
+}
+
 @media (pointer: coarse) {
     .btn,
     .form-control,
@@ -553,6 +576,11 @@ h6 {
 @media (max-width: 992px) {
     .main-shell {
         padding-top: var(--space-5);
+    }
+
+    .snoomi-guide-launcher {
+        right: var(--space-3);
+        bottom: var(--space-3);
     }
 
     .operator-action-bar {
@@ -644,6 +672,10 @@ h6 {
         max-width: 100%;
         white-space: normal;
         text-align: right;
+    }
+
+    .snoomi-guide-popover {
+        max-width: calc(100vw - 16px);
     }
 }
 
