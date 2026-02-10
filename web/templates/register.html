@@ -63,48 +63,8 @@
                         <div class="form-text">Это имя будет использоваться в системе автопостинга</div>
                     </div>
 
-                    <div class="card border-0 bg-light mb-3">
-                        <div class="card-body">
-                            <h6 class="mb-3"><i class="fas fa-link me-1"></i> Автоподтягивание названия из канала (опционально)</h6>
-                            <div class="row g-2">
-                                <div class="col-md-4">
-                                    <label for="reg_channel_platform" class="form-label">Платформа</label>
-                                    <select class="form-select" id="reg_channel_platform">
-                                        <option value="telegram">Telegram</option>
-                                        <option value="vk">VK</option>
-                                    </select>
-                                </div>
-                                <div class="col-md-8">
-                                    <label for="reg_channel_reference" class="form-label">Ссылка или ник канала</label>
-                                    <input
-                                        type="text"
-                                        class="form-control"
-                                        id="reg_channel_reference"
-                                        placeholder="@channel или https://t.me/channel"
-                                    >
-                                </div>
-                                <div class="col-md-8">
-                                    <label for="reg_channel_token" class="form-label">Access token (обязательно для VK)</label>
-                                    <input
-                                        type="text"
-                                        class="form-control"
-                                        id="reg_channel_token"
-                                        placeholder="VK token для проверки группы"
-                                    >
-                                </div>
-                                <div class="col-md-4 d-grid">
-                                    <label class="form-label opacity-0">Проверка</label>
-                                    <button type="button" class="btn btn-outline-primary" id="reg_verify_channel_btn">
-                                        <i class="fas fa-check-circle me-1"></i> Проверить канал
-                                    </button>
-                                </div>
-                            </div>
-                            <div id="reg_channel_verify_result" class="mt-3"></div>
-                        </div>
-                    </div>
-
                     <div class="row">
-                        <div class="col-md-6 mb-3">
+                        <div class="col-12 mb-3">
                             <label for="trial_days" class="form-label">
                                 <i class="fas fa-hourglass-half me-1"></i> Тестовый период *
                             </label>
@@ -114,15 +74,6 @@
                                 <option value="30">30 дней</option>
                             </select>
                             <div class="form-text">Во время trial автопостинг работает без оплаты и подтверждения админом</div>
-                        </div>
-
-                        <div class="col-md-6 mb-3">
-                            <label for="notification_telegram" class="form-label">
-                                <i class="fab fa-telegram me-1"></i> Telegram для уведомлений
-                            </label>
-                            <input type="text" class="form-control" id="notification_telegram" name="notification_telegram"
-                                   placeholder="@username или ID">
-                            <div class="form-text">Опционально: уведомления о работе системы</div>
                         </div>
                     </div>
                     
@@ -172,94 +123,4 @@
         </div>
     </div>
 </div>
-{% endblock %}
-
-{% block extra_js %}
-<script>
-    (function () {
-        const platformEl = document.getElementById('reg_channel_platform');
-        const referenceEl = document.getElementById('reg_channel_reference');
-        const tokenEl = document.getElementById('reg_channel_token');
-        const verifyBtn = document.getElementById('reg_verify_channel_btn');
-        const resultEl = document.getElementById('reg_channel_verify_result');
-        const clientNameEl = document.getElementById('client_name');
-        const passwordEl = document.getElementById('password');
-        const confirmPasswordEl = document.getElementById('confirm_password');
-
-        function updateTokenHint() {
-            const isVk = platformEl.value === 'vk';
-            tokenEl.placeholder = isVk
-                ? 'VK token обязателен для проверки группы'
-                : 'Для Telegram можно оставить пустым';
-        }
-
-        function showResult(message, ok) {
-            resultEl.innerHTML = `
-                <div class="alert alert-${ok ? 'success' : 'danger'} mb-0">
-                    ${message}
-                </div>
-            `;
-        }
-
-        function setVerifyLoading(isLoading) {
-            verifyBtn.disabled = isLoading;
-            verifyBtn.innerHTML = isLoading
-                ? '<i class="fas fa-spinner fa-spin me-1"></i> Проверяем...'
-                : '<i class="fas fa-check-circle me-1"></i> Проверить канал';
-        }
-
-        platformEl.addEventListener('change', updateTokenHint);
-        updateTokenHint();
-
-        verifyBtn.addEventListener('click', async function () {
-            const payload = {
-                platform: platformEl.value,
-                channel_reference: referenceEl.value.trim(),
-                access_token: tokenEl.value.trim()
-            };
-
-            if (!payload.channel_reference) {
-                showResult('Введите ссылку или ник канала.', false);
-                return;
-            }
-
-            setVerifyLoading(true);
-            try {
-                const response = await fetch('/api/public/channel-preview', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                const data = await response.json();
-                if (!response.ok || !data.success) {
-                    showResult(data.error || 'Канал не прошел проверку', false);
-                    return;
-                }
-
-                if (!clientNameEl.value.trim()) {
-                    clientNameEl.value = data.channel_name || '';
-                }
-                showResult(
-                    `<strong>Канал проверен:</strong> ${data.channel_name}<br>` +
-                    `<small>${data.source_url || ''}</small>`,
-                    true
-                );
-            } catch (error) {
-                showResult('Ошибка сети: ' + error, false);
-            } finally {
-                setVerifyLoading(false);
-            }
-        });
-
-        const formEl = document.querySelector('form[action="{{ url_for("register") }}"]');
-        if (formEl) {
-            formEl.addEventListener('submit', function (event) {
-                if (passwordEl.value !== confirmPasswordEl.value) {
-                    event.preventDefault();
-                    showResult('Пароли не совпадают. Проверьте повторный ввод.', false);
-                }
-            });
-        }
-    })();
-</script>
 {% endblock %}

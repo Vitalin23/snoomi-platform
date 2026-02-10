@@ -278,9 +278,20 @@ def _specialist_telegram_link():
     return SUPPORT_DEFAULT_TELEGRAM_LINK
 
 
+def _token_help_links():
+    default_help = "/help"
+    return {
+        "telegram": (os.environ.get("TELEGRAM_TOKEN_HELP_URL") or default_help).strip(),
+        "vk": (os.environ.get("VK_TOKEN_HELP_URL") or default_help).strip(),
+    }
+
+
 @app.context_processor
 def inject_common_template_context():
-    return {"specialist_telegram_link": _specialist_telegram_link()}
+    return {
+        "specialist_telegram_link": _specialist_telegram_link(),
+        "token_help_links": _token_help_links(),
+    }
 
 
 @app.before_request
@@ -499,6 +510,7 @@ def _extract_telegram_username(channel_reference):
                 candidate = path_parts[0]
 
     candidate = candidate.split("?")[0].split("#")[0].strip().lstrip("@")
+    candidate = candidate.replace("-", "_")
     if not re.fullmatch(r"[A-Za-z0-9_]{4,64}", candidate):
         return None
     return candidate
@@ -1617,6 +1629,12 @@ def api_public_channel_preview():
         run_ai_analysis=True,
     )
     if not intelligence.get("success"):
+        system_logger.warning(
+            "channel_preview_failed platform=%s reference=%s error=%s",
+            platform,
+            channel_reference,
+            intelligence.get("error"),
+        )
         return jsonify({"success": False, "error": intelligence.get("error", "Канал не прошел проверку")}), 400
 
     return jsonify(
@@ -1656,6 +1674,13 @@ def api_verify_channel():
         run_ai_analysis=True,
     )
     if not intelligence.get("success"):
+        system_logger.warning(
+            "channel_verify_failed user_id=%s platform=%s reference=%s error=%s",
+            current_user.id if current_user.is_authenticated else None,
+            platform,
+            channel_reference,
+            intelligence.get("error"),
+        )
         return jsonify({"success": False, "error": intelligence.get("error", "Канал не прошел проверку")}), 400
 
     return jsonify(

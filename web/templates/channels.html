@@ -168,18 +168,11 @@
                     <div class="col-md-6">
                         <label class="form-label" id="autopostTokenLabel">Telegram bot token для публикации *</label>
                         <input type="password" class="form-control" id="autopostAccessToken" required>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label">Название канала (автоподстановка)</label>
-                        <input type="text" class="form-control" id="autopostChannelName" readonly>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label">ID канала/группы (автоподстановка)</label>
-                        <input type="text" class="form-control" id="autopostChannelId" readonly>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label">Проверенный адрес</label>
-                        <input type="text" class="form-control" id="autopostSourceUrl" readonly>
+                        <div class="form-text">
+                            <a href="{{ token_help_links.telegram }}" target="_blank" id="autopostTokenHelpLink">
+                                Как получить Telegram bot token?
+                            </a>
+                        </div>
                     </div>
                     <div class="col-12" id="autopostStyleBox" style="display:none;">
                         <div class="alert alert-secondary mb-0">
@@ -569,6 +562,10 @@
         let currentContentId = null;
 
         let verifiedChannelState = null;
+        const tokenHelpLinks = {
+            telegram: "{{ token_help_links.telegram }}",
+            vk: "{{ token_help_links.vk }}"
+        };
 
         function countWords(text) {
             const matches = (text || '').trim().match(/[A-Za-zА-Яа-яЁё0-9]+/g);
@@ -592,9 +589,6 @@
 
         function clearVerificationState() {
             verifiedChannelState = null;
-            document.getElementById('autopostChannelName').value = '';
-            document.getElementById('autopostChannelId').value = '';
-            document.getElementById('autopostSourceUrl').value = '';
             document.getElementById('autopostStyleSummary').textContent = '';
             document.getElementById('autopostStyleBox').style.display = 'none';
         }
@@ -605,6 +599,7 @@
             const vkBtn = document.getElementById('platformBtnVk');
             const referenceLabel = document.getElementById('autopostReferenceLabel');
             const tokenLabel = document.getElementById('autopostTokenLabel');
+            const tokenHelpLink = document.getElementById('autopostTokenHelpLink');
             const referenceInput = document.getElementById('autopostChannelReference');
 
             hiddenPlatform.value = platform;
@@ -616,12 +611,16 @@
                 referenceLabel.textContent = 'Ссылка или @username канала *';
                 referenceInput.placeholder = '@channel или https://t.me/channel';
                 tokenLabel.textContent = 'Telegram bot token для публикации *';
+                tokenHelpLink.href = tokenHelpLinks.telegram;
+                tokenHelpLink.textContent = 'Как получить Telegram bot token?';
             } else {
                 tgBtn.className = 'btn btn-outline-primary';
                 vkBtn.className = 'btn btn-primary';
                 referenceLabel.textContent = 'Ссылка VK-группы (или short name) *';
                 referenceInput.placeholder = 'https://vk.com/club123456 или shortname';
                 tokenLabel.textContent = 'VK access token для проверки и публикации *';
+                tokenHelpLink.href = tokenHelpLinks.vk;
+                tokenHelpLink.textContent = 'Как получить VK access token?';
             }
         }
 
@@ -670,10 +669,6 @@
                     style_profile: data.style_profile || {}
                 };
 
-                document.getElementById('autopostChannelName').value = data.channel_name || '';
-                document.getElementById('autopostChannelId').value = data.channel_id || '';
-                document.getElementById('autopostSourceUrl').value = data.source_url || '';
-
                 const styleSummary = data.style_summary || '';
                 if (styleSummary) {
                     document.getElementById('autopostStyleSummary').textContent = styleSummary;
@@ -686,7 +681,11 @@
                     refreshDescriptionCounter();
                 }
 
-                showAutopostResult('Канал успешно проверен. Название и стилистика подтянуты автоматически.', true);
+                showAutopostResult(
+                    `Канал успешно проверен: <strong>${data.channel_name}</strong>. ` +
+                    `Можно сохранять в автопостинг.`,
+                    true
+                );
             } catch (error) {
                 showAutopostResult('Ошибка сети при проверке канала: ' + error, false);
             } finally {
