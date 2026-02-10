@@ -127,3 +127,29 @@ python run_site_bot.py        # только Telegram-бот сайта
 python run_monetization.py    # только планировщик автопостинга
 python run_web.py             # только веб-панель
 ```
+
+---
+
+## 8) Expert Agent API (PRD implementation start)
+
+Feature flag (по умолчанию включен):
+
+```env
+ENABLE_EXPERT_AGENT=1
+```
+
+Новые API-эндпоинты:
+
+- `POST /api/agent/semantic-core/rebuild` — перестроить семантическое ядро канала, knowledge-docs и top questions.
+- `POST /api/agent/research/update` — обновить web-research и вопросы аудитории.
+- `POST /api/agent/draft` — собрать platform-aware черновик + quality report.
+- `POST /api/agent/quality/evaluate` — переоценить quality-gate для run или произвольного текста.
+- `POST /api/agent/publish` — опубликовать run (по quality gate или с `force=true`).
+- `GET /api/agent/runs` — история запусков агента с quality-статусом.
+
+Базовый сценарий:
+1. Подключите канал (Шаг 1), сохраните темы (Шаг 2), календарь (Шаг 3).
+2. Вызовите `semantic-core/rebuild` для канала.
+3. Вызовите `draft`, получите `run_id`.
+4. При необходимости повторно вызовите `quality/evaluate`.
+5. Публикуйте через `publish`.

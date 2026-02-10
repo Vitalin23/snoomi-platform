@@ -53,6 +53,13 @@ from sqlalchemy import text
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from web.services.expert_agent import (
+    build_research_queries,
+    build_retrieved_context,
+    build_semantic_clusters,
+    evaluate_draft_quality,
+    prepare_knowledge_documents,
+)
 from web.services.onboarding_progress import build_onboarding_progress
 
 # Настройка путей
@@ -136,6 +143,10 @@ SUPPORTED_PLATFORMS = {"telegram", "vk"}
 SUPPORTED_PUBLISH_FREQUENCIES = {"daily", "every_other_day", "every_two_days"}
 TRIAL_OPTIONS_DAYS = {7, 14, 30}
 SUPPORT_DEFAULT_TELEGRAM_LINK = "https://t.me/snoomi_support"
+AGENT_FEATURE_ENABLED = (
+    (os.environ.get("ENABLE_EXPERT_AGENT", "1") or "").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 
 
 class Client(db.Model):
@@ -235,6 +246,124 @@ class ChannelPost(db.Model):
     error_message = db.Column(db.Text, nullable=True)
 
     channel = db.relationship("ClientChannel", backref=db.backref("posts", lazy=True))
+
+
+class KnowledgeSource(db.Model):
+    __tablename__ = "knowledge_source"
+
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey("clients.id"), nullable=False)
+    channel_id = db.Column(db.Integer, db.ForeignKey("client_channels.id"), nullable=False)
+    source_type = db.Column(db.String(40), nullable=False)  # channel_post/web/article/competitor
+    url = db.Column(db.Text, nullable=True)
+    title = db.Column(db.String(255), nullable=True)
+    published_at = db.Column(db.DateTime, nullable=True)
+    fetched_at = db.Column(db.DateTime, default=datetime.utcnow)
+    authority_score = db.Column(db.Float, default=0.5)
+    lang = db.Column(db.String(16), default="ru")
+    raw_payload = db.Column(db.Text, nullable=True)
+
+    client = db.relationship("Client", backref=db.backref("knowledge_sources", lazy=True))
+    channel = db.relationship("ClientChannel", backref=db.backref("knowledge_sources", lazy=True))
+
+
+class KnowledgeDocument(db.Model):
+    __tablename__ = "knowledge_document"
+
+    id = db.Column(db.Integer, primary_key=True)
+    source_id = db.Column(db.Integer, db.ForeignKey("knowledge_source.id"), nullable=False)
+    chunk_index = db.Column(db.Integer, default=0)
+    text = db.Column(db.Text, nullable=False)
+    embedding_vector_ref = db.Column(db.String(255), nullable=True)
+    keywords = db.Column(db.Text, nullable=True)
+    entities = db.Column(db.Text, nullable=True)
+    summary = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    source = db.relationship("KnowledgeSource", backref=db.backref("documents", lazy=True))
+
+
+class SemanticCluster(db.Model):
+    __tablename__ = "semantic_cluster"
+
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey("clients.id"), nullable=False)
+    channel_id = db.Column(db.Integer, db.ForeignKey("client_channels.id"), nullable=False)
+    cluster_name = db.Column(db.String(255), nullable=False)
+    intent_type = db.Column(db.String(40), default="informational")
+    priority = db.Column(db.Integer, default=5)
+    seasonality = db.Column(db.String(40), default="all_year")
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    client = db.relationship("Client", backref=db.backref("semantic_clusters", lazy=True))
+    channel = db.relationship("ClientChannel", backref=db.backref("semantic_clusters", lazy=True))
+
+
+class AudienceQuestion(db.Model):
+    __tablename__ = "audience_question"
+
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey("clients.id"), nullable=False)
+    channel_id = db.Column(db.Integer, db.ForeignKey("client_channels.id"), nullable=False)
+    question_text = db.Column(db.Text, nullable=False)
+    source_ref = db.Column(db.String(255), nullable=True)
+    trend_score = db.Column(db.Float, default=0.5)
+    last_seen_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    client = db.relationship("Client", backref=db.backref("audience_questions", lazy=True))
+    channel = db.relationship("ClientChannel", backref=db.backref("audience_questions", lazy=True))
+
+
+class GenerationRun(db.Model):
+    __tablename__ = "generation_run"
+
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey("clients.id"), nullable=False)
+    channel_id = db.Column(db.Integer, db.ForeignKey("client_channels.id"), nullable=False)
+    topic = db.Column(db.String(300), nullable=True)
+    platform = db.Column(db.String(20), nullable=False)
+    run_mode = db.Column(db.String(30), default="manual")
+    input_context_ref = db.Column(db.Text, nullable=True)
+    output_text = db.Column(db.Text, nullable=True)
+    output_image_ref = db.Column(db.Text, nullable=True)
+    quality_score = db.Column(db.Float, nullable=True)
+    status = db.Column(db.String(30), default="draft")
+    error = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    published_at = db.Column(db.DateTime, nullable=True)
+
+    client = db.relationship("Client", backref=db.backref("generation_runs", lazy=True))
+    channel = db.relationship("ClientChannel", backref=db.backref("generation_runs", lazy=True))
+
+
+class QualityReport(db.Model):
+    __tablename__ = "quality_report"
+
+    id = db.Column(db.Integer, primary_key=True)
+    run_id = db.Column(db.Integer, db.ForeignKey("generation_run.id"), nullable=False)
+    relevance_score = db.Column(db.Float, default=0.0)
+    fact_score = db.Column(db.Float, default=0.0)
+    style_score = db.Column(db.Float, default=0.0)
+    format_score = db.Column(db.Float, default=0.0)
+    readability_score = db.Column(db.Float, default=0.0)
+    risk_flags = db.Column(db.Text, nullable=True)
+    decision = db.Column(db.String(20), default="revise")
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    run = db.relationship("GenerationRun", backref=db.backref("quality_reports", lazy=True))
+
+
+class EditorFeedback(db.Model):
+    __tablename__ = "editor_feedback"
+
+    id = db.Column(db.Integer, primary_key=True)
+    run_id = db.Column(db.Integer, db.ForeignKey("generation_run.id"), nullable=False)
+    feedback_type = db.Column(db.String(50), nullable=False)
+    comment = db.Column(db.Text, nullable=True)
+    accepted = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    run = db.relationship("GenerationRun", backref=db.backref("editor_feedback", lazy=True))
 
 
 def is_admin_user(user):
@@ -2463,6 +2592,195 @@ def _get_accessible_channel(channel_id):
     return channel
 
 
+def _agent_feature_guard():
+    if AGENT_FEATURE_ENABLED:
+        return None
+    return (
+        jsonify(
+            {
+                "success": False,
+                "error": "Контур Expert Agent отключен. Установите ENABLE_EXPERT_AGENT=1 и перезапустите веб-сервис.",
+            }
+        ),
+        404,
+    )
+
+
+def _agent_runs_query_for_current_user():
+    query = GenerationRun.query.join(ClientChannel, GenerationRun.channel_id == ClientChannel.id)
+    if is_admin_user(current_user):
+        return query
+    if not current_user.client_id:
+        return query.filter(text("1=0"))
+    return query.filter(ClientChannel.client_id == current_user.client_id)
+
+
+def _get_accessible_generation_run(run_id):
+    return _agent_runs_query_for_current_user().filter(GenerationRun.id == int(run_id)).first_or_404()
+
+
+def _agent_decision_to_status(decision):
+    return {
+        "approve": "approved",
+        "revise": "needs_revision",
+        "reject": "rejected",
+    }.get((decision or "").strip().lower(), "needs_revision")
+
+
+def _agent_latest_quality_report(run_id):
+    return (
+        QualityReport.query.filter_by(run_id=run_id)
+        .order_by(QualityReport.created_at.desc(), QualityReport.id.desc())
+        .first()
+    )
+
+
+def _agent_quality_report_payload(report):
+    if not report:
+        return None
+    try:
+        risk_flags = json.loads(report.risk_flags) if report.risk_flags else []
+    except Exception:
+        risk_flags = []
+    if not isinstance(risk_flags, list):
+        risk_flags = []
+    return {
+        "relevance_score": round(float(report.relevance_score or 0), 4),
+        "fact_score": round(float(report.fact_score or 0), 4),
+        "style_score": round(float(report.style_score or 0), 4),
+        "format_score": round(float(report.format_score or 0), 4),
+        "readability_score": round(float(report.readability_score or 0), 4),
+        "risk_flags": risk_flags,
+        "decision": report.decision,
+        "created_at": report.created_at.isoformat() if report.created_at else None,
+    }
+
+
+def _agent_channel_semantic_hints(channel, limit=12):
+    clusters = (
+        SemanticCluster.query.filter_by(channel_id=channel.id)
+        .order_by(SemanticCluster.priority.desc(), SemanticCluster.updated_at.desc())
+        .limit(limit)
+        .all()
+    )
+    hints = [str(item.cluster_name or "").strip() for item in clusters if str(item.cluster_name or "").strip()]
+    if hints:
+        return _normalize_phrase_list(hints, limit=limit)
+
+    extra = _channel_extra_config(channel)
+    topic_plan = extra.get("topic_plan") if isinstance(extra.get("topic_plan"), dict) else {}
+    fallback = _normalize_phrase_list(topic_plan.get("semantic_core") or [], limit=limit)
+    if fallback:
+        return fallback
+    return _normalize_phrase_list(_extract_channel_topics_for_plan(channel), limit=limit)
+
+
+def _agent_channel_question_hints(channel, limit=10):
+    questions = (
+        AudienceQuestion.query.filter_by(channel_id=channel.id)
+        .order_by(AudienceQuestion.trend_score.desc(), AudienceQuestion.last_seen_at.desc())
+        .limit(limit)
+        .all()
+    )
+    hints = [str(item.question_text or "").strip() for item in questions if str(item.question_text or "").strip()]
+    if hints:
+        return _normalize_phrase_list(hints, limit=limit)
+
+    extra = _channel_extra_config(channel)
+    topic_plan = extra.get("topic_plan") if isinstance(extra.get("topic_plan"), dict) else {}
+    fallback = _question_text_list(topic_plan.get("actual_questions") or [], limit=limit)
+    return _normalize_phrase_list(fallback, limit=limit)
+
+
+def _agent_channel_knowledge_documents(channel, limit=20):
+    return (
+        db.session.query(KnowledgeDocument)
+        .join(KnowledgeSource, KnowledgeDocument.source_id == KnowledgeSource.id)
+        .filter(KnowledgeSource.channel_id == channel.id)
+        .order_by(KnowledgeSource.fetched_at.desc(), KnowledgeDocument.chunk_index.asc())
+        .limit(limit)
+        .all()
+    )
+
+
+def _agent_build_generation_prompt(channel, topic_text, platform, retrieved_context=""):
+    channel_context = _channel_publication_context(channel)
+    principles = _platform_content_principles(platform)
+    blocks = [
+        f"Тема публикации: {topic_text}",
+        channel_context,
+        principles,
+        (
+            "Пиши как профильный эксперт для конечной аудитории канала. "
+            "Убирай технические детали о работе ИИ и не уходи в внутренние бизнес-цели."
+        ),
+    ]
+    if retrieved_context:
+        blocks.append(f"Исследовательский контекст (используй по делу):\n{retrieved_context}")
+    return "\n\n".join(block for block in blocks if block).strip()
+
+
+def _agent_generate_draft_text(channel, topic_text, platform, retrieved_context=""):
+    topic_text = (topic_text or "").strip() or f"Публикация для канала {channel.channel_name}"
+    platform = (platform or channel.platform or "").strip().lower() or "telegram"
+    generation_prompt = _agent_build_generation_prompt(channel, topic_text, platform, retrieved_context)
+    keywords = _extract_keywords(f"{topic_text} {channel.channel_name} {retrieved_context}", limit=12)
+
+    generated_text = ""
+    try:
+        if hasattr(text_gen, "create_article_with_research"):
+            generated_text = text_gen.create_article_with_research(generation_prompt, keywords=keywords)
+        elif hasattr(text_gen, "generate_for_topic"):
+            generated_text = text_gen.generate_for_topic(generation_prompt)
+    except Exception as e:
+        system_logger.warning(
+            "agent_draft_generation_failed channel_id=%s topic=%s error=%s",
+            channel.id,
+            topic_text,
+            e,
+        )
+
+    return _normalize_publication_text(generated_text, topic_text, platform)
+
+
+def _agent_store_quality_report(run, quality_payload):
+    report = QualityReport(
+        run_id=run.id,
+        relevance_score=float(quality_payload.get("relevance_score") or 0),
+        fact_score=float(quality_payload.get("fact_consistency_score") or 0),
+        style_score=float(quality_payload.get("style_match_score") or 0),
+        format_score=float(quality_payload.get("platform_fit_score") or 0),
+        readability_score=float(quality_payload.get("readability_score") or 0),
+        risk_flags=json.dumps(quality_payload.get("risk_flags") or [], ensure_ascii=False),
+        decision=str(quality_payload.get("decision") or "revise"),
+    )
+    db.session.add(report)
+    run.quality_score = float(quality_payload.get("quality_score") or 0)
+    run.status = _agent_decision_to_status(quality_payload.get("decision"))
+    return report
+
+
+def _agent_run_payload(run, quality_report=None):
+    report_payload = _agent_quality_report_payload(quality_report)
+    return {
+        "id": run.id,
+        "client_id": run.client_id,
+        "channel_id": run.channel_id,
+        "channel_name": run.channel.channel_name if run.channel else None,
+        "platform": run.platform,
+        "topic": run.topic,
+        "run_mode": run.run_mode,
+        "status": run.status,
+        "quality_score": round(float(run.quality_score), 4) if run.quality_score is not None else None,
+        "error": run.error,
+        "output_text": run.output_text,
+        "output_image_ref": run.output_image_ref,
+        "quality_report": report_payload,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+        "published_at": run.published_at.isoformat() if run.published_at else None,
+    }
+
+
 @login_manager.user_loader
 def load_user(user_id):
     return db.session.get(User, int(user_id))
@@ -4159,6 +4477,727 @@ def api_publish_test_triplet():
             "channels_count": len(channels),
             "posts_per_channel": posts_per_channel,
             "results": results,
+        }
+    )
+
+
+@app.route("/api/agent/semantic-core/rebuild", methods=["POST"])
+@login_required
+def api_agent_semantic_core_rebuild():
+    guard_response = _agent_feature_guard()
+    if guard_response:
+        return guard_response
+
+    data = request.get_json(silent=True) or {}
+    channel_id = data.get("channel_id")
+    focus_text = str(data.get("focus_text") or "").strip()
+    question_limit = data.get("question_limit", 10)
+
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный channel_id"}), 400
+
+    try:
+        question_limit = int(question_limit)
+    except (TypeError, ValueError):
+        question_limit = 10
+    question_limit = min(max(question_limit, 3), 25)
+
+    channel = _get_accessible_channel(channel_id)
+    if not channel.is_active:
+        return jsonify({"success": False, "error": "Канал отключен. Включите его перед сборкой семантики."}), 400
+
+    try:
+        extra = _channel_extra_config(channel)
+        topic_plan = extra.get("topic_plan") if isinstance(extra.get("topic_plan"), dict) else {}
+        recent_posts_preview = extra.get("recent_posts_preview") if isinstance(extra.get("recent_posts_preview"), list) else []
+
+        recent_posts_preview = [
+            str(item).strip()
+            for item in recent_posts_preview
+            if str(item).strip()
+        ][:20]
+
+        stored_posts = (
+            ChannelPost.query.filter_by(channel_id=channel.id)
+            .order_by(ChannelPost.published_at.desc())
+            .limit(50)
+            .all()
+        )
+        stored_post_texts = [str(post.content or "").strip() for post in stored_posts if str(post.content or "").strip()]
+
+        channel_description = str(extra.get("channel_description") or "").strip()
+        external_description = str(extra.get("channel_external_description") or "").strip()
+        topic_titles = _normalize_topic_items(topic_plan.get("topics") or [])
+        topic_semantic_core = _normalize_phrase_list(topic_plan.get("semantic_core") or [], limit=16)
+
+        base_texts = [
+            channel.channel_name,
+            focus_text,
+            channel_description,
+            external_description,
+            *topic_titles,
+            *recent_posts_preview,
+            *stored_post_texts,
+        ]
+        base_texts = [item for item in base_texts if str(item or "").strip()]
+        if not base_texts:
+            base_texts = [f"Контент канала {channel.channel_name}"]
+
+        source = KnowledgeSource(
+            client_id=channel.client_id,
+            channel_id=channel.id,
+            source_type="channel_post",
+            title=f"Semantic rebuild snapshot for channel {channel.channel_name}",
+            authority_score=0.82,
+            lang="ru",
+            raw_payload=json.dumps(
+                {
+                    "focus_text": focus_text,
+                    "captured_posts": len(stored_post_texts),
+                    "captured_preview_posts": len(recent_posts_preview),
+                    "captured_at": datetime.utcnow().isoformat(),
+                },
+                ensure_ascii=False,
+            ),
+        )
+        db.session.add(source)
+        db.session.flush()
+
+        knowledge_documents = prepare_knowledge_documents(
+            channel_name=channel.channel_name,
+            base_texts=base_texts,
+            max_documents=40,
+        )
+        for doc_item in knowledge_documents:
+            db.session.add(
+                KnowledgeDocument(
+                    source_id=source.id,
+                    chunk_index=int(doc_item.get("chunk_index") or 0),
+                    text=str(doc_item.get("text") or "").strip(),
+                    keywords=json.dumps(doc_item.get("keywords") or [], ensure_ascii=False),
+                    entities=json.dumps(doc_item.get("entities") or [], ensure_ascii=False),
+                    summary=str(doc_item.get("summary") or "").strip(),
+                )
+            )
+
+        semantic_seed = [
+            focus_text,
+            *topic_semantic_core,
+            *topic_titles[:12],
+            *[item.get("summary") for item in knowledge_documents[:14]],
+        ]
+        semantic_seed = [str(item).strip() for item in semantic_seed if str(item or "").strip()]
+        corpus_text = " ".join(base_texts[:120])
+
+        clusters_payload = build_semantic_clusters(
+            channel_name=channel.channel_name,
+            base_phrases=semantic_seed,
+            corpus_text=corpus_text,
+            limit=12,
+        )
+
+        SemanticCluster.query.filter_by(channel_id=channel.id).delete(synchronize_session=False)
+        for cluster_item in clusters_payload:
+            db.session.add(
+                SemanticCluster(
+                    client_id=channel.client_id,
+                    channel_id=channel.id,
+                    cluster_name=str(cluster_item.get("cluster_name") or "").strip(),
+                    intent_type=str(cluster_item.get("intent_type") or "informational").strip(),
+                    priority=int(cluster_item.get("priority") or 5),
+                    seasonality=str(cluster_item.get("seasonality") or "all_year").strip(),
+                    updated_at=datetime.utcnow(),
+                )
+            )
+
+        cluster_names = [str(item.get("cluster_name") or "").strip() for item in clusters_payload if str(item.get("cluster_name") or "").strip()]
+        research_queries = build_research_queries(
+            channel_name=channel.channel_name,
+            semantic_clusters=cluster_names,
+            focus_text=focus_text,
+            limit=8,
+        )
+        questions_payload = _collect_top_web_questions(research_queries, limit=question_limit)
+
+        AudienceQuestion.query.filter_by(channel_id=channel.id).delete(synchronize_session=False)
+        for idx, question_item in enumerate(questions_payload, start=1):
+            question_text = (
+                str(question_item.get("question") or "").strip()
+                if isinstance(question_item, dict)
+                else str(question_item or "").strip()
+            )
+            if not question_text:
+                continue
+            source_ref = (
+                str(question_item.get("source_hint") or "").strip()
+                if isinstance(question_item, dict)
+                else ""
+            )
+            trend_score = round(max(0.1, 1.0 - idx * 0.08), 4)
+            db.session.add(
+                AudienceQuestion(
+                    client_id=channel.client_id,
+                    channel_id=channel.id,
+                    question_text=question_text,
+                    source_ref=source_ref or "web_search",
+                    trend_score=trend_score,
+                    last_seen_at=datetime.utcnow(),
+                )
+            )
+
+        agent_meta = extra.get("expert_agent") if isinstance(extra.get("expert_agent"), dict) else {}
+        agent_meta["semantic_core_updated_at"] = datetime.utcnow().isoformat()
+        agent_meta["semantic_clusters"] = cluster_names[:12]
+        agent_meta["research_queries"] = research_queries[:8]
+        agent_meta["last_focus_text"] = focus_text
+        extra["expert_agent"] = agent_meta
+        channel.additional_config = json.dumps(extra, ensure_ascii=False)
+
+        db.session.commit()
+        return jsonify(
+            {
+                "success": True,
+                "channel_id": channel.id,
+                "channel_name": channel.channel_name,
+                "semantic_clusters": cluster_names[:12],
+                "audience_questions": [
+                    (
+                        str(item.get("question") or "").strip()
+                        if isinstance(item, dict)
+                        else str(item or "").strip()
+                    )
+                    for item in questions_payload
+                    if (
+                        str(item.get("question") or "").strip()
+                        if isinstance(item, dict)
+                        else str(item or "").strip()
+                    )
+                ][:question_limit],
+                "knowledge_documents_added": len(knowledge_documents),
+                "research_queries": research_queries[:8],
+            }
+        )
+    except Exception as e:
+        db.session.rollback()
+        error_logger.error(
+            "agent_semantic_rebuild_failed user_id=%s channel_id=%s error=%s",
+            current_user.id if current_user.is_authenticated else None,
+            channel_id,
+            e,
+        )
+        return jsonify({"success": False, "error": f"Не удалось перестроить семантику: {e}"}), 500
+
+
+@app.route("/api/agent/research/update", methods=["POST"])
+@login_required
+def api_agent_research_update():
+    guard_response = _agent_feature_guard()
+    if guard_response:
+        return guard_response
+
+    data = request.get_json(silent=True) or {}
+    channel_id = data.get("channel_id")
+    focus_text = str(data.get("focus_text") or "").strip()
+    question_limit = data.get("question_limit", 10)
+
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный channel_id"}), 400
+
+    try:
+        question_limit = int(question_limit)
+    except (TypeError, ValueError):
+        question_limit = 10
+    question_limit = min(max(question_limit, 3), 25)
+
+    channel = _get_accessible_channel(channel_id)
+    if not channel.is_active:
+        return jsonify({"success": False, "error": "Канал отключен. Включите его перед обновлением research."}), 400
+
+    try:
+        semantic_hints = _agent_channel_semantic_hints(channel, limit=10)
+        research_queries = build_research_queries(
+            channel_name=channel.channel_name,
+            semantic_clusters=semantic_hints,
+            focus_text=focus_text,
+            limit=8,
+        )
+        questions_payload = _collect_top_web_questions(research_queries, limit=question_limit)
+
+        existing_rows = AudienceQuestion.query.filter_by(channel_id=channel.id).all()
+        existing_map = {str(row.question_text or "").strip().lower(): row for row in existing_rows}
+        added_count = 0
+        updated_count = 0
+        normalized_questions = []
+
+        for idx, question_item in enumerate(questions_payload, start=1):
+            question_text = (
+                str(question_item.get("question") or "").strip()
+                if isinstance(question_item, dict)
+                else str(question_item or "").strip()
+            )
+            if not question_text:
+                continue
+            source_ref = (
+                str(question_item.get("source_hint") or "").strip()
+                if isinstance(question_item, dict)
+                else ""
+            )
+            trend_score = round(max(0.1, 1.0 - idx * 0.08), 4)
+            normalized_questions.append(question_text)
+            key = question_text.lower()
+            if key in existing_map:
+                row = existing_map[key]
+                row.last_seen_at = datetime.utcnow()
+                row.trend_score = max(float(row.trend_score or 0), trend_score)
+                if source_ref:
+                    row.source_ref = source_ref
+                updated_count += 1
+            else:
+                db.session.add(
+                    AudienceQuestion(
+                        client_id=channel.client_id,
+                        channel_id=channel.id,
+                        question_text=question_text,
+                        source_ref=source_ref or "web_search",
+                        trend_score=trend_score,
+                        last_seen_at=datetime.utcnow(),
+                    )
+                )
+                added_count += 1
+
+        source = KnowledgeSource(
+            client_id=channel.client_id,
+            channel_id=channel.id,
+            source_type="web",
+            title=f"Research update for channel {channel.channel_name}",
+            authority_score=0.68,
+            lang="ru",
+            raw_payload=json.dumps(
+                {
+                    "focus_text": focus_text,
+                    "queries": research_queries,
+                    "questions": normalized_questions,
+                    "captured_at": datetime.utcnow().isoformat(),
+                },
+                ensure_ascii=False,
+            ),
+        )
+        db.session.add(source)
+        db.session.flush()
+
+        for idx, question_text in enumerate(normalized_questions):
+            db.session.add(
+                KnowledgeDocument(
+                    source_id=source.id,
+                    chunk_index=idx,
+                    text=question_text,
+                    summary=question_text,
+                    keywords=json.dumps(_extract_keywords(question_text, limit=6), ensure_ascii=False),
+                    entities=json.dumps([], ensure_ascii=False),
+                )
+            )
+
+        db.session.commit()
+        return jsonify(
+            {
+                "success": True,
+                "channel_id": channel.id,
+                "channel_name": channel.channel_name,
+                "research_queries": research_queries,
+                "questions_total": len(normalized_questions),
+                "questions_added": added_count,
+                "questions_updated": updated_count,
+                "audience_questions": normalized_questions,
+            }
+        )
+    except Exception as e:
+        db.session.rollback()
+        error_logger.error(
+            "agent_research_update_failed user_id=%s channel_id=%s error=%s",
+            current_user.id if current_user.is_authenticated else None,
+            channel_id,
+            e,
+        )
+        return jsonify({"success": False, "error": f"Не удалось обновить research: {e}"}), 500
+
+
+@app.route("/api/agent/draft", methods=["POST"])
+@login_required
+def api_agent_draft():
+    guard_response = _agent_feature_guard()
+    if guard_response:
+        return guard_response
+
+    data = request.get_json(silent=True) or {}
+    channel_id = data.get("channel_id")
+    topic_text = str(data.get("topic") or "").strip()
+    requested_platform = str(data.get("platform") or "").strip().lower()
+    run_mode = str(data.get("run_mode") or "manual").strip().lower()[:30]
+    include_image = bool(data.get("include_image", False))
+
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный channel_id"}), 400
+
+    channel = _get_accessible_channel(channel_id)
+    if not channel.is_active:
+        return jsonify({"success": False, "error": "Канал отключен. Включите его перед генерацией черновика."}), 400
+
+    platform = requested_platform or (channel.platform or "").strip().lower()
+    if platform not in SUPPORTED_PLATFORMS:
+        return jsonify({"success": False, "error": "Поддерживаются только Telegram и VK"}), 400
+
+    if not topic_text:
+        topic_text = _resolve_manual_publish_topic(channel)
+
+    try:
+        semantic_hints = _agent_channel_semantic_hints(channel, limit=10)
+        question_hints = _agent_channel_question_hints(channel, limit=8)
+        knowledge_docs = _agent_channel_knowledge_documents(channel, limit=20)
+        retrieved_payload = build_retrieved_context(
+            semantic_clusters=semantic_hints,
+            audience_questions=question_hints,
+            knowledge_documents=knowledge_docs,
+            max_clusters=6,
+            max_questions=5,
+            max_docs=4,
+        )
+        retrieved_context_block = str(retrieved_payload.get("context_block") or "").strip()
+
+        content_text = _agent_generate_draft_text(
+            channel=channel,
+            topic_text=topic_text,
+            platform=platform,
+            retrieved_context=retrieved_context_block,
+        )
+
+        image_path = None
+        if include_image and _channel_uses_ai_images(channel):
+            image_path = _generate_manual_publication_image(topic_text, content_text)
+
+        generation_run = GenerationRun(
+            client_id=channel.client_id,
+            channel_id=channel.id,
+            topic=topic_text,
+            platform=platform,
+            run_mode=run_mode or "manual",
+            input_context_ref=json.dumps(
+                {
+                    "semantic_hints": semantic_hints,
+                    "question_hints": question_hints,
+                    "references": retrieved_payload.get("references") or [],
+                },
+                ensure_ascii=False,
+            ),
+            output_text=content_text,
+            output_image_ref=image_path,
+            status="draft",
+            error=None,
+            created_at=datetime.utcnow(),
+        )
+        db.session.add(generation_run)
+        db.session.flush()
+
+        quality_payload = evaluate_draft_quality(
+            text_value=content_text,
+            topic=topic_text,
+            platform=platform,
+            semantic_hints=semantic_hints,
+            audience_questions=question_hints,
+        )
+        quality_report = _agent_store_quality_report(generation_run, quality_payload)
+
+        db.session.commit()
+        return jsonify(
+            {
+                "success": True,
+                "run": _agent_run_payload(generation_run, quality_report=quality_report),
+                "retrieved_context": {
+                    "semantic_hints": semantic_hints[:6],
+                    "question_hints": question_hints[:5],
+                    "references_count": len(retrieved_payload.get("references") or []),
+                },
+            }
+        )
+    except Exception as e:
+        db.session.rollback()
+        error_logger.error(
+            "agent_draft_failed user_id=%s channel_id=%s topic=%s error=%s",
+            current_user.id if current_user.is_authenticated else None,
+            channel_id,
+            topic_text,
+            e,
+        )
+        return jsonify({"success": False, "error": f"Не удалось собрать черновик: {e}"}), 500
+
+
+@app.route("/api/agent/quality/evaluate", methods=["POST"])
+@login_required
+def api_agent_quality_evaluate():
+    guard_response = _agent_feature_guard()
+    if guard_response:
+        return guard_response
+
+    data = request.get_json(silent=True) or {}
+    run_id = data.get("run_id")
+
+    if run_id is not None:
+        try:
+            run_id = int(run_id)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "Укажите корректный run_id"}), 400
+
+        run = _get_accessible_generation_run(run_id)
+        channel = _get_accessible_channel(run.channel_id)
+        text_value = str(run.output_text or "").strip()
+        topic = str(run.topic or "").strip()
+        platform = str(run.platform or channel.platform or "").strip().lower()
+        if not text_value:
+            return jsonify({"success": False, "error": "В выбранном run отсутствует текст для оценки"}), 400
+
+        semantic_hints = _agent_channel_semantic_hints(channel, limit=10)
+        question_hints = _agent_channel_question_hints(channel, limit=8)
+        quality_payload = evaluate_draft_quality(
+            text_value=text_value,
+            topic=topic,
+            platform=platform,
+            semantic_hints=semantic_hints,
+            audience_questions=question_hints,
+        )
+
+        quality_report = _agent_store_quality_report(run, quality_payload)
+        db.session.commit()
+        return jsonify(
+            {
+                "success": True,
+                "run": _agent_run_payload(run, quality_report=quality_report),
+            }
+        )
+
+    text_value = str(data.get("text") or "").strip()
+    topic = str(data.get("topic") or "").strip()
+    platform = str(data.get("platform") or "").strip().lower()
+    channel_id = data.get("channel_id")
+    semantic_hints = _normalize_phrase_list(data.get("semantic_hints") or [], limit=12)
+    question_hints = _normalize_phrase_list(data.get("audience_questions") or [], limit=10)
+
+    if not text_value:
+        return jsonify({"success": False, "error": "Передайте текст для оценки качества"}), 400
+    if platform and platform not in SUPPORTED_PLATFORMS:
+        return jsonify({"success": False, "error": "Поддерживаются только Telegram и VK"}), 400
+
+    if channel_id is not None:
+        try:
+            channel_id = int(channel_id)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "Некорректный channel_id"}), 400
+        channel = _get_accessible_channel(channel_id)
+        semantic_hints = _normalize_phrase_list(
+            [*semantic_hints, *_agent_channel_semantic_hints(channel, limit=10)],
+            limit=12,
+        )
+        question_hints = _normalize_phrase_list(
+            [*question_hints, *_agent_channel_question_hints(channel, limit=8)],
+            limit=10,
+        )
+        if not platform:
+            platform = channel.platform
+
+    if not platform:
+        platform = "telegram"
+
+    quality_payload = evaluate_draft_quality(
+        text_value=text_value,
+        topic=topic,
+        platform=platform,
+        semantic_hints=semantic_hints,
+        audience_questions=question_hints,
+    )
+    return jsonify({"success": True, "quality": quality_payload})
+
+
+@app.route("/api/agent/publish", methods=["POST"])
+@login_required
+def api_agent_publish():
+    guard_response = _agent_feature_guard()
+    if guard_response:
+        return guard_response
+
+    data = request.get_json(silent=True) or {}
+    run_id = data.get("run_id")
+    force_publish = bool(data.get("force", False))
+    include_image = bool(data.get("include_image", False))
+
+    try:
+        run_id = int(run_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный run_id"}), 400
+
+    run = _get_accessible_generation_run(run_id)
+    channel = _get_accessible_channel(run.channel_id)
+    if not channel.is_active:
+        return jsonify({"success": False, "error": "Канал отключен. Включите его перед публикацией."}), 400
+
+    if run.status == "published" and not force_publish:
+        return jsonify({"success": False, "error": "Этот run уже опубликован. Для повторной отправки используйте force=true."}), 400
+
+    latest_report = _agent_latest_quality_report(run.id)
+    if not force_publish:
+        if not latest_report:
+            return jsonify({"success": False, "error": "Сначала выполните quality evaluate для этого run"}), 400
+        if latest_report.decision != "approve":
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Quality Gate не пройден: публикация разрешена только для approve (или force=true).",
+                    "decision": latest_report.decision,
+                }
+            ), 400
+
+    content_text = str(run.output_text or "").strip()
+    topic_text = str(run.topic or "").strip() or _resolve_manual_publish_topic(channel)
+    platform = str(run.platform or channel.platform or "").strip().lower() or "telegram"
+
+    if not content_text:
+        semantic_hints = _agent_channel_semantic_hints(channel, limit=10)
+        question_hints = _agent_channel_question_hints(channel, limit=8)
+        retrieved_payload = build_retrieved_context(
+            semantic_clusters=semantic_hints,
+            audience_questions=question_hints,
+            knowledge_documents=_agent_channel_knowledge_documents(channel, limit=20),
+            max_clusters=6,
+            max_questions=5,
+            max_docs=4,
+        )
+        content_text = _agent_generate_draft_text(
+            channel=channel,
+            topic_text=topic_text,
+            platform=platform,
+            retrieved_context=str(retrieved_payload.get("context_block") or "").strip(),
+        )
+        run.output_text = content_text
+
+    image_path = _normalize_generated_image_path(run.output_image_ref)
+    if include_image and not image_path and _channel_uses_ai_images(channel):
+        image_path = _generate_manual_publication_image(topic_text, content_text)
+        if image_path:
+            run.output_image_ref = image_path
+
+    try:
+        from posting.multi_publisher import MultiPlatformPublisher
+
+        publisher = MultiPlatformPublisher()
+    except Exception as e:
+        error_logger.error("agent_publish_init_failed user_id=%s run_id=%s error=%s", current_user.id, run.id, e)
+        return jsonify({"success": False, "error": f"Не удалось инициализировать публикатор: {e}"}), 500
+
+    channel_info = {
+        "platform": platform,
+        "platform_channel_id": channel.channel_id,
+        "channel_name": channel.channel_name,
+        "access_token": channel.access_token,
+        "hashtags": _channel_hashtags(channel),
+    }
+
+    publish_result = publisher.publish_to_channel(channel_info, content_text, image_path=image_path)
+    success = bool(publish_result.get("success"))
+    error_text = str(publish_result.get("error") or "").strip() or None
+
+    post_record = ChannelPost(
+        channel_id=channel.id,
+        topic=topic_text,
+        content=content_text,
+        success=success,
+        views=0,
+        likes=0,
+        shares=0,
+        comments=0,
+        published_at=datetime.utcnow(),
+        error_message=error_text,
+    )
+    db.session.add(post_record)
+
+    run.topic = topic_text
+    run.platform = platform
+    run.error = error_text
+    if success:
+        run.status = "published"
+        run.published_at = datetime.utcnow()
+    else:
+        run.status = "publish_failed"
+
+    db.session.commit()
+    status_code = 200 if success else 400
+    return jsonify(
+        {
+            "success": success,
+            "run": _agent_run_payload(run, quality_report=_agent_latest_quality_report(run.id)),
+            "publication": {
+                "channel_id": channel.id,
+                "channel_name": channel.channel_name,
+                "platform": platform,
+                "post_id": publish_result.get("post_id"),
+                "error": error_text,
+                "image_used": bool(image_path),
+            },
+        }
+    ), status_code
+
+
+@app.route("/api/agent/runs")
+@login_required
+def api_agent_runs():
+    guard_response = _agent_feature_guard()
+    if guard_response:
+        return guard_response
+
+    page = request.args.get("page", 1, type=int)
+    per_page = request.args.get("per_page", 20, type=int)
+    per_page = min(max(per_page, 1), 100)
+    channel_id = request.args.get("channel_id")
+    status_filter = str(request.args.get("status") or "").strip().lower()
+
+    query = _agent_runs_query_for_current_user()
+    if channel_id:
+        try:
+            channel_id = int(channel_id)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "Некорректный channel_id"}), 400
+        if not is_admin_user(current_user):
+            channel = _get_accessible_channel(channel_id)
+            query = query.filter(GenerationRun.channel_id == channel.id)
+        else:
+            query = query.filter(GenerationRun.channel_id == channel_id)
+
+    if status_filter:
+        query = query.filter(GenerationRun.status == status_filter)
+
+    total = query.count()
+    total_pages = max(1, math.ceil(total / per_page)) if per_page else 1
+    runs = (
+        query.order_by(GenerationRun.created_at.desc(), GenerationRun.id.desc())
+        .offset((max(page, 1) - 1) * per_page)
+        .limit(per_page)
+        .all()
+    )
+
+    payload = []
+    for run in runs:
+        payload.append(_agent_run_payload(run, quality_report=_agent_latest_quality_report(run.id)))
+
+    return jsonify(
+        {
+            "success": True,
+            "runs": payload,
+            "total": total,
+            "page": max(page, 1),
+            "per_page": per_page,
+            "total_pages": total_pages,
         }
     )
 
