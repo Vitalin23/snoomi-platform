@@ -55,6 +55,7 @@ class TelegramSyncPoster:
         temp_files = []
         try:
             url = f"{self.base_url}/sendPhoto"
+            print("🔁 sendPhoto resilient mode v2")
 
             # Проверяем файл
             if not os.path.exists(image_path):
@@ -74,18 +75,25 @@ class TelegramSyncPoster:
                 caption = caption[:1020] + "..."
 
             # Готовим список кандидатов файла: оригинал + варианты сжатия.
-            upload_candidates = [image_path]
-            if file_size > 2 * 1024 * 1024:
-                print("🔄 Сжимаю изображение (первичный проход)...")
-                compressed_path = self._compress_image(image_path, max_size_kb=1500)
-                if compressed_path and compressed_path not in upload_candidates:
-                    upload_candidates.append(compressed_path)
-                    temp_files.append(compressed_path)
-            if file_size > 900 * 1024:
-                compressed_small = self._compress_image(image_path, max_size_kb=900)
-                if compressed_small and compressed_small not in upload_candidates:
-                    upload_candidates.append(compressed_small)
-                    temp_files.append(compressed_small)
+            upload_candidates = []
+            if file_size > 700 * 1024:
+                print("🔄 Подготовка сжатых копий для стабильной отправки...")
+                compressed_800 = self._compress_image(image_path, max_size_kb=800)
+                if compressed_800 and compressed_800 not in upload_candidates:
+                    upload_candidates.append(compressed_800)
+                    temp_files.append(compressed_800)
+                compressed_550 = self._compress_image(image_path, max_size_kb=550)
+                if compressed_550 and compressed_550 not in upload_candidates:
+                    upload_candidates.append(compressed_550)
+                    temp_files.append(compressed_550)
+                compressed_400 = self._compress_image(image_path, max_size_kb=400)
+                if compressed_400 and compressed_400 not in upload_candidates:
+                    upload_candidates.append(compressed_400)
+                    temp_files.append(compressed_400)
+
+            # Оригинал пробуем тоже, но после более легких вариантов.
+            if image_path not in upload_candidates:
+                upload_candidates.append(image_path)
 
             parse_modes = ["HTML", None]
             last_error = None
@@ -121,7 +129,13 @@ class TelegramSyncPoster:
                             # Каждый retry открывает файл заново — это важно для multipart upload.
                             with open(candidate_path, "rb") as photo:
                                 files = {"photo": photo}
-                                response = requests.post(url, data=data, files=files, timeout=timeout)
+                                response = requests.post(
+                                    url,
+                                    data=data,
+                                    files=files,
+                                    timeout=timeout,
+                                    headers={"Connection": "close"},
+                                )
 
                             elapsed = time.time() - start_time
                             print(f"📡 Ответ Telegram: {response.status_code} (за {elapsed:.1f} сек)")
@@ -168,6 +182,16 @@ class TelegramSyncPoster:
                             print(f"🔄 Повтор через {wait_s} сек...")
                             time.sleep(wait_s)
 
+            # Если sendPhoto не удалось, пробуем sendDocument (единым сообщением с подписью).
+            smallest_candidate = min(
+                upload_candidates,
+                key=lambda path: os.path.getsize(path) if os.path.exists(path) else float("inf"),
+            )
+            print("🔄 sendPhoto не прошел, пробуем sendDocument fallback...")
+            document_message_id = self._send_document_with_caption(smallest_candidate, caption)
+            if document_message_id:
+                return document_message_id
+
             print(f"❌ Не удалось отправить фото после всех попыток. Последняя ошибка: {last_error}")
             return None
 
@@ -177,6 +201,57 @@ class TelegramSyncPoster:
         finally:
             for temp_file in temp_files:
                 self._safe_remove_file(temp_file)
+
+    def _send_document_with_caption(self, file_path, caption):
+        """Fallback: отправка файла как document с подписью."""
+        try:
+            if not file_path or not os.path.exists(file_path):
+                return None
+
+            url = f"{self.base_url}/sendDocument"
+            data = {
+                "chat_id": self.channel_id,
+                "caption": caption[:1024],
+                "parse_mode": "HTML",
+                "disable_notification": False,
+            }
+
+            for attempt in range(1, 3):
+                try:
+                    print(f"📦 sendDocument попытка {attempt}/2...")
+                    with open(file_path, "rb") as doc_file:
+                        files = {"document": doc_file}
+                        response = requests.post(
+                            url,
+                            data=data,
+                            files=files,
+                            timeout=(20, 120),
+                            headers={"Connection": "close"},
+                        )
+
+                    if response.status_code != 200:
+                        print(f"❌ sendDocument HTTP {response.status_code}")
+                        if attempt < 2:
+                            time.sleep(2 ** attempt)
+                        continue
+
+                    result = response.json()
+                    if result.get("ok"):
+                        message_id = result["result"].get("message_id")
+                        print(f"✅ sendDocument успешно, message_id: {message_id}")
+                        return message_id
+
+                    print(f"❌ sendDocument API error: {result.get('description')}")
+                    if attempt < 2:
+                        time.sleep(2 ** attempt)
+                except Exception as e:
+                    print(f"⚠️ sendDocument ошибка (попытка {attempt}/2): {e}")
+                    if attempt < 2:
+                        time.sleep(2 ** attempt)
+            return None
+        except Exception as e:
+            print(f"❌ Ошибка sendDocument fallback: {e}")
+            return None
     
     def _compress_image(self, image_path, max_size_kb=1500):
         """Сжимает изображение до указанного размера"""
