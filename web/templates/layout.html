@@ -162,6 +162,92 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- Custom JS -->
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+
+    <script>
+        (function () {
+            const MAX_EVENTS_PER_PAGE = 120;
+            let sentEvents = 0;
+
+            function buildEvent(eventType, payload) {
+                return {
+                    event_type: eventType,
+                    path: window.location.pathname,
+                    payload: payload || {}
+                };
+            }
+
+            function safeText(text, maxLength) {
+                return (text || "").toString().trim().slice(0, maxLength);
+            }
+
+            function sendClientEvent(eventType, payload) {
+                if (sentEvents >= MAX_EVENTS_PER_PAGE) return;
+                sentEvents += 1;
+
+                const body = JSON.stringify(buildEvent(eventType, payload));
+
+                if (navigator.sendBeacon) {
+                    const blob = new Blob([body], { type: "application/json" });
+                    navigator.sendBeacon("/api/client-events", blob);
+                    return;
+                }
+
+                fetch("/api/client-events", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: body,
+                    keepalive: true
+                }).catch(() => {});
+            }
+
+            window.__sendClientEvent = sendClientEvent;
+
+            document.addEventListener("DOMContentLoaded", function () {
+                sendClientEvent("page_view", {
+                    title: safeText(document.title, 120),
+                    referrer: safeText(document.referrer, 200)
+                });
+            });
+
+            document.addEventListener("submit", function (event) {
+                const form = event.target;
+                if (!form || !form.tagName || form.tagName.toLowerCase() !== "form") return;
+                sendClientEvent("form_submit", {
+                    form_id: safeText(form.id, 80),
+                    form_action: safeText(form.getAttribute("action"), 200),
+                    form_method: safeText(form.getAttribute("method") || "get", 20)
+                });
+            }, true);
+
+            document.addEventListener("click", function (event) {
+                const target = event.target.closest("button, a, [data-track-click]");
+                if (!target) return;
+
+                sendClientEvent("ui_click", {
+                    tag: safeText(target.tagName.toLowerCase(), 20),
+                    id: safeText(target.id, 80),
+                    classes: safeText(target.className, 120),
+                    text: safeText(target.innerText || target.textContent, 120),
+                    href: safeText(target.getAttribute("href"), 220)
+                });
+            }, true);
+
+            window.addEventListener("error", function (event) {
+                sendClientEvent("js_error", {
+                    message: safeText(event.message, 240),
+                    source: safeText(event.filename, 260),
+                    line: event.lineno || 0,
+                    column: event.colno || 0
+                });
+            });
+
+            window.addEventListener("unhandledrejection", function (event) {
+                sendClientEvent("js_unhandled_rejection", {
+                    reason: safeText(String(event.reason || "unknown"), 400)
+                });
+            });
+        })();
+    </script>
     
     {% block extra_js %}{% endblock %}
 </body>

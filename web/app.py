@@ -11,12 +11,27 @@ import math
 import os
 import re
 import sys
+import json
+import uuid
 import logging
 from datetime import datetime, timedelta
 from functools import wraps
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for
+from flask import (
+    Flask,
+    abort,
+    flash,
+    g,
+    has_request_context,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    url_for,
+    got_request_exception,
+)
 from flask_login import (
     LoginManager,
     UserMixin,
@@ -27,6 +42,7 @@ from flask_login import (
 )
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import text
+from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # Настройка путей
@@ -49,6 +65,56 @@ login_manager.login_view = "login"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+LOGS_DIR = PROJECT_ROOT / "logs"
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+SYSTEM_LOG_FILE = LOGS_DIR / "system.log"
+ERROR_LOG_FILE = LOGS_DIR / "errors.log"
+CLIENT_BEHAVIOR_LOG_FILE = LOGS_DIR / "client_behavior.log"
+
+
+def _build_rotating_file_handler(log_file, level):
+    handler = RotatingFileHandler(
+        log_file,
+        maxBytes=5 * 1024 * 1024,  # 5MB per file
+        backupCount=5,
+        encoding="utf-8",
+    )
+    handler.setLevel(level)
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+    return handler
+
+
+def _attach_file_handler(logger_obj, log_file, level):
+    log_file_str = str(log_file)
+    for handler in logger_obj.handlers:
+        if isinstance(handler, RotatingFileHandler) and getattr(handler, "baseFilename", "") == log_file_str:
+            return
+    logger_obj.addHandler(_build_rotating_file_handler(log_file, level))
+
+
+system_logger = logging.getLogger("snoomi.system")
+system_logger.setLevel(logging.INFO)
+system_logger.propagate = False
+_attach_file_handler(system_logger, SYSTEM_LOG_FILE, logging.INFO)
+
+error_logger = logging.getLogger("snoomi.error")
+error_logger.setLevel(logging.ERROR)
+error_logger.propagate = False
+_attach_file_handler(error_logger, ERROR_LOG_FILE, logging.ERROR)
+
+behavior_logger = logging.getLogger("snoomi.behavior")
+behavior_logger.setLevel(logging.INFO)
+behavior_logger.propagate = False
+_attach_file_handler(behavior_logger, CLIENT_BEHAVIOR_LOG_FILE, logging.INFO)
+
+logger.info(f"📝 Web logging enabled in: {LOGS_DIR}")
 
 # Временное in-memory хранилище планирования из UI /channels
 SCHEDULED_POSTS = []
@@ -171,6 +237,72 @@ def admin_required(func):
         return func(*args, **kwargs)
 
     return wrapped
+
+
+def _request_user_context():
+    if not has_request_context():
+        return {"user_id": None, "username": None, "client_id": None, "role": None}
+
+    if current_user.is_authenticated:
+        return {
+            "user_id": current_user.id,
+            "username": current_user.username,
+            "client_id": current_user.client_id,
+            "role": current_user.role,
+        }
+
+    return {"user_id": None, "username": "anonymous", "client_id": None, "role": None}
+
+
+@app.before_request
+def _start_request_trace():
+    g.request_id = uuid.uuid4().hex[:12]
+    g.request_started_at = datetime.utcnow()
+
+
+@app.after_request
+def _finish_request_trace(response):
+    if request.path.startswith("/static/"):
+        return response
+
+    started_at = getattr(g, "request_started_at", datetime.utcnow())
+    elapsed_ms = int((datetime.utcnow() - started_at).total_seconds() * 1000)
+    user_ctx = _request_user_context()
+    base_msg = (
+        f"request_id={getattr(g, 'request_id', 'n/a')} method={request.method} "
+        f"path={request.path} status={response.status_code} elapsed_ms={elapsed_ms} "
+        f"user_id={user_ctx['user_id']} client_id={user_ctx['client_id']} ip={request.remote_addr}"
+    )
+
+    if response.status_code >= 500:
+        error_logger.error(base_msg)
+    elif response.status_code >= 400:
+        system_logger.warning(base_msg)
+    else:
+        system_logger.info(base_msg)
+
+    return response
+
+
+def _log_flask_exception(sender, exception, **extra):
+    if isinstance(exception, HTTPException):
+        if exception.code and exception.code < 500:
+            return
+
+    user_ctx = _request_user_context()
+    error_logger.exception(
+        "Unhandled exception | request_id=%s method=%s path=%s user_id=%s client_id=%s ip=%s",
+        getattr(g, "request_id", "n/a"),
+        request.method if has_request_context() else "n/a",
+        request.path if has_request_context() else "n/a",
+        user_ctx.get("user_id"),
+        user_ctx.get("client_id"),
+        request.remote_addr if has_request_context() else "n/a",
+        exc_info=exception,
+    )
+
+
+got_request_exception.connect(_log_flask_exception, app)
 
 
 def _ensure_user_schema():
@@ -832,6 +964,51 @@ def api_system_health():
             "users": User.query.count(),
         }
     )
+
+
+def _sanitize_behavior_payload(payload):
+    if not isinstance(payload, dict):
+        payload = {"value": str(payload)}
+
+    sensitive_markers = ("token", "password", "secret", "key", "authorization")
+    sanitized = {}
+    for raw_key, raw_value in payload.items():
+        key = str(raw_key)[:80]
+        lower_key = key.lower()
+        if any(marker in lower_key for marker in sensitive_markers):
+            sanitized[key] = "***"
+            continue
+
+        if isinstance(raw_value, (dict, list)):
+            value = json.dumps(raw_value, ensure_ascii=False)[:500]
+        else:
+            value = str(raw_value)[:500]
+        sanitized[key] = value
+    return sanitized
+
+
+@app.route("/api/client-events", methods=["POST"])
+def api_client_events():
+    data = request.get_json(silent=True) or {}
+    event_type = (data.get("event_type") or "").strip().lower()
+    if not event_type:
+        return jsonify({"success": False, "error": "event_type is required"}), 400
+
+    payload = _sanitize_behavior_payload(data.get("payload") or {})
+    user_ctx = _request_user_context()
+    event_record = {
+        "event_type": event_type[:80],
+        "path": (data.get("path") or request.path)[:200],
+        "user_id": user_ctx.get("user_id"),
+        "username": user_ctx.get("username"),
+        "client_id": user_ctx.get("client_id"),
+        "ip": request.remote_addr,
+        "user_agent": (request.headers.get("User-Agent") or "")[:300],
+        "payload": payload,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+    behavior_logger.info(json.dumps(event_record, ensure_ascii=False))
+    return jsonify({"success": True})
 
 
 # -------------------- API: КАНАЛЫ/ПОДКЛЮЧЕНИЯ --------------------
