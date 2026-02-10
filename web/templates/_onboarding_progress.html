@@ -1,0 +1,54 @@
+{% if onboarding_progress and onboarding_progress.show %}
+<section class="onboarding-strip" aria-label="Прогресс онбординга">
+    <div class="container">
+        <div class="onboarding-strip-head">
+            <div class="onboarding-strip-summary">
+                <span class="badge bg-primary">Онбординг клиента</span>
+                <span class="small text-muted">
+                    Прогресс {{ onboarding_progress.completed_steps }}/{{ onboarding_progress.total_steps }}
+                    ({{ onboarding_progress.progress_percent }}%)
+                </span>
+            </div>
+            {% if onboarding_progress.next_step %}
+            <a href="{{ onboarding_progress.next_step.url }}" class="btn btn-sm btn-outline-primary">
+                <i class="fas fa-arrow-right me-1"></i>Продолжить: {{ onboarding_progress.next_step.title }}
+            </a>
+            {% else %}
+            <span class="badge bg-success">Онбординг завершен</span>
+            {% endif %}
+        </div>
+
+        <div
+            class="progress onboarding-strip-progress"
+            role="progressbar"
+            aria-label="Прогресс онбординга"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="{{ onboarding_progress.progress_percent }}"
+        >
+            <div class="progress-bar" style="width: {{ onboarding_progress.progress_percent }}%;"></div>
+        </div>
+
+        <div class="onboarding-step-list">
+            {% for step in onboarding_progress.steps %}
+            <a
+                href="{{ step.url }}"
+                class="onboarding-step-chip {% if step.done %}is-done{% elif step.is_current %}is-current{% endif %}"
+            >
+                <span class="onboarding-step-index">
+                    {% if step.done %}
+                    <i class="fas fa-check"></i>
+                    {% else %}
+                    {{ loop.index }}
+                    {% endif %}
+                </span>
+                <span class="onboarding-step-meta">
+                    <span class="onboarding-step-title">{{ step.title }} · {{ step.label }}</span>
+                    <span class="onboarding-step-description">{{ step.description }}</span>
+                </span>
+            </a>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+{% endif %}
