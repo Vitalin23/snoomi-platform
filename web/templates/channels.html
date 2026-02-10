@@ -1,30 +1,9 @@
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="color-scheme" content="light dark">
-    <title>Шаг 1: Подключение каналов - Snoomi Platform</title>
-    
-    <!-- Bootstrap CSS -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <!-- Font Awesome -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    <!-- Custom CSS -->
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+{% extends "layout.html" %}
 
-    <script>
-        (function () {
-            try {
-                const savedTheme = localStorage.getItem("snoomi-theme");
-                if (savedTheme) {
-                    document.documentElement.setAttribute("data-theme", savedTheme);
-                }
-            } catch (e) {}
-        })();
-    </script>
-    
-    <style>
+{% block title %}Snoomi Platform - Шаг 1: Подключение каналов{% endblock %}
+
+{% block extra_css %}
+<style>
         .content-card {
             margin-bottom: 20px;
             border: 1px solid var(--color-border);
@@ -98,88 +77,16 @@
             }
         }
     </style>
-</head>
-<body>
-    <!-- Навигация -->
-    <nav class="navbar navbar-expand-lg navbar-light app-navbar">
-        <div class="container">
-            <a class="navbar-brand" href="{{ url_for('dashboard') }}">
-                <i class="fas fa-blog"></i> Snoomi Platform
-            </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav ms-auto">
-                    <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('dashboard') }}">
-                            <i class="fas fa-tachometer-alt"></i> Дашборд
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link active" href="{{ url_for('channels') }}">
-                            <i class="fas fa-broadcast-tower"></i> Каналы
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('posting_setup') }}">
-                            <i class="fas fa-sliders-h"></i> Шаг 2
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('posting_plan') }}">
-                            <i class="fas fa-calendar-check"></i> Шаг 3
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('statistics') }}">
-                            <i class="fas fa-chart-bar"></i> Аналитика
-                        </a>
-                    </li>
-                    <li class="nav-item dropdown ms-lg-2">
-                        <button
-                            class="btn btn-sm btn-outline-primary dropdown-toggle mt-1 mt-lg-0"
-                            id="channelsThemeDropdown"
-                            data-bs-toggle="dropdown"
-                            aria-expanded="false"
-                        >
-                            <i class="fas fa-circle-half-stroke me-1"></i>
-                            <span id="channelsActiveThemeLabel">Тема</span>
-                        </button>
-                        <ul class="dropdown-menu dropdown-menu-end theme-menu">
-                            <li><button class="dropdown-item channels-theme-option" type="button" data-theme="light">Светлая</button></li>
-                            <li><button class="dropdown-item channels-theme-option" type="button" data-theme="dark">Тёмная</button></li>
-                            <li><button class="dropdown-item channels-theme-option" type="button" data-theme="contrast">Высокий контраст</button></li>
-                        </ul>
-                    </li>
-                </ul>
-            </div>
-        </div>
-    </nav>
-    {% include "_onboarding_progress.html" %}
+{% endblock %}
 
-    <div class="container mt-4">
+{% block content %}
+    <div class="mt-1">
         <div class="page-header">
             <div>
                 <h1 class="page-title"><i class="fas fa-plug me-2"></i>Шаг 1. Подключение каналов</h1>
                 <p class="page-subtitle">Проверьте канал, зафиксируйте доступ и подготовьте базу для планировщика тем</p>
             </div>
         </div>
-
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                <div class="row">
-                    <div class="col-12">
-                        {% for category, message in messages %}
-                            <div class="alert alert-{{ category if category != 'message' else 'info' }} alert-dismissible fade show">
-                                {{ message }}
-                                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                            </div>
-                        {% endfor %}
-                    </div>
-                </div>
-            {% endif %}
-        {% endwith %}
 
         <div class="operator-action-bar">
             <div class="operator-action-meta">
@@ -429,51 +336,10 @@
             </div>
         </div>
     </div>
+{% endblock %}
 
-    <!-- Bootstrap JS -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-    <!-- jQuery -->
-    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-    <!-- Shared UI scripts -->
-    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
-    
+{% block extra_js %}
     <script>
-        const channelsThemeNames = {
-            light: 'Светлая',
-            dark: 'Тёмная',
-            contrast: 'Контраст'
-        };
-
-        function getChannelsTheme() {
-            return document.documentElement.getAttribute('data-theme') || 'light';
-        }
-
-        function updateChannelsThemeUi() {
-            const current = getChannelsTheme();
-            const label = document.getElementById('channelsActiveThemeLabel');
-            if (label) {
-                label.textContent = channelsThemeNames[current] || 'Тема';
-            }
-            document.querySelectorAll('.channels-theme-option').forEach((btn) => {
-                const active = btn.dataset.theme === current;
-                btn.classList.toggle('active', active);
-                btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-            });
-        }
-
-        function setChannelsTheme(theme) {
-            document.documentElement.setAttribute('data-theme', theme);
-            try {
-                localStorage.setItem('snoomi-theme', theme);
-            } catch (e) {}
-            updateChannelsThemeUi();
-        }
-
-        document.querySelectorAll('.channels-theme-option').forEach((btn) => {
-            btn.addEventListener('click', () => setChannelsTheme(btn.dataset.theme || 'light'));
-        });
-        updateChannelsThemeUi();
-
         let verifiedChannelState = null;
         const tokenHelpLinks = {
             telegram: "{{ token_help_links.telegram }}",
@@ -809,5 +675,4 @@
             });
         }
     </script>
-</body>
-</html>
+{% endblock %}
