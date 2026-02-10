@@ -178,7 +178,7 @@
         <div class="operator-action-bar">
             <div class="operator-action-meta">
                 <span class="badge">Operator panel</span>
-                <span>Сначала подключите канал, затем генерируйте и планируйте публикации</span>
+                <span>Сначала подключите и проверьте канал, затем переходите к следующему рабочему модулю</span>
             </div>
             <div class="operator-action-controls">
                 <a href="#autopostConnectCard" class="btn btn-outline-primary">
@@ -210,8 +210,8 @@
                 <div class="channels-steps">
                     <ol>
                         <li>Выберите платформу и вставьте ссылку/ник канала.</li>
-                        <li>Нажмите «Проверить канал», чтобы подтянуть стиль и валидировать доступ.</li>
-                        <li>Заполните описание (20+ слов) и сохраните подключение.</li>
+                        <li>Нажмите «Проверить канал»: для Telegram сначала используется публичная проверка без ключа.</li>
+                        <li>Заполните описание (20+ слов), укажите токен для публикации и сохраните подключение.</li>
                     </ol>
                 </div>
                 <form id="autopostChannelForm" class="row g-3">
@@ -247,10 +247,11 @@
                     <div class="col-md-6">
                         <label class="form-label" id="autopostTokenLabel">Telegram bot token для публикации *</label>
                         <input type="password" class="form-control" id="autopostAccessToken" required>
-                        <div class="form-text">
+                        <div class="form-text" id="autopostTokenHelpText">
                             <a href="{{ token_help_links.telegram }}" target="_blank" id="autopostTokenHelpLink">
                                 Как получить Telegram bot token?
                             </a>
+                            <span class="d-block" id="autopostTokenHint"></span>
                         </div>
                     </div>
                     <div class="col-12" id="autopostStyleBox" style="display:none;">
@@ -446,6 +447,7 @@
             const referenceLabel = document.getElementById('autopostReferenceLabel');
             const tokenLabel = document.getElementById('autopostTokenLabel');
             const tokenHelpLink = document.getElementById('autopostTokenHelpLink');
+            const tokenHint = document.getElementById('autopostTokenHint');
             const referenceInput = document.getElementById('autopostChannelReference');
 
             hiddenPlatform.value = platform;
@@ -459,6 +461,7 @@
                 tokenLabel.textContent = 'Telegram bot token для публикации *';
                 tokenHelpLink.href = tokenHelpLinks.telegram;
                 tokenHelpLink.textContent = 'Как получить Telegram bot token?';
+                tokenHint.textContent = 'Проверка Telegram-канала доступна без токена, но для сохранения подключения токен обязателен.';
             } else {
                 tgBtn.className = 'btn btn-outline-primary';
                 vkBtn.className = 'btn btn-primary';
@@ -467,6 +470,7 @@
                 tokenLabel.textContent = 'VK access token для проверки и публикации *';
                 tokenHelpLink.href = tokenHelpLinks.vk;
                 tokenHelpLink.textContent = 'Как получить VK access token?';
+                tokenHint.textContent = '';
             }
         }
 
@@ -480,7 +484,7 @@
                 showAutopostResult('Введите ссылку или ник канала перед проверкой.', false);
                 return;
             }
-            if (!accessToken) {
+            if (platform === 'vk' && !accessToken) {
                 showAutopostResult('Укажите access token для обработчика.', false);
                 return;
             }
@@ -579,6 +583,10 @@
                 const words = countWords(payload.channel_description);
                 if (words < 20) {
                     showAutopostResult('Описание канала должно содержать минимум 20 слов.', false);
+                    return;
+                }
+                if (!payload.access_token) {
+                    showAutopostResult('Для сохранения канала укажите access token для публикации.', false);
                     return;
                 }
 

@@ -576,7 +576,49 @@ def _fetch_telegram_channel_preview(channel_reference, access_token=None):
     verification_errors = []
     verified = False
 
-    if access_token:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        )
+    }
+
+    def _absorb_page_data(page_html):
+        nonlocal channel_name, channel_description, recent_posts, verified
+        title_match = re.search(r'<meta property="og:title" content="([^"]+)"', page_html)
+        desc_match = re.search(r'<meta property="og:description" content="([^"]*)"', page_html)
+
+        page_channel_name = _strip_html(title_match.group(1)) if title_match else ""
+        page_description = _strip_html(desc_match.group(1)) if desc_match else ""
+        posts_from_page = _extract_telegram_posts_from_html(page_html, limit=10)
+
+        if page_channel_name:
+            channel_name = page_channel_name
+            verified = True
+        if page_description:
+            channel_description = page_description
+            verified = True
+        if posts_from_page:
+            recent_posts = posts_from_page
+            verified = True
+
+    # Приоритет №1: публичная проверка без ключа.
+    public_attempts = [
+        (source_url, "публичная ссылка"),
+        (preview_url, "публичная лента /s"),
+    ]
+    for attempt_url, attempt_label in public_attempts:
+        try:
+            response = requests.get(attempt_url, timeout=(6, 12), headers=headers)
+            if response.status_code == 200:
+                _absorb_page_data(response.text)
+            else:
+                verification_errors.append(f"{attempt_label}: HTTP {response.status_code}")
+        except Exception as e:
+            verification_errors.append(f"{attempt_label}: {e}")
+
+    # Фолбэк: проверка через Bot API (если клиент добавил токен).
+    if access_token and (not verified or not channel_description):
         try:
             bot_resp = requests.get(
                 f"https://api.telegram.org/bot{access_token}/getChat",
@@ -598,36 +640,6 @@ def _fetch_telegram_channel_preview(channel_reference, access_token=None):
                 verification_errors.append(f"Bot API: {bot_error}")
         except Exception as e:
             verification_errors.append(f"Bot API недоступен: {e}")
-
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (X11; Linux x86_64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-        )
-    }
-
-    try:
-        response = requests.get(preview_url, timeout=(6, 12), headers=headers)
-        if response.status_code == 200:
-            page_html = response.text
-            title_match = re.search(r'<meta property="og:title" content="([^"]+)"', page_html)
-            desc_match = re.search(r'<meta property="og:description" content="([^"]*)"', page_html)
-
-            page_channel_name = _strip_html(title_match.group(1)) if title_match else ""
-            page_description = _strip_html(desc_match.group(1)) if desc_match else ""
-            posts_from_page = _extract_telegram_posts_from_html(page_html, limit=10)
-
-            if page_channel_name:
-                channel_name = page_channel_name
-            if page_description:
-                channel_description = page_description
-            if posts_from_page:
-                recent_posts = posts_from_page
-            verified = True
-        else:
-            verification_errors.append(f"Публичная страница Telegram недоступна (HTTP {response.status_code})")
-    except Exception as e:
-        verification_errors.append(f"Публичная страница Telegram недоступна: {e}")
 
     if not verified:
         combined_errors = " | ".join(verification_errors).lower()
@@ -666,7 +678,8 @@ def _fetch_telegram_channel_preview(channel_reference, access_token=None):
             }
 
         error_hint = (
-            "Не удалось проверить Telegram-канал. Проверьте ник/ссылку канала, публичность и права бота, "
+            "Не удалось проверить Telegram-канал. Проверьте ник/ссылку канала и публичность, "
+            "а при проверке через токен — права бота, "
             "затем повторите попытку."
         )
         if verification_errors:
