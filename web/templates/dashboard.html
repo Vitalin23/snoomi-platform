@@ -22,6 +22,7 @@
 {% endblock %}
 
 {% block content %}
+{% set has_any_channels = (stats.active_channels | default(0) | int) > 0 %}
 <!-- Заголовок -->
 <div class="page-header">
     <div>
@@ -29,11 +30,6 @@
             <i class="fas fa-tachometer-alt me-2"></i>Панель управления
         </h1>
         <p class="page-subtitle">Добро пожаловать, {{ user.username }}!</p>
-    </div>
-    <div class="d-flex align-items-center gap-2">
-        <button class="btn btn-primary" onclick="publishNow()">
-            <i class="fas fa-paper-plane me-2"></i>Опубликовать сейчас
-        </button>
     </div>
 </div>
 
@@ -230,10 +226,6 @@
                         <i class="fas fa-tags text-info me-2"></i>
                         Добавить тему
                     </a>
-                    <a href="#" class="list-group-item list-group-item-action" onclick="publishNow()">
-                        <i class="fas fa-paper-plane text-primary me-2"></i>
-                        Опубликовать сейчас
-                    </a>
                     <a href="{{ url_for('statistics') }}" class="list-group-item list-group-item-action">
                         <i class="fas fa-chart-bar text-warning me-2"></i>
                         Подробная статистика
@@ -243,6 +235,36 @@
                         Управление подпиской
                     </a>
                 </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Блок ручного запуска публикации (временный, до отдельного сценария) -->
+<div class="row mt-2 mb-4">
+    <div class="col-12">
+        <div class="card shadow">
+            <div class="card-header py-3">
+                <h6 class="m-0 fw-bold text-primary">
+                    <i class="fas fa-paper-plane me-1"></i>Ручной запуск публикации
+                </h6>
+            </div>
+            <div class="card-body">
+                {% if has_any_channels %}
+                    <div class="d-flex flex-wrap align-items-center gap-3">
+                        <p class="mb-0 text-muted">
+                            Используйте ручной запуск, если нужно сразу отправить публикации в активные каналы.
+                        </p>
+                        <button class="btn btn-primary" onclick="publishNow(this)">
+                            <i class="fas fa-paper-plane me-2"></i>Опубликовать сейчас
+                        </button>
+                    </div>
+                {% else %}
+                    <div class="alert alert-info mb-0">
+                        <i class="fas fa-info-circle me-1"></i>
+                        Кнопка публикации появится после добавления хотя бы одного активного канала.
+                    </div>
+                {% endif %}
             </div>
         </div>
     </div>
@@ -464,12 +486,15 @@ function loadRecentPublications() {
 }
 
 // Немедленная публикация
-function publishNow() {
+function publishNow(buttonElement) {
     if (!confirm('Запустить публикацию сейчас? Будет создан новый контент и опубликован во все активные каналы.')) {
         return;
     }
     
-    const button = event.target.closest('button');
+    const button = buttonElement || document.querySelector('button[onclick*="publishNow"]');
+    if (!button) {
+        return;
+    }
     const originalText = button.innerHTML;
     button.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Публикую...';
     button.disabled = true;

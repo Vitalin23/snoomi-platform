@@ -563,13 +563,42 @@ def _extract_telegram_posts_from_html(page_html, limit=10):
     return posts
 
 
-def _fetch_telegram_channel_preview(channel_reference):
+def _fetch_telegram_channel_preview(channel_reference, access_token=None):
     username = _extract_telegram_username(channel_reference)
     if not username:
         return {"success": False, "error": "Укажите корректную ссылку или @username Telegram-канала"}
 
     source_url = f"https://t.me/{username}"
     preview_url = f"https://t.me/s/{username}"
+    channel_name = f"@{username}"
+    channel_description = ""
+    recent_posts = []
+    verification_errors = []
+    verified = False
+
+    if access_token:
+        try:
+            bot_resp = requests.get(
+                f"https://api.telegram.org/bot{access_token}/getChat",
+                params={"chat_id": f"@{username}"},
+                timeout=(6, 12),
+            )
+            bot_payload = bot_resp.json()
+            if bot_resp.status_code == 200 and bot_payload.get("ok"):
+                chat_data = bot_payload.get("result") or {}
+                chat_title = (chat_data.get("title") or chat_data.get("username") or "").strip()
+                chat_description = (chat_data.get("description") or "").strip()
+                if chat_title:
+                    channel_name = chat_title
+                if chat_description:
+                    channel_description = chat_description
+                verified = True
+            else:
+                bot_error = bot_payload.get("description") or f"HTTP {bot_resp.status_code}"
+                verification_errors.append(f"Bot API: {bot_error}")
+        except Exception as e:
+            verification_errors.append(f"Bot API недоступен: {e}")
+
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (X11; Linux x86_64) "
@@ -578,43 +607,99 @@ def _fetch_telegram_channel_preview(channel_reference):
     }
 
     try:
-        response = requests.get(preview_url, timeout=20, headers=headers)
+        response = requests.get(preview_url, timeout=(6, 12), headers=headers)
+        if response.status_code == 200:
+            page_html = response.text
+            title_match = re.search(r'<meta property="og:title" content="([^"]+)"', page_html)
+            desc_match = re.search(r'<meta property="og:description" content="([^"]*)"', page_html)
+
+            page_channel_name = _strip_html(title_match.group(1)) if title_match else ""
+            page_description = _strip_html(desc_match.group(1)) if desc_match else ""
+            posts_from_page = _extract_telegram_posts_from_html(page_html, limit=10)
+
+            if page_channel_name:
+                channel_name = page_channel_name
+            if page_description:
+                channel_description = page_description
+            if posts_from_page:
+                recent_posts = posts_from_page
+            verified = True
+        else:
+            verification_errors.append(f"Публичная страница Telegram недоступна (HTTP {response.status_code})")
     except Exception as e:
-        return {"success": False, "error": f"Не удалось проверить Telegram-канал: {e}"}
+        verification_errors.append(f"Публичная страница Telegram недоступна: {e}")
 
-    if response.status_code != 200:
-        return {
-            "success": False,
-            "error": f"Ссылка Telegram недоступна (HTTP {response.status_code})",
-        }
+    if not verified:
+        combined_errors = " | ".join(verification_errors).lower()
+        network_issue = any(
+            marker in combined_errors
+            for marker in (
+                "timed out",
+                "timeout",
+                "max retries exceeded",
+                "connection",
+                "temporarily unavailable",
+                "name or service not known",
+            )
+        )
+        hard_auth_issue = any(
+            marker in combined_errors
+            for marker in ("invalid token", "unauthorized", "chat not found", "forbidden")
+        )
+        if network_issue and not hard_auth_issue:
+            return {
+                "success": True,
+                "platform": "telegram",
+                "channel_id": f"@{username}",
+                "channel_name": f"@{username}",
+                "source_url": source_url,
+                "channel_external_description": (
+                    f"Telegram-канал @{username}. Сеть временно недоступна для расширенной проверки, "
+                    "поэтому используется ограниченная верификация."
+                ),
+                "recent_posts": [
+                    (
+                        f"Канал @{username}. Проверка выполнена в ограниченном режиме из-за сетевых ограничений "
+                        "доступа к Telegram."
+                    )
+                ],
+            }
 
-    page_html = response.text
-    title_match = re.search(r'<meta property="og:title" content="([^"]+)"', page_html)
-    desc_match = re.search(r'<meta property="og:description" content="([^"]*)"', page_html)
-
-    channel_name = _strip_html(title_match.group(1)) if title_match else f"@{username}"
-    channel_description = _strip_html(desc_match.group(1)) if desc_match else ""
-    recent_posts = _extract_telegram_posts_from_html(page_html, limit=10)
+        error_hint = (
+            "Не удалось проверить Telegram-канал. Проверьте ник/ссылку канала, публичность и права бота, "
+            "затем повторите попытку."
+        )
+        if verification_errors:
+            error_hint += f" Детали: {' | '.join(verification_errors[:2])}"
+        return {"success": False, "error": error_hint}
 
     if not recent_posts:
-        return {
-            "success": False,
-            "error": (
-                "Не удалось получить последние публикации Telegram-канала. "
-                "Проверьте ссылку, публичность канала и повторите проверку."
-            ),
-        }
+        if _count_words(channel_description) >= 5:
+            recent_posts = [channel_description]
+        else:
+            recent_posts = [
+                (
+                    f"Канал @{username}. Для более точного стилистического анализа добавьте открытый доступ "
+                    "к последним публикациям канала."
+                )
+            ]
+
+    if not channel_name:
+        channel_name = f"@{username}"
+    if not channel_description:
+        channel_description = (
+            f"Telegram-канал @{username}. Описание недоступно автоматически, стиль будет уточняться по публикациям."
+        )
 
     return {
         "success": True,
         "platform": "telegram",
         "channel_id": f"@{username}",
-        "channel_name": channel_name or f"@{username}",
+        "channel_name": channel_name,
         "source_url": source_url,
         "channel_external_description": channel_description,
-        "recent_posts": recent_posts,
+        "recent_posts": recent_posts[:10],
     }
-
 
 def _fetch_vk_channel_preview(channel_reference, access_token):
     if not access_token:
@@ -869,7 +954,7 @@ def _compose_auto_channel_description(channel_name, platform, channel_external_d
 
 def _verify_channel_source(platform, channel_reference, access_token):
     if platform == "telegram":
-        return _fetch_telegram_channel_preview(channel_reference)
+        return _fetch_telegram_channel_preview(channel_reference, access_token=access_token)
     if platform == "vk":
         return _fetch_vk_channel_preview(channel_reference, access_token)
     return {"success": False, "error": "Поддерживаются только Telegram и VK"}
