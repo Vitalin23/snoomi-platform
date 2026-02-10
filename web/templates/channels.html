@@ -443,6 +443,77 @@
             telegram: "{{ token_help_links.telegram }}",
             vk: "{{ token_help_links.vk }}"
         };
+        function createDefaultPlatformDraft() {
+            return {
+                channelReference: '',
+                accessToken: '',
+                publishFrequency: 'daily',
+                publishHour: '10',
+                channelDescription: '',
+                notificationTelegram: '',
+                verifiedState: null,
+                verifiedChannelName: '',
+                verifiedSourceUrl: '',
+                verifiedExternalDescription: '',
+                styleSummary: ''
+            };
+        }
+        const platformFormDrafts = {
+            telegram: createDefaultPlatformDraft(),
+            vk: createDefaultPlatformDraft()
+        };
+
+        function getCurrentPlatform() {
+            return document.getElementById('autopostPlatform').value || 'telegram';
+        }
+
+        function clearAutopostResult() {
+            document.getElementById('autopostFormResult').innerHTML = '';
+        }
+
+        function savePlatformDraft(platform) {
+            if (!platformFormDrafts[platform]) {
+                platformFormDrafts[platform] = createDefaultPlatformDraft();
+            }
+            platformFormDrafts[platform] = {
+                channelReference: document.getElementById('autopostChannelReference').value,
+                accessToken: document.getElementById('autopostAccessToken').value,
+                publishFrequency: document.getElementById('autopostFrequency').value,
+                publishHour: document.getElementById('autopostHour').value,
+                channelDescription: document.getElementById('autopostDescription').value,
+                notificationTelegram: document.getElementById('autopostNotificationTg').value,
+                verifiedState: verifiedChannelState ? { ...verifiedChannelState } : null,
+                verifiedChannelName: document.getElementById('autopostVerifiedChannelName').value,
+                verifiedSourceUrl: document.getElementById('autopostVerifiedSourceUrl').value,
+                verifiedExternalDescription: document.getElementById('autopostVerifiedExternalDescription').value,
+                styleSummary: document.getElementById('autopostStyleSummary').textContent || ''
+            };
+        }
+
+        function restorePlatformDraft(platform) {
+            if (!platformFormDrafts[platform]) {
+                platformFormDrafts[platform] = createDefaultPlatformDraft();
+            }
+            const draft = platformFormDrafts[platform];
+
+            document.getElementById('autopostChannelReference').value = draft.channelReference || '';
+            document.getElementById('autopostAccessToken').value = draft.accessToken || '';
+            document.getElementById('autopostFrequency').value = draft.publishFrequency || 'daily';
+            document.getElementById('autopostHour').value = draft.publishHour || '10';
+            document.getElementById('autopostDescription').value = draft.channelDescription || '';
+            document.getElementById('autopostNotificationTg').value = draft.notificationTelegram || '';
+
+            verifiedChannelState = draft.verifiedState ? { ...draft.verifiedState } : null;
+            document.getElementById('autopostVerifiedChannelName').value = draft.verifiedChannelName || '';
+            document.getElementById('autopostVerifiedSourceUrl').value = draft.verifiedSourceUrl || '';
+            document.getElementById('autopostVerifiedExternalDescription').value = draft.verifiedExternalDescription || '';
+
+            const styleSummary = draft.styleSummary || '';
+            document.getElementById('autopostStyleSummary').textContent = styleSummary;
+            document.getElementById('autopostStyleBox').style.display = styleSummary ? '' : 'none';
+
+            refreshDescriptionCounter();
+        }
 
         function countWords(text) {
             const matches = (text || '').trim().match(/[A-Za-zА-Яа-яЁё0-9]+/g);
@@ -501,6 +572,7 @@
             document.getElementById('autopostVerifiedChannelName').value = '';
             document.getElementById('autopostVerifiedSourceUrl').value = '';
             document.getElementById('autopostVerifiedExternalDescription').value = '';
+            savePlatformDraft(getCurrentPlatform());
         }
 
         function setPlatform(platform) {
@@ -512,9 +584,13 @@
             const tokenHelpLink = document.getElementById('autopostTokenHelpLink');
             const tokenHint = document.getElementById('autopostTokenHint');
             const referenceInput = document.getElementById('autopostChannelReference');
+            const currentPlatform = hiddenPlatform.value || 'telegram';
+
+            if (currentPlatform !== platform) {
+                savePlatformDraft(currentPlatform);
+            }
 
             hiddenPlatform.value = platform;
-            clearVerificationState();
 
             if (platform === 'telegram') {
                 tgBtn.className = 'btn btn-primary';
@@ -535,6 +611,9 @@
                 tokenHelpLink.textContent = 'Как получить VK access token?';
                 tokenHint.textContent = 'Проверка VK-ссылки выполняется публично без токена; токен обязателен при сохранении для публикации.';
             }
+
+            restorePlatformDraft(platform);
+            clearAutopostResult();
         }
 
         async function verifyChannel() {
@@ -594,6 +673,7 @@
                     document.getElementById('autopostStyleSummary').textContent = styleSummary;
                     document.getElementById('autopostStyleBox').style.display = '';
                 }
+                savePlatformDraft(platform);
 
                 showAutopostResult(
                     `Канал успешно проверен: <strong>${data.channel_name}</strong>. ` +
