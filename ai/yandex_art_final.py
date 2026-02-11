@@ -6,6 +6,8 @@
 import os
 import sys
 import time
+import re
+import hashlib
 import requests
 import json
 import base64
@@ -65,7 +67,7 @@ class YandexArtGenerator:
         
         try:
             # 1. Создаем операцию генерации
-            operation_id = self._create_generation_operation(prompt)
+            operation_id = self._create_generation_operation(prompt, topic_seed_hint=topic)
             if not operation_id:
                 return None
             
@@ -95,30 +97,71 @@ class YandexArtGenerator:
         Создает иллюстрацию для статьи
         
         Args:
-            article_text: Текст статьи (не используется напрямую)
+            article_text: Текст статьи (используется как дополнительный контекст)
             topic: Тема статьи для промпта
             
         Returns:
             Путь к созданному файлу изображения
         """
-        # Создаем оптимизированный промпт на основе темы
-        prompt = self._create_article_prompt(topic)
+        article_hint = self._extract_article_visual_hint(article_text)
+        prompt_topic = topic
+        if article_hint:
+            prompt_topic = f"{topic}. Контекст статьи: {article_hint}"
+
+        # Создаем оптимизированный и более вариативный промпт на основе темы
+        prompt = self._create_article_prompt(prompt_topic)
         
         # Генерируем изображение
         return self.generate_image(prompt, topic)
+
+    def _pick_variant(self, topic: str, salt: str, options: List[str]) -> str:
+        if not options:
+            return ""
+        digest = hashlib.sha256(f"{topic}|{salt}".encode("utf-8")).hexdigest()
+        idx = int(digest[:8], 16) % len(options)
+        return options[idx]
+
+    def _extract_topic_keywords(self, text_value: str, limit: int = 6) -> List[str]:
+        words = re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", str(text_value or "").lower(), flags=re.UNICODE)
+        stop_words = {
+            "как", "что", "для", "при", "это", "или", "the", "and", "with", "post",
+            "telegram", "vk", "контекст", "статьи", "тема", "короткий", "чек", "лист",
+        }
+        unique: List[str] = []
+        seen = set()
+        for word in words:
+            if len(word) < 4 or word in stop_words:
+                continue
+            if word in seen:
+                continue
+            seen.add(word)
+            unique.append(word)
+            if len(unique) >= limit:
+                break
+        return unique
+
+    def _extract_article_visual_hint(self, article_text: str, max_words: int = 24) -> str:
+        words = re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", str(article_text or ""), flags=re.UNICODE)
+        if not words:
+            return ""
+        return " ".join(words[:max_words])
     
-    def _create_generation_operation(self, prompt: str) -> Optional[str]:
+    def _create_generation_operation(self, prompt: str, topic_seed_hint: str = "") -> Optional[str]:
         """Создает операцию генерации изображения"""
         try:
             headers = {
                 "Authorization": f"Api-Key {self.api_key}",
                 "Content-Type": "application/json"
             }
+            seed_material = f"{topic_seed_hint}|{prompt[:200]}|{time.time_ns()}"
+            seed = int(hashlib.sha256(seed_material.encode("utf-8")).hexdigest()[:12], 16) % 2147483647
+            if seed <= 0:
+                seed = int(time.time()) % 1000000 or 1
             
             payload = {
                 "modelUri": f"art://{self.folder_id}/yandex-art/latest",
                 "generationOptions": {
-                    "seed": int(time.time()) % 1000000
+                    "seed": seed
                 },
                 "messages": [
                     {
@@ -270,34 +313,92 @@ class YandexArtGenerator:
             return None
     
     def _create_article_prompt(self, topic: str) -> str:
-        """Создает промпт для статьи"""
-        # Определяем стиль на основе темы
-        topic_lower = topic.lower()
-        
-        if any(word in topic_lower for word in ['премиум', 'люкс', 'элит', 'дорог']):
-            style = "роскошный интерьер, дизайнерская спальня"
-        elif any(word in topic_lower for word in ['эко', 'натураль', 'природ', 'органич']):
-            style = "натуральные материалы, эко-стиль, дерево"
-        elif any(word in topic_lower for word in ['технолог', 'инновац', 'умны', 'смарт']):
-            style = "современный минимализм, технологии"
-        elif any(word in topic_lower for word in ['детск', 'ребен', 'подрост']):
-            style = "яркий, дружелюбный, безопасный"
-        elif any(word in topic_lower for word in ['ортопед', 'здоров', 'медиц']):
-            style = "клинически чистый, профессиональный"
-        else:
-            style = "скандинавский минимализм, уют"
-        
-        # Создаем промпт
-        prompt = f"""Профессиональная фотография спальни с ортопедическим матрасом
-Тема: {topic}
-Стиль: фотореалистично, {style}
-Качество: высокая детализация, профессиональный свет
-Освещение: естественный мягкий свет из окна
-Композиция: гармоничная, эстетичная
-Цветовая палитра: нейтральные тона, спокойные оттенки
-Настроение: умиротворение, комфорт, здоровый сон"""
-        
-        return prompt[:500]  # Ограничиваем длину
+        """Создает вариативный промпт под тему статьи (меньше однотипных кадров)."""
+        topic_lower = str(topic or "").lower()
+        keywords = self._extract_topic_keywords(topic, limit=6)
+
+        style_candidates = [
+            "скандинавский минимализм, чистые линии, уют",
+            "современный теплый интерьер, натуральные материалы",
+            "премиальная спальня, тактильные фактуры, мягкий свет",
+            "нейтральный экспертный интерьер, спокойная палитра",
+            "lifestyle-сцена домашнего уюта, реалистично",
+        ]
+        if any(word in topic_lower for word in ["премиум", "люкс", "элит", "дорог"]):
+            style_candidates = [
+                "премиальный интерьер, дизайнерская мебель, фотореализм",
+                "роскошная современная спальня, дорогие фактуры, мягкий контраст",
+            ]
+        elif any(word in topic_lower for word in ["эко", "натураль", "природ", "органич"]):
+            style_candidates = [
+                "эко-интерьер, дерево и лен, спокойные природные оттенки",
+                "натуральные материалы, светлая спальня, экологичный стиль",
+            ]
+        elif any(word in topic_lower for word in ["ортопед", "здоров", "медиц", "боль в спине"]):
+            style_candidates = [
+                "практичный экспертный интерьер, чистая композиция, акцент на поддержку спины",
+                "клинически аккуратный интерьер спальни, но уютный и домашний",
+            ]
+        elif any(word in topic_lower for word in ["vk пост", "vk"]):
+            style_candidates.append("вовлекающий lifestyle-кадр для ленты соцсети")
+        elif any(word in topic_lower for word in ["telegram пост", "telegram"]):
+            style_candidates.append("минималистичный кадр для Telegram, один главный акцент")
+
+        angle_options = [
+            "ракурс 3/4, уровень глаз",
+            "ракурс с легкой верхней точки, фокус на матрасе",
+            "низкий ракурс, акцент на фактуре поверхности",
+            "боковой ракурс, глубина помещения",
+        ]
+        composition_options = [
+            "один главный объект в кадре, чистый передний план",
+            "асимметричная композиция с пространством для взгляда",
+            "сбалансированная композиция с естественной перспективой",
+            "композиция с акцентом на текстуру ткани и формы",
+        ]
+        lighting_options = [
+            "мягкий утренний свет из окна",
+            "дневной рассеянный свет без резких теней",
+            "теплый вечерний свет, спокойная атмосфера",
+            "естественный нейтральный свет, чистая цветопередача",
+        ]
+        color_options = [
+            "молочные, песочные и древесные тона",
+            "нейтральная палитра с мягкими акцентами",
+            "теплые натуральные оттенки без кислотных цветов",
+            "сдержанные современные цвета, спокойный контраст",
+        ]
+
+        style = self._pick_variant(topic, "style", style_candidates)
+        camera_angle = self._pick_variant(topic, "angle", angle_options)
+        composition = self._pick_variant(topic, "composition", composition_options)
+        lighting = self._pick_variant(topic, "lighting", lighting_options)
+        palette = self._pick_variant(topic, "palette", color_options)
+
+        subject_focus = "матрас и спальная зона"
+        if any(word in topic_lower for word in ["детск", "ребен", "подрост"]):
+            subject_focus = "детская спальня с безопасным и удобным матрасом"
+        elif any(word in topic_lower for word in ["ортопед", "спин", "поясниц"]):
+            subject_focus = "ортопедический матрас и визуальный акцент на поддержке позвоночника"
+        elif any(word in topic_lower for word in ["интерьер", "спальн", "дизайн"]):
+            subject_focus = "гармоничный интерьер спальни с выразительным матрасом в центре"
+
+        keywords_line = f"Ключевые образы: {', '.join(keywords)}." if keywords else ""
+        prompt = (
+            "Фотореалистичная интерьерная фотография для поста в соцсети.\n"
+            f"Тема: {topic}.\n"
+            f"Сюжет: {subject_focus}.\n"
+            f"Стиль: {style}.\n"
+            f"Камера: {camera_angle}.\n"
+            f"Композиция: {composition}.\n"
+            f"Свет: {lighting}.\n"
+            f"Палитра: {palette}.\n"
+            f"{keywords_line}\n"
+            "Качество: высокая детализация, натуральные текстуры, реалистичная оптика.\n"
+            "Ограничения: без текста, логотипов, водяных знаков, коллажей и лишних декоративных элементов."
+        ).strip()
+
+        return prompt[:900]
 
 # Функция для обратной совместимости
 class YandexArtFinal(YandexArtGenerator):

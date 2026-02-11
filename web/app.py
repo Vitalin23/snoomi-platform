@@ -2237,20 +2237,54 @@ def _strip_markdown_emphasis(text_value):
     return normalized
 
 
+def _strip_emojis(text_value):
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F1E6-\U0001F1FF"  # flags
+        "\U0001F300-\U0001FAFF"  # symbols & pictographs
+        "\U00002600-\U000027BF"  # misc symbols
+        "]",
+        flags=re.UNICODE,
+    )
+    return emoji_pattern.sub("", str(text_value or ""))
+
+
+def _de_ai_style_cleanup(text_value):
+    cleaned = str(text_value or "")
+    replacements = [
+        (r"(?i)\bне секрет,\s*что\s*", ""),
+        (r"(?i)\bдавайте разбер[её]мся\b[:,]?\s*", "Разберем по шагам: "),
+        (r"(?i)\bважно помнить,\s*что\s*", "Важно: "),
+        (r"(?i)\bэто не просто\b", "Это"),
+        (r"(?i)\bинвестиция в ваше здоровье\b", "практичный вклад в качество сна"),
+        (r"(?i)\bпродажи любой ценой\b", "агрессивные продажи"),
+    ]
+    for pattern, replacement in replacements:
+        cleaned = re.sub(pattern, replacement, cleaned)
+
+    cleaned = re.sub(r"[!]{2,}", "!", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def _platform_content_principles(platform):
     if platform == "vk":
         return (
             "Платформа VK. Формат: сильный крючок в первых 1-2 строках, далее короткие абзацы "
             "и списки, одна понятная CTA в конце. Добавь вопрос для вовлечения и 2-5 релевантных "
             "хэштегов по теме. Не перегружай внешними ссылками, ориентируйся на пользу читателю. "
-            "Не используй markdown-разметку для выделений (например, **текст**, __текст__, *текст*)."
+            "Не используй markdown-разметку для выделений (например, **текст**, __текст__, *текст*). "
+            "Пиши живым человеческим языком: без канцелярита, без штампов вроде 'не секрет, что' и без "
+            "искусственно-торжественных формулировок."
         )
     if platform == "telegram":
         return (
             "Платформа Telegram. Формат: первое предложение самое сильное, короткие строки и абзацы, "
             "умеренный эмфазис, мягкая CTA в конце. Текст должен быть целостным и поместиться в один "
             "пост вместе с картинкой: максимум ~900 символов, без продолжений. "
-            "Не используй markdown-разметку для выделений (например, **текст**, __текст__, *текст*)."
+            "Не используй markdown-разметку для выделений (например, **текст**, __текст__, *текст*). "
+            "Пиши живым человеческим языком: конкретно, без воды и без шаблонных оборотов."
         )
     return (
         "Платформа соцсетей. Текст должен быть практичным, структурированным, с ясной пользой и "
@@ -2299,6 +2333,7 @@ def _build_manual_generation_prompt(channel, topic_text):
         "Пиши как эксперт для конечной аудитории канала: проблемы, решения, практические шаги. "
         "Текст должен быть готов к немедленной публикации без технических пояснений. "
         "Не выделяй слова markdown-символами со звездочками/подчеркиваниями. "
+        "Не начинай текст с штампов ('не секрет, что', 'давайте разберемся'), не перегружай восклицаниями и эмодзи. "
         f"Сделай формулировки уникальными именно для канала «{channel.channel_name}», чтобы не было дословных дублей."
     )
 
@@ -2314,6 +2349,8 @@ def _platform_text_limit(platform):
 def _normalize_publication_text(raw_text, topic_text, platform):
     normalized = re.sub(r"<[^>]+>", "", str(raw_text or "")).strip()
     normalized = _strip_markdown_emphasis(normalized)
+    normalized = _strip_emojis(normalized)
+    normalized = _de_ai_style_cleanup(normalized)
     normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
     normalized = re.sub(r"[ \t]+\n", "\n", normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
@@ -2405,11 +2442,47 @@ def _normalize_generated_image_path(raw_path):
     return None
 
 
-def _generate_manual_publication_image(topic_text, article_text=""):
+def _build_image_generation_prompt(topic_text, article_text="", channel=None):
+    topic_text = str(topic_text or "").strip()
+    article_text = str(article_text or "").strip()
+    platform = (getattr(channel, "platform", "") or "").strip().lower()
+
+    extra = _channel_extra_config(channel) if channel is not None else {}
+    channel_description = str(extra.get("channel_description") or "").strip()
+    semantic_core = _normalize_phrase_list(
+        ((extra.get("topic_plan") or {}).get("semantic_core") if isinstance(extra.get("topic_plan"), dict) else []) or [],
+        limit=5,
+    )
+
+    platform_hint = ""
+    if platform == "telegram":
+        platform_hint = (
+            "Визуальный формат Telegram: чистая композиция, один главный объект, мягкий свет, "
+            "без перегруза деталями."
+        )
+    elif platform == "vk":
+        platform_hint = (
+            "Визуальный формат VK: более насыщенный lifestyle-кадр, теплая атмосфера и эмоциональная вовлеченность."
+        )
+
+    article_keywords = _extract_keywords(article_text, limit=8)
+    prompt_parts = [
+        topic_text,
+        platform_hint,
+        f"Контекст канала: {channel_description[:220]}" if channel_description else "",
+        f"Семантические акценты: {', '.join(semantic_core)}" if semantic_core else "",
+        f"Ключевые образы из текста: {', '.join(article_keywords[:6])}" if article_keywords else "",
+        "Без текста, логотипов, водяных знаков и коллажей.",
+    ]
+    return " ".join(part for part in prompt_parts if part).strip()
+
+
+def _generate_manual_publication_image(topic_text, article_text="", channel=None):
+    generation_prompt = _build_image_generation_prompt(topic_text, article_text, channel=channel)
     try:
         image_path = None
         if hasattr(img_gen, "create_image_for_article"):
-            image_path = img_gen.create_image_for_article(article_text or "", topic_text)
+            image_path = img_gen.create_image_for_article(article_text or "", generation_prompt)
             normalized = _normalize_generated_image_path(image_path)
             if normalized:
                 return normalized
@@ -2419,7 +2492,7 @@ def _generate_manual_publication_image(topic_text, article_text=""):
     try:
         from ai.yandex_art_final import create_simple_image
 
-        simple_image = create_simple_image(topic_text)
+        simple_image = create_simple_image(generation_prompt or topic_text)
         normalized = _normalize_generated_image_path(simple_image)
         if normalized:
             return normalized
@@ -2559,7 +2632,7 @@ def _publish_generated_post_for_channel(channel, publisher, topic_text):
     content_text = _generate_manual_publication_text(channel, topic_text)
     image_path = None
     if _channel_uses_ai_images(channel):
-        image_path = _generate_manual_publication_image(topic_text, content_text)
+        image_path = _generate_manual_publication_image(topic_text, content_text, channel=channel)
 
     channel_info = {
         "platform": channel.platform,
@@ -2754,7 +2827,9 @@ def _agent_build_generation_prompt(channel, topic_text, platform, retrieved_cont
         (
             "Пиши как профильный эксперт для конечной аудитории канала. "
             "Убирай технические детали о работе ИИ и не уходи в внутренние бизнес-цели. "
-            "Не используй markdown-разметку выделения со звездочками/подчеркиваниями."
+            "Не используй markdown-разметку выделения со звездочками/подчеркиваниями. "
+            "Не используй шаблонные фразы ('не секрет, что', 'давайте разберемся'), "
+            "пиши кратко и по делу человеческим языком."
         ),
     ]
     if retrieved_context:
@@ -4951,7 +5026,7 @@ def api_agent_draft():
 
         image_path = None
         if include_image and _channel_uses_ai_images(channel):
-            image_path = _generate_manual_publication_image(topic_text, content_text)
+            image_path = _generate_manual_publication_image(topic_text, content_text, channel=channel)
 
         generation_run = GenerationRun(
             client_id=channel.client_id,
@@ -5270,7 +5345,7 @@ def api_agent_publish():
 
     image_path = _normalize_generated_image_path(run.output_image_ref)
     if include_image and not image_path and _channel_uses_ai_images(channel):
-        image_path = _generate_manual_publication_image(topic_text, content_text)
+        image_path = _generate_manual_publication_image(topic_text, content_text, channel=channel)
         if image_path:
             run.output_image_ref = image_path
 
