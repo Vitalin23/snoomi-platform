@@ -2246,7 +2246,10 @@ def _strip_emojis(text_value):
         "]",
         flags=re.UNICODE,
     )
-    return emoji_pattern.sub("", str(text_value or ""))
+    cleaned = emoji_pattern.sub("", str(text_value or ""))
+    # Удаляем технические unicode-символы, которые могут остаться после emoji.
+    cleaned = cleaned.replace("\u200d", "").replace("\ufe0f", "")
+    return cleaned
 
 
 def _de_ai_style_cleanup(text_value):
