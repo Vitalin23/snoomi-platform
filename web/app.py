@@ -2220,18 +2220,37 @@ def _compact_text_for_limit(text, max_len):
     return source[: max_len - 3].rstrip() + "..."
 
 
+def _strip_markdown_emphasis(text_value):
+    """Убирает markdown-выделение, чтобы текст выглядел как нативный пост."""
+    normalized = str(text_value or "")
+    # Преобразуем markdown-список со звездочкой в обычный тире-список.
+    normalized = re.sub(r"(?m)^\s*\*\s+", "- ", normalized)
+    # Убираем markdown-заголовки.
+    normalized = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", normalized)
+    # Снимаем жирное/курсивное выделение через markdown-символы.
+    normalized = re.sub(r"\*\*(.+?)\*\*", r"\1", normalized, flags=re.DOTALL)
+    normalized = re.sub(r"__(.+?)__", r"\1", normalized, flags=re.DOTALL)
+    normalized = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"\1", normalized)
+    normalized = re.sub(r"(?<!_)_([^_\n]+)_(?!_)", r"\1", normalized)
+    # Удаляем остаточные двойные звезды.
+    normalized = normalized.replace("**", "")
+    return normalized
+
+
 def _platform_content_principles(platform):
     if platform == "vk":
         return (
             "Платформа VK. Формат: сильный крючок в первых 1-2 строках, далее короткие абзацы "
             "и списки, одна понятная CTA в конце. Добавь вопрос для вовлечения и 2-5 релевантных "
-            "хэштегов по теме. Не перегружай внешними ссылками, ориентируйся на пользу читателю."
+            "хэштегов по теме. Не перегружай внешними ссылками, ориентируйся на пользу читателю. "
+            "Не используй markdown-разметку для выделений (например, **текст**, __текст__, *текст*)."
         )
     if platform == "telegram":
         return (
             "Платформа Telegram. Формат: первое предложение самое сильное, короткие строки и абзацы, "
             "умеренный эмфазис, мягкая CTA в конце. Текст должен быть целостным и поместиться в один "
-            "пост вместе с картинкой: максимум ~900 символов, без продолжений."
+            "пост вместе с картинкой: максимум ~900 символов, без продолжений. "
+            "Не используй markdown-разметку для выделений (например, **текст**, __текст__, *текст*)."
         )
     return (
         "Платформа соцсетей. Текст должен быть практичным, структурированным, с ясной пользой и "
@@ -2279,6 +2298,7 @@ def _build_manual_generation_prompt(channel, topic_text):
         "Важно: не писать про внутренние задачи бизнеса ('продвижение магазина', 'продажи любой ценой'). "
         "Пиши как эксперт для конечной аудитории канала: проблемы, решения, практические шаги. "
         "Текст должен быть готов к немедленной публикации без технических пояснений. "
+        "Не выделяй слова markdown-символами со звездочками/подчеркиваниями. "
         f"Сделай формулировки уникальными именно для канала «{channel.channel_name}», чтобы не было дословных дублей."
     )
 
@@ -2293,6 +2313,7 @@ def _platform_text_limit(platform):
 
 def _normalize_publication_text(raw_text, topic_text, platform):
     normalized = re.sub(r"<[^>]+>", "", str(raw_text or "")).strip()
+    normalized = _strip_markdown_emphasis(normalized)
     normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
     normalized = re.sub(r"[ \t]+\n", "\n", normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
@@ -2732,7 +2753,8 @@ def _agent_build_generation_prompt(channel, topic_text, platform, retrieved_cont
         principles,
         (
             "Пиши как профильный эксперт для конечной аудитории канала. "
-            "Убирай технические детали о работе ИИ и не уходи в внутренние бизнес-цели."
+            "Убирай технические детали о работе ИИ и не уходи в внутренние бизнес-цели. "
+            "Не используй markdown-разметку выделения со звездочками/подчеркиваниями."
         ),
     ]
     if retrieved_context:
