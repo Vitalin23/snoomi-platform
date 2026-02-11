@@ -236,6 +236,19 @@
                             <span id="descWordCounter">Слов: 0</span>
                         </div>
                     </div>
+                    <div class="col-12">
+                        <label class="form-label">Ссылки на конкурентов/референсы (опционально)</label>
+                        <textarea
+                            class="form-control"
+                            rows="3"
+                            id="autopostReferenceChannels"
+                            placeholder="По одной ссылке в строке: https://t.me/channel, https://vk.com/public123, @example_channel"
+                        ></textarea>
+                        <div class="form-text">
+                            Используем эти ссылки как ориентиры для анализа тематики и стиля подачи.
+                            Поддерживается формат <code>https://...</code> и <code>@username</code>.
+                        </div>
+                    </div>
                     <div class="col-md-6">
                         <label class="form-label">Ваш Telegram для уведомлений (опционально)</label>
                         <input type="text" class="form-control" id="autopostNotificationTg" placeholder="@username или ID">
@@ -268,6 +281,7 @@
                                     <th>Канал</th>
                                     <th>Платформа</th>
                                     <th>Частотность</th>
+                                    <th>Референсы</th>
                                     <th>Статус</th>
                                 </tr>
                             </thead>
@@ -278,6 +292,13 @@
                                         <td data-label="Канал">{{ channel.name }}</td>
                                         <td data-label="Платформа">{{ channel.platform }}</td>
                                         <td data-label="Частотность">{{ channel.publish_frequency_label or 'каждый день' }}</td>
+                                        <td data-label="Референсы">
+                                            {% if channel.reference_channels_count %}
+                                                {{ channel.reference_channels_count }}
+                                            {% else %}
+                                                —
+                                            {% endif %}
+                                        </td>
                                         <td data-label="Статус">
                                             {% if channel.is_active %}
                                                 <span class="badge bg-success">active</span>
@@ -289,7 +310,7 @@
                                     {% endfor %}
                                 {% else %}
                                     <tr>
-                                        <td colspan="4">
+                                        <td colspan="5">
                                             <div class="operator-empty-state">
                                                 <i class="fas fa-plug-circle-xmark"></i>
                                                 <h6>Каналы пока не подключены</h6>
@@ -352,6 +373,7 @@
                 publishFrequency: 'daily',
                 publishHour: '10',
                 channelDescription: '',
+                referenceChannels: '',
                 notificationTelegram: '',
                 verifiedState: null,
                 verifiedChannelName: '',
@@ -383,6 +405,7 @@
                 publishFrequency: document.getElementById('autopostFrequency').value,
                 publishHour: document.getElementById('autopostHour').value,
                 channelDescription: document.getElementById('autopostDescription').value,
+                referenceChannels: document.getElementById('autopostReferenceChannels').value,
                 notificationTelegram: document.getElementById('autopostNotificationTg').value,
                 verifiedState: verifiedChannelState ? { ...verifiedChannelState } : null,
                 verifiedChannelName: document.getElementById('autopostVerifiedChannelName').value,
@@ -403,6 +426,7 @@
             document.getElementById('autopostFrequency').value = draft.publishFrequency || 'daily';
             document.getElementById('autopostHour').value = draft.publishHour || '10';
             document.getElementById('autopostDescription').value = draft.channelDescription || '';
+            document.getElementById('autopostReferenceChannels').value = draft.referenceChannels || '';
             document.getElementById('autopostNotificationTg').value = draft.notificationTelegram || '';
 
             verifiedChannelState = draft.verifiedState ? { ...draft.verifiedState } : null;
@@ -621,6 +645,7 @@
                     publish_frequency: document.getElementById('autopostFrequency').value,
                     publish_hour: document.getElementById('autopostHour').value,
                     channel_description: document.getElementById('autopostDescription').value,
+                    reference_channels: document.getElementById('autopostReferenceChannels').value,
                     notification_telegram: document.getElementById('autopostNotificationTg').value,
                     style_profile: (verifiedChannelState && verifiedChannelState.style_profile) || {}
                 };

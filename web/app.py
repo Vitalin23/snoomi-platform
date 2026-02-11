@@ -1337,6 +1337,88 @@ def _normalize_frequency(freq):
     return normalized
 
 
+def _has_nonempty_reference_input(raw_value):
+    if raw_value is None:
+        return False
+    if isinstance(raw_value, str):
+        return bool(raw_value.strip())
+    if isinstance(raw_value, (list, tuple, set)):
+        return any(str(item or "").strip() for item in raw_value)
+    return bool(str(raw_value).strip())
+
+
+def _normalize_reference_channels(raw_value, limit=15):
+    raw_items = []
+    if isinstance(raw_value, str):
+        raw_items = re.split(r"[\n;,]+", raw_value)
+    elif isinstance(raw_value, (list, tuple, set)):
+        raw_items = list(raw_value)
+
+    normalized = []
+    seen = set()
+    for item in raw_items:
+        candidate = str(item or "").strip()
+        if not candidate:
+            continue
+
+        if candidate.startswith("@"):
+            username = candidate[1:].strip().lower()
+            if not re.fullmatch(r"[a-z0-9_]{4,64}", username):
+                continue
+            value = f"@{username}"
+        else:
+            if not re.match(r"^https?://", candidate, flags=re.IGNORECASE):
+                if re.match(r"^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(/.*)?$", candidate):
+                    candidate = f"https://{candidate}"
+                else:
+                    continue
+
+            parsed = urlparse(candidate)
+            host = (parsed.netloc or "").strip().lower()
+            if not host:
+                continue
+            if host.startswith("www."):
+                host = host[4:]
+            path = (parsed.path or "").strip()
+            path = re.sub(r"/{2,}", "/", path)
+            if path != "/" and path.endswith("/"):
+                path = path[:-1]
+            value = f"https://{host}{path}" if path else f"https://{host}"
+
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(value)
+        if len(normalized) >= limit:
+            break
+
+    return normalized
+
+
+def _reference_channel_query_hints(reference_channels, limit=8):
+    hints = []
+    for item in reference_channels or []:
+        reference = str(item or "").strip()
+        if not reference:
+            continue
+        if reference.startswith("@"):
+            hints.append(reference[1:].replace("_", " "))
+            continue
+
+        parsed = urlparse(reference)
+        host = (parsed.netloc or "").lower()
+        path_parts = [part for part in (parsed.path or "").split("/") if part]
+        if path_parts:
+            slug = path_parts[-1].replace("-", " ").replace("_", " ")
+            hints.append(slug)
+            hints.append(f"{host} {slug}".strip())
+        else:
+            hints.append(host)
+
+    return _normalize_phrase_list(hints, limit=limit)
+
+
 def _channel_extra_config(channel):
     if not channel.additional_config:
         return {}
@@ -1411,6 +1493,7 @@ def _ensure_channel_runtime_setup(channel_id, channel_description, publish_frequ
 
 def _serialize_channel(channel, include_client_name=True):
     extra = _channel_extra_config(channel)
+    reference_channels = _normalize_reference_channels(extra.get("reference_channels") or [], limit=20)
     settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
     publish_frequency = (
         settings.publish_frequency
@@ -1428,6 +1511,8 @@ def _serialize_channel(channel, include_client_name=True):
         "access_token": channel.access_token,
         "is_active": bool(channel.is_active),
         "channel_description": extra.get("channel_description", ""),
+        "reference_channels": reference_channels,
+        "reference_channels_count": len(reference_channels),
         "channel_source_url": extra.get("source_url"),
         "style_summary": (extra.get("style_profile") or {}).get("summary", ""),
         "publish_frequency": publish_frequency,
@@ -1662,6 +1747,7 @@ def _ai_topic_plan_with_web_search(
     platform,
     channel_client_description,
     channel_external_description,
+    reference_channels,
     recent_posts,
     style_summary,
     focus_text,
@@ -1681,6 +1767,7 @@ def _ai_topic_plan_with_web_search(
         if post_text:
             posts_block.append(f"{idx}. {post_text[:450]}")
     posts_text = "\n".join(posts_block) if posts_block else "Посты недоступны."
+    reference_block = "\n".join(f"- {item}" for item in (reference_channels or [])[:10]) or "не указаны"
     current_year = datetime.utcnow().year
 
     prompt = f"""
@@ -1718,6 +1805,7 @@ def _ai_topic_plan_with_web_search(
 Название: {channel_name}
 Описание от клиента: {channel_client_description or "нет"}
 Публичное описание канала: {channel_external_description or "нет"}
+Референс-каналы/конкуренты: {reference_block}
 Сводка стиля: {style_summary or "нет"}
 Фокус пользователя на период: {focus_text or "не задан"}
 Последние посты:
@@ -1809,6 +1897,8 @@ def _build_topic_planner_payload(channel, focus_text="", desired_count=8):
 
     channel_client_description = (extra.get("channel_description") or "").strip()
     channel_external_description = (extra.get("channel_external_description") or "").strip()
+    reference_channels = _normalize_reference_channels(extra.get("reference_channels") or [], limit=15)
+    reference_query_hints = _reference_channel_query_hints(reference_channels, limit=8)
     recent_posts_raw = extra.get("recent_posts_preview") or []
     if not isinstance(recent_posts_raw, list):
         recent_posts_raw = []
@@ -1842,6 +1932,7 @@ def _build_topic_planner_payload(channel, focus_text="", desired_count=8):
         platform=channel.platform,
         channel_client_description=channel_client_description,
         channel_external_description=channel_external_description,
+        reference_channels=reference_channels,
         recent_posts=recent_posts,
         style_summary=style_summary,
         focus_text=focus_text,
@@ -1857,6 +1948,8 @@ def _build_topic_planner_payload(channel, focus_text="", desired_count=8):
         query_candidates = [
             *search_queries,
             *semantic_core,
+            *reference_query_hints,
+            *reference_channels[:4],
             f"{channel.channel_name} {focus_text} {current_year}".strip(),
             f"{channel.channel_name} {current_year}".strip(),
             channel.channel_name,
@@ -1869,6 +1962,7 @@ def _build_topic_planner_payload(channel, focus_text="", desired_count=8):
                 focus_text,
                 channel_client_description,
                 channel_external_description,
+                " ".join(reference_query_hints),
                 style_summary,
             ]
             if part
@@ -1898,7 +1992,7 @@ def _build_topic_planner_payload(channel, focus_text="", desired_count=8):
             query_text,
         ]
         actual_questions = _collect_top_web_questions(
-            [*search_queries, *semantic_core, channel.channel_name],
+            [*search_queries, *semantic_core, *reference_query_hints, channel.channel_name],
             limit=5,
         )
 
@@ -1950,6 +2044,7 @@ def _build_topic_planner_payload(channel, focus_text="", desired_count=8):
         "semantic_core": semantic_core[:12],
         "actual_questions": actual_questions[:5],
         "search_queries": search_queries[:10],
+        "reference_channels": reference_channels[:15],
         "topics": topic_items[:desired_count],
         "source": source_mode,
     }
@@ -2070,6 +2165,7 @@ def _extract_saved_topic_state(channel):
         "style_summary": str(topic_plan.get("style_summary") or "").strip(),
         "semantic_core": _normalize_phrase_list(topic_plan.get("semantic_core") or [], limit=8),
         "actual_questions": _question_text_list(topic_plan.get("actual_questions") or [], limit=5),
+        "reference_channels": _normalize_reference_channels(extra.get("reference_channels") or [], limit=15),
         "topics": topics[:60],
         "updated_at": topic_plan.get("updated_at"),
     }
@@ -2308,6 +2404,7 @@ def _channel_publication_context(channel):
     )
     semantic_core = _normalize_phrase_list(topic_plan.get("semantic_core") or [], limit=6)
     top_questions = _question_text_list(topic_plan.get("actual_questions") or [], limit=3)
+    reference_channels = _normalize_reference_channels(extra.get("reference_channels") or [], limit=6)
 
     context_lines = [f"Канал: {channel.channel_name}", f"Платформа: {channel.platform}"]
     if client_description:
@@ -2320,6 +2417,8 @@ def _channel_publication_context(channel):
         context_lines.append(f"Семантическое ядро: {', '.join(semantic_core)}")
     if top_questions:
         context_lines.append(f"Вопросы аудитории: {', '.join(top_questions)}")
+    if reference_channels:
+        context_lines.append(f"Референс-каналы: {', '.join(reference_channels)}")
 
     return "\n".join(context_lines)
 
@@ -2786,10 +2885,14 @@ def _agent_channel_semantic_hints(channel, limit=12):
 
     extra = _channel_extra_config(channel)
     topic_plan = extra.get("topic_plan") if isinstance(extra.get("topic_plan"), dict) else {}
+    reference_hints = _reference_channel_query_hints(
+        _normalize_reference_channels(extra.get("reference_channels") or [], limit=10),
+        limit=6,
+    )
     fallback = _normalize_phrase_list(topic_plan.get("semantic_core") or [], limit=limit)
     if fallback:
-        return fallback
-    return _normalize_phrase_list(_extract_channel_topics_for_plan(channel), limit=limit)
+        return _normalize_phrase_list([*fallback, *reference_hints], limit=limit)
+    return _normalize_phrase_list([*_extract_channel_topics_for_plan(channel), *reference_hints], limit=limit)
 
 
 def _agent_channel_question_hints(channel, limit=10):
@@ -3872,6 +3975,18 @@ def api_add_channel():
             }
         ), 400
 
+    raw_reference_channels = data.get("reference_channels")
+    if raw_reference_channels is None and data.get("competitor_references") is not None:
+        raw_reference_channels = data.get("competitor_references")
+    reference_channels = _normalize_reference_channels(raw_reference_channels or [], limit=15)
+    if _has_nonempty_reference_input(raw_reference_channels) and not reference_channels:
+        return jsonify(
+            {
+                "success": False,
+                "error": "Не удалось распознать ссылки на референс-каналы. Используйте формат https://... или @username (по одной ссылке в строке).",
+            }
+        ), 400
+
     try:
         publish_hour = int(data.get("publish_hour", 10))
     except (TypeError, ValueError):
@@ -3946,6 +4061,7 @@ def api_add_channel():
 
     additional_config = {
         "channel_description": channel_description,
+        "reference_channels": reference_channels,
         "publish_frequency": publish_frequency,
         "channel_reference": channel_reference,
         "source_url": source_url,
@@ -3983,6 +4099,7 @@ def api_add_channel():
             "source_url": source_url,
             "publish_frequency": publish_frequency,
             "publish_hour": publish_hour,
+            "reference_channels_count": len(reference_channels),
             "style_summary": style_profile.get("summary", ""),
         }
     )
@@ -4023,6 +4140,24 @@ def api_update_channel(channel_id):
     else:
         channel_description = None
 
+    raw_reference_channels = None
+    if "reference_channels" in data:
+        raw_reference_channels = data.get("reference_channels")
+    elif "competitor_references" in data:
+        raw_reference_channels = data.get("competitor_references")
+
+    if raw_reference_channels is not None:
+        reference_channels = _normalize_reference_channels(raw_reference_channels, limit=15)
+        if _has_nonempty_reference_input(raw_reference_channels) and not reference_channels:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Не удалось распознать ссылки на референс-каналы. Используйте формат https://... или @username.",
+                }
+            ), 400
+    else:
+        reference_channels = None
+
     for field in ("channel_name", "access_token", "is_active"):
         if field in data:
             setattr(channel, field, data[field])
@@ -4041,6 +4176,8 @@ def api_update_channel(channel_id):
         extra["channel_description"] = channel_description
     if normalized_frequency is not None:
         extra["publish_frequency"] = normalized_frequency
+    if reference_channels is not None:
+        extra["reference_channels"] = reference_channels
     channel.additional_config = json.dumps(extra, ensure_ascii=False)
 
     if "publish_hour" in data:
@@ -4303,6 +4440,18 @@ def api_admin_create_connection():
     if not admin_frequency:
         return jsonify({"success": False, "error": "Некорректная частота публикаций"}), 400
 
+    raw_reference_channels = data.get("reference_channels")
+    if raw_reference_channels is None and data.get("competitor_references") is not None:
+        raw_reference_channels = data.get("competitor_references")
+    reference_channels = _normalize_reference_channels(raw_reference_channels or [], limit=15)
+    if _has_nonempty_reference_input(raw_reference_channels) and not reference_channels:
+        return jsonify(
+            {
+                "success": False,
+                "error": "Не удалось распознать ссылки на референс-каналы. Используйте формат https://... или @username.",
+            }
+        ), 400
+
     client = Client.query.get(data["client_id"])
     if not client:
         return jsonify({"success": False, "error": "Клиент не найден"}), 404
@@ -4316,6 +4465,7 @@ def api_admin_create_connection():
         additional_config=json.dumps(
             {
                 "channel_description": admin_description,
+                "reference_channels": reference_channels,
                 "publish_frequency": admin_frequency,
                 "source": "admin_connection_form",
             },
@@ -4359,7 +4509,13 @@ def api_admin_update_connection(connection_id):
             return jsonify({"success": False, "error": "Клиент не найден"}), 404
         channel.client_id = client.id
 
-    if "channel_description" in data or "publish_frequency" in data or "publish_hour" in data:
+    if (
+        "channel_description" in data
+        or "publish_frequency" in data
+        or "publish_hour" in data
+        or "reference_channels" in data
+        or "competitor_references" in data
+    ):
         extra = _channel_extra_config(channel)
         if "channel_description" in data:
             desc_value = (data.get("channel_description") or "").strip()
@@ -4371,6 +4527,21 @@ def api_admin_update_connection(connection_id):
             if not normalized:
                 return jsonify({"success": False, "error": "Некорректная частота публикаций"}), 400
             extra["publish_frequency"] = normalized
+        if "reference_channels" in data or "competitor_references" in data:
+            raw_reference_channels = (
+                data.get("reference_channels")
+                if "reference_channels" in data
+                else data.get("competitor_references")
+            )
+            reference_channels = _normalize_reference_channels(raw_reference_channels or [], limit=15)
+            if _has_nonempty_reference_input(raw_reference_channels) and not reference_channels:
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": "Не удалось распознать ссылки на референс-каналы. Используйте формат https://... или @username.",
+                    }
+                ), 400
+            extra["reference_channels"] = reference_channels
         channel.additional_config = json.dumps(extra, ensure_ascii=False)
 
         publish_hour = data.get("publish_hour", 10)
@@ -4663,6 +4834,8 @@ def api_agent_semantic_core_rebuild():
         extra = _channel_extra_config(channel)
         topic_plan = extra.get("topic_plan") if isinstance(extra.get("topic_plan"), dict) else {}
         recent_posts_preview = extra.get("recent_posts_preview") if isinstance(extra.get("recent_posts_preview"), list) else []
+        reference_channels = _normalize_reference_channels(extra.get("reference_channels") or [], limit=15)
+        reference_hints = _reference_channel_query_hints(reference_channels, limit=10)
 
         recent_posts_preview = [
             str(item).strip()
@@ -4688,6 +4861,8 @@ def api_agent_semantic_core_rebuild():
             focus_text,
             channel_description,
             external_description,
+            " ".join(reference_channels),
+            " ".join(reference_hints),
             *topic_titles,
             *recent_posts_preview,
             *stored_post_texts,
@@ -4708,6 +4883,7 @@ def api_agent_semantic_core_rebuild():
                     "focus_text": focus_text,
                     "captured_posts": len(stored_post_texts),
                     "captured_preview_posts": len(recent_posts_preview),
+                    "reference_channels_count": len(reference_channels),
                     "captured_at": datetime.utcnow().isoformat(),
                 },
                 ensure_ascii=False,
@@ -4735,6 +4911,7 @@ def api_agent_semantic_core_rebuild():
 
         semantic_seed = [
             focus_text,
+            *reference_hints,
             *topic_semantic_core,
             *topic_titles[:12],
             *[item.get("summary") for item in knowledge_documents[:14]],
@@ -4766,8 +4943,8 @@ def api_agent_semantic_core_rebuild():
         cluster_names = [str(item.get("cluster_name") or "").strip() for item in clusters_payload if str(item.get("cluster_name") or "").strip()]
         research_queries = build_research_queries(
             channel_name=channel.channel_name,
-            semantic_clusters=cluster_names,
-            focus_text=focus_text,
+            semantic_clusters=[*cluster_names, *reference_hints],
+            focus_text=" ".join([focus_text, *reference_channels[:4]]).strip(),
             limit=8,
         )
         questions_payload = _collect_top_web_questions(research_queries, limit=question_limit)
@@ -4870,10 +5047,13 @@ def api_agent_research_update():
 
     try:
         semantic_hints = _agent_channel_semantic_hints(channel, limit=10)
+        extra = _channel_extra_config(channel)
+        reference_channels = _normalize_reference_channels(extra.get("reference_channels") or [], limit=12)
+        reference_hints = _reference_channel_query_hints(reference_channels, limit=8)
         research_queries = build_research_queries(
             channel_name=channel.channel_name,
-            semantic_clusters=semantic_hints,
-            focus_text=focus_text,
+            semantic_clusters=[*semantic_hints, *reference_hints],
+            focus_text=" ".join([focus_text, *reference_channels[:4]]).strip(),
             limit=8,
         )
         questions_payload = _collect_top_web_questions(research_queries, limit=question_limit)
