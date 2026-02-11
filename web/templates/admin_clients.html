@@ -1,6 +1,6 @@
 {% extends "layout.html" %}
 
-{% block title %}Snoomi Platform - Админ: клиенты и подключения{% endblock %}
+{% block title %}{{ app_brand_name }} - Админ: клиенты и подключения{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -9,6 +9,49 @@
             <i class="fas fa-users-cog me-2"></i>Админ-панель клиентов
         </h1>
         <p class="mb-0 text-muted">Управление аккаунтами клиентов и их подключениями</p>
+    </div>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-6 col-lg">
+        <div class="card shadow-sm">
+            <div class="card-body py-3">
+                <div class="text-muted small">Клиенты</div>
+                <div class="h4 mb-0" id="adminSummaryClients">0</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-lg">
+        <div class="card shadow-sm">
+            <div class="card-body py-3">
+                <div class="text-muted small">Активные клиенты</div>
+                <div class="h4 mb-0" id="adminSummaryActiveClients">0</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-lg">
+        <div class="card shadow-sm">
+            <div class="card-body py-3">
+                <div class="text-muted small">Подключения</div>
+                <div class="h4 mb-0" id="adminSummaryConnections">0</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-lg">
+        <div class="card shadow-sm">
+            <div class="card-body py-3">
+                <div class="text-muted small">Активные подключения</div>
+                <div class="h4 mb-0" id="adminSummaryActiveConnections">0</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-lg">
+        <div class="card shadow-sm">
+            <div class="card-body py-3">
+                <div class="text-muted small">Аккаунты</div>
+                <div class="h4 mb-0" id="adminSummaryUsers">0</div>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -248,6 +291,10 @@
                     <label class="form-label">Описание канала (20+ слов)</label>
                     <textarea class="form-control" id="connectionDescription" rows="3"></textarea>
                 </div>
+                <div class="mb-2">
+                    <label class="form-label">Референсы/конкуренты (опционально)</label>
+                    <textarea class="form-control" id="connectionReferenceChannels" rows="2" placeholder="https://... или @username, по одному в строке"></textarea>
+                </div>
                 <div class="form-check mt-2">
                     <input class="form-check-input" type="checkbox" id="connectionIsActive" checked>
                     <label class="form-check-label" for="connectionIsActive">Активно</label>
@@ -266,6 +313,7 @@
 let clients = [];
 let users = [];
 let connections = [];
+let allConnections = [];
 let selectedClientId = null;
 let selectedClientName = null;
 
@@ -309,6 +357,21 @@ function fillClientSelect(selectId, selectedValue = null) {
     });
 }
 
+function refreshAdminSummary() {
+    const clientsCount = clients.length;
+    const activeClientsCount = clients.filter(c => String(c.status || '').toLowerCase() === 'active').length;
+    const usersCount = users.length;
+    const fallbackConnections = clients.reduce((sum, c) => sum + Number(c.channels_count || 0), 0);
+    const totalConnections = allConnections.length || fallbackConnections;
+    const activeConnections = allConnections.filter(c => !!c.is_active).length;
+
+    document.getElementById('adminSummaryClients').textContent = clientsCount;
+    document.getElementById('adminSummaryActiveClients').textContent = activeClientsCount;
+    document.getElementById('adminSummaryConnections').textContent = totalConnections;
+    document.getElementById('adminSummaryActiveConnections').textContent = activeConnections;
+    document.getElementById('adminSummaryUsers').textContent = usersCount;
+}
+
 async function loadClients() {
     clients = await api('/api/admin/clients');
     const tbody = document.getElementById('clientsTbody');
@@ -334,6 +397,7 @@ async function loadClients() {
     });
 
     fillClientSelect('userClientId');
+    refreshAdminSummary();
 }
 
 async function loadUsers() {
@@ -354,6 +418,12 @@ async function loadUsers() {
             </tr>
         `;
     });
+    refreshAdminSummary();
+}
+
+async function loadGlobalConnections() {
+    allConnections = await api('/api/admin/connections');
+    refreshAdminSummary();
 }
 
 async function loadConnections(clientId) {
@@ -504,6 +574,7 @@ function openConnectionModal(connection = null) {
     document.getElementById('connectionToken').value = connection?.access_token || '';
     document.getElementById('connectionFrequency').value = connection?.publish_frequency || 'daily';
     document.getElementById('connectionDescription').value = connection?.channel_description || '';
+    document.getElementById('connectionReferenceChannels').value = (connection?.reference_channels || []).join('\n');
     document.getElementById('connectionIsActive').checked = connection ? !!connection.is_active : true;
     document.getElementById('connectionModalTitle').textContent = connection ? 'Редактирование подключения' : 'Новое подключение';
     connectionModal.show();
@@ -519,6 +590,7 @@ async function saveConnection() {
         access_token: document.getElementById('connectionToken').value,
         publish_frequency: document.getElementById('connectionFrequency').value,
         channel_description: document.getElementById('connectionDescription').value,
+        reference_channels: document.getElementById('connectionReferenceChannels').value,
         is_active: document.getElementById('connectionIsActive').checked
     };
     try {
@@ -531,6 +603,7 @@ async function saveConnection() {
         if (selectedClientId) {
             await loadConnections(selectedClientId);
             await loadClients();
+            await loadGlobalConnections();
         }
         showToast('Подключение сохранено');
     } catch (e) {
@@ -545,6 +618,7 @@ async function deleteConnection(id) {
         if (selectedClientId) {
             await loadConnections(selectedClientId);
             await loadClients();
+            await loadGlobalConnections();
         }
         showToast('Подключение удалено');
     } catch (e) {
@@ -555,6 +629,7 @@ async function deleteConnection(id) {
 document.addEventListener('DOMContentLoaded', async () => {
     await loadClients();
     await loadUsers();
+    await loadGlobalConnections();
 });
 </script>
 {% endblock %}
