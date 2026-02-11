@@ -20,7 +20,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from functools import wraps
-from html import unescape
+from html import escape, unescape
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from urllib.parse import urlparse
@@ -29,6 +29,7 @@ import requests
 
 from flask import (
     Flask,
+    Response,
     abort,
     flash,
     g,
@@ -143,10 +144,172 @@ SUPPORTED_PLATFORMS = {"telegram", "vk"}
 SUPPORTED_PUBLISH_FREQUENCIES = {"daily", "every_other_day", "every_two_days"}
 TRIAL_OPTIONS_DAYS = {7, 14, 30}
 SUPPORT_DEFAULT_TELEGRAM_LINK = "https://t.me/snoomi_support"
+APP_BRAND_NAME = (os.environ.get("APP_BRAND_NAME") or "SMI-platforma").strip() or "SMI-platforma"
+APP_CANONICAL_URL = (os.environ.get("APP_CANONICAL_URL") or "").strip().rstrip("/")
 AGENT_FEATURE_ENABLED = (
     (os.environ.get("ENABLE_EXPERT_AGENT", "1") or "").strip().lower()
     in {"1", "true", "yes", "on"}
 )
+
+SEO_LANDING_PAGES = [
+    {
+        "slug": "avtoposting-telegram",
+        "title": "Автопостинг в Telegram для малого бизнеса",
+        "h1": "Автопостинг в Telegram: стабильные посты без лишней рутины",
+        "description": "Подходит для магазинов, экспертов и небольших блогов: подключили канал, задали темы, получили стабильные публикации по расписанию.",
+        "audience": "Малый бизнес, эксперты, локальные сервисы с Telegram-каналом.",
+        "benefits": [
+            "Публикации выходят вовремя, даже если вы заняты клиентами.",
+            "Один пост с картинкой публикуется в Telegram единым сообщением.",
+            "Можно быстро проверить результат по статистике без сложных отчетов.",
+        ],
+        "faq": "Частый вопрос: нужно ли быть SMM-специалистом? Нет, интерфейс построен пошагово.",
+    },
+    {
+        "slug": "avtoposting-vk",
+        "title": "Автопостинг ВКонтакте для сообщества",
+        "h1": "Автопостинг ВКонтакте для стабильной активности группы",
+        "description": "Для владельцев групп и магазинов во ВКонтакте: меньше ручной работы, больше регулярности и понятного процесса.",
+        "audience": "Группы VK, локальные бренды, интернет-магазины.",
+        "benefits": [
+            "Запланируйте публикации заранее на неделю или месяц.",
+            "Темы и тексты можно редактировать под специфику вашей аудитории.",
+            "Поддержка базового теста публикаций перед запуском в рабочем режиме.",
+        ],
+        "faq": "Частый вопрос: можно ли сначала протестировать? Да, доступен тестовый сценарий публикации.",
+    },
+    {
+        "slug": "kontent-plan-dlya-biznesa",
+        "title": "Контент-план для малого бизнеса в соцсетях",
+        "h1": "Контент-план без хаоса: от идей до календаря публикаций",
+        "description": "Соберите темы, сохраните план и сразу перенесите его в календарь публикаций — без таблиц и запутанных сервисов.",
+        "audience": "Предприниматели и менеджеры, которые ведут соцсети сами.",
+        "benefits": [
+            "Шаг 2 помогает собрать список тем, которые можно править вручную.",
+            "Шаг 3 превращает темы в календарь с датой и временем.",
+            "План и черновики сохраняются, их можно открыть и отредактировать позже.",
+        ],
+        "faq": "Частый вопрос: нужно ли каждый раз начинать заново? Нет, все сохраненные темы и планы доступны повторно.",
+    },
+    {
+        "slug": "ai-posty-dlya-malogo-biznesa",
+        "title": "AI-посты для малого бизнеса: просто и по делу",
+        "h1": "AI-помощник для постов: быстрее писать и не терять качество",
+        "description": "Сервис помогает генерировать тексты и изображения, но оставляет вам контроль: правки, утверждение, ручной запуск.",
+        "audience": "Малый бизнес и авторы, которым нужны регулярные посты без найма большой команды.",
+        "benefits": [
+            "Тексты адаптируются под платформу и канал.",
+            "Можно задать тему вручную и быстро получить готовый вариант.",
+            "Публикация запускается в пару кликов из кабинета.",
+        ],
+        "faq": "Частый вопрос: текст будет выглядеть «роботом»? Система использует инструкции под человеческую подачу и позволяет редактирование.",
+    },
+    {
+        "slug": "vedenie-telegram-kanala-nedorogo",
+        "title": "Ведение Telegram-канала недорого",
+        "h1": "Ведение Telegram-канала недорого: стабильность вместо выгорания",
+        "description": "Если вы ведете канал сами, автоплан и регулярные посты снижают нагрузку и помогают не пропадать из ленты.",
+        "audience": "Соло-блогеры и специалисты, ведущие Telegram в одиночку.",
+        "benefits": [
+            "План публикаций формируется заранее и сохраняется в кабинете.",
+            "Можно публиковать сразу в несколько каналов по одной теме.",
+            "Подходит для режима «минимум времени — максимум регулярности».",
+        ],
+        "faq": "Частый вопрос: подойдет ли для маленького канала? Да, сервис рассчитан и на небольшие проекты.",
+    },
+    {
+        "slug": "vedenie-vk-soobshchestva-nedorogo",
+        "title": "Ведение сообщества ВК недорого",
+        "h1": "Регулярный контент для VK-сообщества без лишних затрат",
+        "description": "Подходит для небольших брендов и локального бизнеса: публикации по графику и простое управление без сложной настройки.",
+        "audience": "Микробизнес, локальные магазины, услуги, мастерские.",
+        "benefits": [
+            "Быстрое подключение группы и проверка перед сохранением.",
+            "Гибкая частота: каждый день, через день, через 2 дня.",
+            "История публикаций и базовая аналитика по результатам.",
+        ],
+        "faq": "Частый вопрос: нужно ли платить за дорогие SMM-сервисы? Нет, можно стартовать с базового тарифа.",
+    },
+    {
+        "slug": "avtomatizaciya-postinga-dlya-eksperta",
+        "title": "Автоматизация постинга для эксперта и личного бренда",
+        "h1": "Автоматизация постинга для эксперта: меньше рутины, больше пользы аудитории",
+        "description": "Для психологов, коучей, врачей, преподавателей и консультантов: планируйте контент заранее и публикуйте стабильно.",
+        "audience": "Эксперты и авторы личных блогов.",
+        "benefits": [
+            "Сервис помогает удерживать регулярность даже в загруженные недели.",
+            "Темы можно собрать из вопросов аудитории и доработать вручную.",
+            "Пошаговый интерфейс понятен без технической подготовки.",
+        ],
+        "faq": "Частый вопрос: можно ли подключить только один канал? Да, система работает и с одним каналом.",
+    },
+    {
+        "slug": "kontent-dlya-internet-magazina",
+        "title": "Контент для интернет-магазина: план и автопостинг",
+        "h1": "Контент для интернет-магазина без ручного аврала",
+        "description": "Поддерживайте активность в Telegram и VK, чтобы не терять охваты и продажи в периоды загрузки.",
+        "audience": "Небольшие интернет-магазины и e-commerce команды до 5 человек.",
+        "benefits": [
+            "Публикации о товарах, подборках и советах можно запланировать заранее.",
+            "Один кабинет для управления каналами и графиком постов.",
+            "Понятный контроль: что запланировано, что опубликовано, что с ошибкой.",
+        ],
+        "faq": "Частый вопрос: подойдёт ли для сезонных акций? Да, можно готовить календарь под распродажи и кампании.",
+    },
+    {
+        "slug": "posting-po-raspisaniyu-dlya-bloga",
+        "title": "Постинг по расписанию для блога",
+        "h1": "Постинг по расписанию: блог живет даже когда у вас мало времени",
+        "description": "Регулярные публикации помогают блогу расти. Система закрывает техническую часть и оставляет вам контент-контроль.",
+        "audience": "Авторы тематических блогов и нишевых каналов.",
+        "benefits": [
+            "Создайте пул тем и равномерно распределите их по календарю.",
+            "Можно заранее посмотреть и скорректировать план.",
+            "Снижается риск «пустых недель» без постов.",
+        ],
+        "faq": "Частый вопрос: можно ли менять тему в последний момент? Да, темы и календарь редактируются.",
+    },
+    {
+        "slug": "servis-avtopostinga-dlya-samozanyatyh",
+        "title": "Сервис автопостинга для самозанятых",
+        "h1": "Сервис автопостинга для самозанятых: просто, недорого, стабильно",
+        "description": "Подходит для мастеров и специалистов услуг: контент выходит регулярно, даже если день занят клиентами.",
+        "audience": "Самозанятые, мастера, частные специалисты.",
+        "benefits": [
+            "Быстрое подключение и пошаговый запуск без сложной терминологии.",
+            "График публикаций можно настроить под ваш рабочий ритм.",
+            "Есть поддержка и понятные подсказки внутри кабинета.",
+        ],
+        "faq": "Частый вопрос: можно ли без команды и маркетолога? Да, продукт рассчитан на самостоятельную работу.",
+    },
+    {
+        "slug": "avtoposting-dlya-lokalnogo-biznesa",
+        "title": "Автопостинг для локального бизнеса",
+        "h1": "Автопостинг для локального бизнеса: оставайтесь на виду каждый день",
+        "description": "Кафе, салоны, студии, сервисы услуг — поддерживайте стабильную активность в каналах без перегруза команды.",
+        "audience": "Локальные офлайн-бизнесы и услуги.",
+        "benefits": [
+            "Регулярные публикации акций, новостей и полезных советов.",
+            "Простой режим публикации «сейчас» для срочных сообщений.",
+            "Единый кабинет для контроля статусов и результатов.",
+        ],
+        "faq": "Частый вопрос: если у нас мало контента? Можно стартовать с коротких полезных постов и постепенно наращивать план.",
+    },
+    {
+        "slug": "publikacii-v-socseti-bez-smm-agentstva",
+        "title": "Публикации в соцсети без SMM-агентства",
+        "h1": "Публикации в соцсетях без SMM-агентства: контроль остается у вас",
+        "description": "Если вы не хотите зависеть от подрядчиков, сервис помогает выстроить стабильный процесс внутри команды или самостоятельно.",
+        "audience": "Малый бизнес, который хочет вести каналы самостоятельно.",
+        "benefits": [
+            "Понятный пошаговый процесс без сложного внедрения.",
+            "Прозрачная история действий и публикаций.",
+            "Можно расти от одного канала к нескольким без смены инструмента.",
+        ],
+        "faq": "Частый вопрос: подойдет ли для старта с нуля? Да, можно начать с минимальной настройки и постепенно расширяться.",
+    },
+]
+SEO_LANDING_MAP = {item["slug"]: item for item in SEO_LANDING_PAGES}
 
 
 class Client(db.Model):
@@ -420,9 +583,21 @@ def _token_help_links():
     }
 
 
+def _resolved_public_base_url():
+    configured = (os.environ.get("PUBLIC_BASE_URL") or APP_CANONICAL_URL or "").strip().rstrip("/")
+    if configured:
+        return configured
+    if has_request_context():
+        return request.url_root.rstrip("/")
+    return "http://localhost:5000"
+
+
 @app.context_processor
 def inject_common_template_context():
     return {
+        "app_brand_name": APP_BRAND_NAME,
+        "public_base_url": _resolved_public_base_url(),
+        "seo_landing_pages": SEO_LANDING_PAGES,
         "specialist_telegram_link": _specialist_telegram_link(),
         "token_help_links": _token_help_links(),
         "onboarding_progress": build_onboarding_progress(
@@ -3201,7 +3376,71 @@ def index():
         active_channels=active_channels,
         supported_networks=supported_networks,
         trial_days_default=14 if 14 in TRIAL_OPTIONS_DAYS else min(TRIAL_OPTIONS_DAYS),
+        landing_pages=SEO_LANDING_PAGES[:15],
     )
+
+
+@app.route("/landings/<slug>")
+def seo_landing_page(slug):
+    page = SEO_LANDING_MAP.get((slug or "").strip().lower())
+    if not page:
+        abort(404)
+    return render_template(
+        "seo_landing.html",
+        page=page,
+        related_pages=[item for item in SEO_LANDING_PAGES if item["slug"] != page["slug"]][:6],
+    )
+
+
+@app.route("/robots.txt")
+def robots_txt():
+    base_url = _resolved_public_base_url()
+    lines = [
+        "User-agent: *",
+        "Allow: /",
+        "",
+        "Disallow: /admin/",
+        "Disallow: /api/",
+        "Disallow: /agent",
+        "",
+        f"Sitemap: {base_url}/sitemap.xml",
+    ]
+    return Response("\n".join(lines), mimetype="text/plain; charset=utf-8")
+
+
+@app.route("/sitemap.xml")
+def sitemap_xml():
+    base_url = _resolved_public_base_url().rstrip("/")
+    static_entries = [
+        {"loc": f"{base_url}{url_for('index')}", "changefreq": "daily", "priority": "1.0"},
+        {"loc": f"{base_url}{url_for('register')}", "changefreq": "weekly", "priority": "0.8"},
+        {"loc": f"{base_url}{url_for('login')}", "changefreq": "weekly", "priority": "0.6"},
+    ]
+    landing_entries = [
+        {
+            "loc": f"{base_url}{url_for('seo_landing_page', slug=item['slug'])}",
+            "changefreq": "weekly",
+            "priority": "0.8",
+        }
+        for item in SEO_LANDING_PAGES
+    ]
+    entries = [*static_entries, *landing_entries]
+    lastmod = datetime.utcnow().date().isoformat()
+
+    xml_lines = ['<?xml version="1.0" encoding="UTF-8"?>', '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
+    for entry in entries:
+        xml_lines.extend(
+            [
+                "  <url>",
+                f"    <loc>{escape(entry['loc'])}</loc>",
+                f"    <lastmod>{lastmod}</lastmod>",
+                f"    <changefreq>{entry['changefreq']}</changefreq>",
+                f"    <priority>{entry['priority']}</priority>",
+                "  </url>",
+            ]
+        )
+    xml_lines.append("</urlset>")
+    return Response("\n".join(xml_lines), mimetype="application/xml; charset=utf-8")
 
 
 @app.route("/dashboard")

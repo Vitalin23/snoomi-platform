@@ -1,7 +1,18 @@
 <!-- web/templates/index.html -->
 {% extends "layout.html" %}
 
-{% block title %}Snoomi Platform - Автопостинг в соцсети{% endblock %}
+{% block title %}{{ app_brand_name }} - Автопостинг для малого бизнеса и блогов{% endblock %}
+
+{% block meta_tags %}
+<meta name="description" content="{{ app_brand_name }} — понятный автопостинг для небольших блогов и малого бизнеса: подключите каналы, выберите темы, запустите стабильные публикации по расписанию.">
+<meta name="keywords" content="автопостинг, автопостинг telegram, автопостинг вк, постинг по расписанию, контент для малого бизнеса">
+<meta name="robots" content="index,follow">
+<meta property="og:type" content="website">
+<meta property="og:title" content="{{ app_brand_name }} — автопостинг без сложной настройки">
+<meta property="og:description" content="Сервис для блогеров и малого бизнеса: темы, календарь и публикации в Telegram/VK в одном кабинете.">
+<meta property="og:url" content="{{ request.base_url }}">
+<link rel="canonical" href="{{ request.base_url }}">
+{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -335,14 +346,15 @@
         <div class="col-xl-7">
             <span class="landing-badge">
                 <i class="fas fa-bolt"></i>
-                Автопостинг для компаний и экспертов
+                Автопостинг для блогов и малого бизнеса
             </span>
             <h1 class="hero-title">
-                Публикуйте в соцсети по расписанию, экономьте время команды и держите контроль в одном окне.
+                Регулярные посты в Telegram и VK без сложной настройки и лишней рутины.
             </h1>
             <p class="hero-subtitle">
-                Snoomi помогает маркетологам, агентствам и авторам запускать стабильный контент-поток:
-                от создания поста до отчета по результатам без ручной рутины.
+                {{ app_brand_name }} создан для людей, которые ведут каналы сами:
+                небольшие блоги, локальный бизнес, эксперты и магазины. Подключили каналы, выбрали темы,
+                поставили в календарь и получили стабильную активность.
             </p>
 
             <div class="hero-cta-group">
@@ -364,26 +376,26 @@
                 <span class="risk-chip"><i class="fas fa-credit-card"></i> Без карты на старте</span>
                 <span class="risk-chip"><i class="fas fa-xmark"></i> Отмена в любой момент</span>
                 <span class="risk-chip"><i class="fas fa-share-nodes"></i> Поддерживаем {{ supported_networks|length }} соцсети</span>
-                <span class="risk-chip"><i class="fas fa-lock"></i> Роли, права и журнал действий</span>
+                <span class="risk-chip"><i class="fas fa-stopwatch"></i> Первый запуск за 10-15 минут</span>
             </div>
         </div>
 
         <div class="col-xl-5">
             <div class="hero-demo">
                 <div class="demo-topline">
-                    <strong>Реальный поток работы: 22 сек</strong>
+                    <strong>Понятный сценарий запуска</strong>
                     <span class="demo-dotline"><span></span><span></span><span></span></span>
                 </div>
                 <div class="demo-flow">
-                    <div class="demo-step"><strong>00:04</strong>Создали пост или импортировали из шаблона.</div>
-                    <div class="demo-step"><strong>00:11</strong>Назначили таймслот и адаптировали под Telegram/VK.</div>
-                    <div class="demo-step"><strong>00:18</strong>Отправили на публикацию и получили статус.</div>
-                    <div class="demo-step"><strong>00:22</strong>Открыли отчет: охват, ER, экспорт в CSV.</div>
+                    <div class="demo-step"><strong>Шаг 1</strong>Подключили канал и проверили доступ.</div>
+                    <div class="demo-step"><strong>Шаг 2</strong>Собрали темы для публикаций и отредактировали их.</div>
+                    <div class="demo-step"><strong>Шаг 3</strong>Сохранили календарь постов по удобному графику.</div>
+                    <div class="demo-step"><strong>Шаг 4</strong>Запустили публикацию и посмотрели результат.</div>
                 </div>
                 <div class="demo-result">
                     <div class="demo-result-item">
-                        <span class="kpi">2 мин</span>
-                        <span class="kpi-label">до первого поста</span>
+                        <span class="kpi">15 мин</span>
+                        <span class="kpi-label">до полного запуска</span>
                     </div>
                     <div class="demo-result-item">
                         <span class="kpi">{{ supported_networks|length }}</span>
@@ -391,7 +403,7 @@
                     </div>
                     <div class="demo-result-item">
                         <span class="kpi">CSV</span>
-                        <span class="kpi-label">экспорт отчетов</span>
+                        <span class="kpi-label">простой отчет</span>
                     </div>
                 </div>
                 <div class="mt-3 d-flex flex-wrap gap-2">
@@ -410,9 +422,9 @@
 </section>
 
 <section class="landing-section">
-    <h2 class="page-title mb-2">Социальное доказательство и доверие</h2>
+    <h2 class="page-title mb-2">Кому подходит сервис</h2>
     <p class="section-lead">
-        Ниже реальные показатели из текущей инсталляции и шаблон под блок с логотипами/упоминаниями клиентов.
+        Если вам нужна стабильная активность в каналах без найма большой команды — вы в целевой аудитории.
     </p>
     <div class="logo-wall">
         <div class="logo-cell">eCommerce</div>
@@ -420,7 +432,7 @@
         <div class="logo-cell">Эксперты</div>
         <div class="logo-cell">Образование</div>
         <div class="logo-cell">Медиа</div>
-        <div class="logo-cell">B2B-сервисы</div>
+        <div class="logo-cell">Самозанятые</div>
     </div>
     <div class="row g-3 mb-4">
         <div class="col-md-4">
@@ -447,79 +459,78 @@
         <div class="col-lg-4">
             <div class="review-card">
                 <blockquote>
-                    “Сняли ручные публикации с команды. Теперь контент-план на неделю закрываем за один слот.”
+                    “Раньше посты выходили как получится. Теперь публикации идут по графику, даже когда я занят клиентами.”
                 </blockquote>
-                <div class="review-meta">Руководитель маркетинга, розничная сеть</div>
+                <div class="review-meta">Владелец небольшого магазина</div>
             </div>
         </div>
         <div class="col-lg-4">
             <div class="review-card">
                 <blockquote>
-                    “Для экспертного блога ключевое — регулярность. Автопостинг держит темп и экономит время.”
+                    “Для личного блога важна регулярность. Здесь это настраивается без сложных инструкций.”
                 </blockquote>
-                <div class="review-meta">Автор и продюсер образовательного канала</div>
+                <div class="review-meta">Эксперт, автор канала</div>
             </div>
         </div>
         <div class="col-lg-4">
             <div class="review-card">
                 <blockquote>
-                    “Появился контроль и прозрачный отчет для клиента: что, где и когда вышло.”
+                    “Наконец-то вижу, какие посты вышли и какие сработали лучше.”
                 </blockquote>
-                <div class="review-meta">Аккаунт-менеджер digital-агентства</div>
+                <div class="review-meta">Автор малого блога</div>
             </div>
         </div>
     </div>
     <div class="mini-case">
-        <strong>Кейс пилота:</strong> после перехода на расписание и шаблоны команда сократила ручные операции по публикациям
-        и согласованию в среднем на 5-7 часов в неделю.
+        <strong>Практический результат:</strong> после запуска расписания ручная рутина по постингу обычно сокращается
+        на несколько часов в неделю.
     </div>
 </section>
 
 <section class="landing-section" id="howItWorks">
     <h2 class="page-title mb-2">Как это работает за 4 шага</h2>
     <p class="section-lead">
-        Без “магии”: понятный поток внутри продукта — подключили аккаунты, подготовили контент, поставили в план,
-        получили публикацию и отчет.
+        Без сложных терминов: подключили каналы, выбрали темы, сделали календарь, запустили публикации.
     </p>
     <div class="row g-3">
         <div class="col-md-6 col-xl-3">
             <div class="step-card">
                 <span class="step-index">1</span>
                 <h5>Подключите аккаунты</h5>
-                <p class="mb-0 text-muted">Telegram/VK и другие сети, которые доступны в вашей конфигурации.</p>
+                <p class="mb-0 text-muted">Добавьте Telegram и/или VK. Система проверит ссылку перед сохранением.</p>
             </div>
         </div>
         <div class="col-md-6 col-xl-3">
             <div class="step-card">
                 <span class="step-index">2</span>
-                <h5>Создайте или импортируйте контент</h5>
-                <p class="mb-0 text-muted">Черновики, шаблоны, медиатека и готовые заготовки для повторяемых рубрик.</p>
+                <h5>Соберите темы</h5>
+                <p class="mb-0 text-muted">Можно сгенерировать темы, отредактировать их или добавить свои.</p>
             </div>
         </div>
         <div class="col-md-6 col-xl-3">
             <div class="step-card">
                 <span class="step-index">3</span>
-                <h5>Настройте расписание</h5>
-                <p class="mb-0 text-muted">Таймслоты, автоповтор, календарь и кросспостинг с предпросмотром формата.</p>
+                <h5>Настройте календарь</h5>
+                <p class="mb-0 text-muted">Выберите частоту, время и сохраните план публикаций.</p>
             </div>
         </div>
         <div class="col-md-6 col-xl-3">
             <div class="step-card">
                 <span class="step-index">4</span>
-                <h5>Публикуйте и анализируйте</h5>
-                <p class="mb-0 text-muted">Статусы публикации, базовые метрики, экспорт и шаринг отчетов.</p>
+                <h5>Публикуйте и смотрите результат</h5>
+                <p class="mb-0 text-muted">Запускайте постинг и контролируйте статусы и базовые метрики.</p>
             </div>
         </div>
     </div>
     <div class="time-to-value">
-        <i class="fas fa-stopwatch me-1"></i> Первый пост в системе можно запланировать примерно за 2 минуты.
+        <i class="fas fa-stopwatch me-1"></i> Первый рабочий сценарий обычно запускается за 10-15 минут.
     </div>
 </section>
 
 <section class="landing-section">
-    <h2 class="page-title mb-2">Ключевые функции через выгоду</h2>
+    <h2 class="page-title mb-2">Что вы получаете</h2>
     <p class="section-lead">
-        В фокусе не “фичи ради фич”, а измеримый результат: скорость запуска, стабильность публикаций и прозрачный контроль.
+        Главное — чтобы посты выходили стабильно, а вам не нужно было вникать в технические детали.
     </p>
     <div class="row g-3">
         <div class="col-md-6 col-xl-4">
@@ -554,11 +565,11 @@
         </div>
         <div class="col-md-6 col-xl-4">
             <div class="feature-card">
-                <h5><i class="fas fa-user-check me-2 text-primary"></i>Согласование для команд</h5>
+                <h5><i class="fas fa-user-check me-2 text-primary"></i>Простое управление доступами</h5>
                 <ul class="feature-list">
-                    <li>Роли, комментарии, история правок.</li>
-                    <li>Approval-флоу для бизнеса и агентств.</li>
-                    <li>Прозрачность “кто и что изменил”.</li>
+                    <li>Базовые роли и понятная история действий.</li>
+                    <li>Контроль изменений без лишней бюрократии.</li>
+                    <li>Удобно, когда над каналом работают 2-3 человека.</li>
                 </ul>
             </div>
         </div>
@@ -576,7 +587,7 @@
             <div class="feature-card">
                 <h5><i class="fas fa-shield-halved me-2 text-primary"></i>Безопасность и доступы</h5>
                 <ul class="feature-list">
-                    <li>OAuth/токены, разграничение прав по ролям.</li>
+                    <li>Подключение по токенам и базовое разграничение прав.</li>
                     <li>Журнал клиентских и системных событий.</li>
                     <li>Минимально необходимый доступ к аккаунтам.</li>
                 </ul>
@@ -586,21 +597,21 @@
 </section>
 
 <section class="landing-section">
-    <h2 class="page-title mb-2">Отдельные сценарии для двух аудиторий</h2>
+    <h2 class="page-title mb-2">Сценарии для двух основных аудиторий</h2>
     <p class="section-lead">
-        Разный контекст — разная ценность: компаниям важны контроль и отчетность, экспертам — скорость и регулярность.
+        Мы ориентируемся на тех, кто не хочет разбираться в сложных настройках: малый бизнес и авторы блогов.
     </p>
 
     <div class="segment-switch" role="tablist" aria-label="Сегментация аудитории">
-        <button class="segment-switch-btn active" type="button" data-segment="business">Для бизнеса</button>
-        <button class="segment-switch-btn" type="button" data-segment="experts">Для экспертов/авторов</button>
+        <button class="segment-switch-btn active" type="button" data-segment="business">Для малого бизнеса</button>
+        <button class="segment-switch-btn" type="button" data-segment="experts">Для блогеров и экспертов</button>
     </div>
 
     <div class="segment-view active" id="segment-business">
         <div class="row g-3">
             <div class="col-md-6">
                 <div class="segment-card">
-                    <h5><i class="fas fa-building me-2 text-primary"></i>Что болит</h5>
+                    <h5><i class="fas fa-building me-2 text-primary"></i>Частые проблемы</h5>
                     <ul class="feature-list">
                         <li>Несколько сотрудников и много каналов без единого контроля.</li>
                         <li>Трудно согласовывать публикации и отслеживать ошибки.</li>
@@ -610,11 +621,11 @@
             </div>
             <div class="col-md-6">
                 <div class="segment-card">
-                    <h5><i class="fas fa-chart-line me-2 text-primary"></i>Что получаете</h5>
+                    <h5><i class="fas fa-chart-line me-2 text-primary"></i>Что получаете на практике</h5>
                     <ul class="feature-list">
-                        <li>Ролевую модель, approval и историю изменений.</li>
+                        <li>Простой контроль публикаций и истории изменений.</li>
                         <li>Публикации по графику с понятными статусами.</li>
-                        <li>Регулярные отчеты и экспорт для менеджмента.</li>
+                        <li>Базовую статистику и отчеты без перегруза.</li>
                     </ul>
                 </div>
             </div>
@@ -625,7 +636,7 @@
         <div class="row g-3">
             <div class="col-md-6">
                 <div class="segment-card">
-                    <h5><i class="fas fa-user-pen me-2 text-primary"></i>Что болит</h5>
+                    <h5><i class="fas fa-user-pen me-2 text-primary"></i>Частые проблемы</h5>
                     <ul class="feature-list">
                         <li>Нужна регулярность публикаций без потери времени.</li>
                         <li>Сложно каждый раз собирать контент вручную.</li>
@@ -635,11 +646,11 @@
             </div>
             <div class="col-md-6">
                 <div class="segment-card">
-                    <h5><i class="fas fa-gauge-high me-2 text-primary"></i>Что получаете</h5>
+                    <h5><i class="fas fa-gauge-high me-2 text-primary"></i>Что получаете на практике</h5>
                     <ul class="feature-list">
                         <li>Быстрый запуск: шаблон → расписание → автопубликация.</li>
                         <li>Стабильный контент-ритм и меньше “ручного режима”.</li>
-                        <li>Понятная аналитика для роста охвата и дисциплины.</li>
+                        <li>Понятную статистику, чтобы видеть прогресс канала.</li>
                     </ul>
                 </div>
             </div>
@@ -648,17 +659,35 @@
 </section>
 
 <section class="landing-section">
+    <h2 class="page-title mb-2">Посадочные страницы по задачам клиентов</h2>
+    <p class="section-lead">
+        Ниже собраны отдельные страницы под популярные запросы. Это база для органического трафика и точечных рекламных кампаний.
+    </p>
+    <div class="row g-3">
+        {% for landing in landing_pages %}
+        <div class="col-md-6 col-xl-4">
+            <a href="{{ url_for('seo_landing_page', slug=landing.slug) }}" class="text-decoration-none">
+                <div class="feature-card h-100">
+                    <h5 class="mb-2">{{ landing.h1 }}</h5>
+                    <p class="mb-0 text-muted">{{ landing.description }}</p>
+                </div>
+            </a>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+
+<section class="landing-section">
     <h2 class="page-title mb-2">Интеграции и поддерживаемые платформы</h2>
     <p class="section-lead">
-        Подключайте текущие соцсети, планируйте расширение и связывайте контент-контур с вашими инструментами.
+        Начинайте с Telegram и VK, а затем расширяйте контур при необходимости.
     </p>
     <div class="integration-card mb-3">
         <h5 class="mb-3">Соцсети</h5>
         {% for network in supported_networks %}
             <span class="integration-badge live">{{ network }}</span>
         {% endfor %}
-        <span class="integration-badge soon">Instagram* (в проработке)</span>
-        <span class="integration-badge soon">YouTube Community (скоро)</span>
+        <span class="integration-badge soon">Дополнительные платформы (в дорожной карте)</span>
     </div>
     <div class="integration-card">
         <h5 class="mb-3">Смежные интеграции</h5>
@@ -727,9 +756,9 @@
         </div>
     </div>
     <div class="faq-note">
-        <strong>Нужен корпоративный контур?</strong> Отдельные требования по ИБ, SSO, SLA и кастомной отчетности можно обсудить на демо.
+        <strong>Нужна помощь с запуском?</strong> Напишите специалисту, подскажем как быстро стартовать даже с одним каналом.
         <a href="{{ specialist_telegram_link }}" target="_blank" class="btn btn-sm btn-outline-primary ms-2 mt-2 mt-md-0">
-            <i class="fab fa-telegram me-1"></i> Запросить демо для Enterprise
+            <i class="fab fa-telegram me-1"></i> Связаться со специалистом
         </a>
     </div>
 </section>
@@ -737,7 +766,7 @@
 <section class="landing-section">
     <h2 class="page-title mb-2">FAQ и работа с возражениями</h2>
     <p class="section-lead">
-        Прозрачные ответы повышают доверие: что можно, какие ограничения есть и как защищаются доступы.
+        Простые ответы на вопросы, которые обычно возникают перед запуском.
     </p>
 
     <div class="accordion mb-4" id="faqAccordion">
@@ -817,9 +846,9 @@
 <section class="landing-section">
     <div class="card border-0 shadow-sm">
         <div class="card-body p-4 p-lg-5 text-center">
-            <h2 class="page-title mb-2">Запустите первый поток публикаций уже сегодня</h2>
+            <h2 class="page-title mb-2">Запустите стабильные публикации уже сегодня</h2>
             <p class="section-lead mx-auto mb-3">
-                Подключите канал, поставьте публикации в план и получите первый отчет в этот же день.
+                Подключите канал, сохраните темы и календарь, запустите первую публикацию в этот же день.
             </p>
             <div class="d-flex flex-wrap justify-content-center gap-2">
                 {% if current_user.is_authenticated %}
@@ -840,8 +869,8 @@
 </section>
 
 <section class="landing-section">
-    <h2 class="page-title mb-2">Футер доверия: контакты и юридическая прозрачность</h2>
-    <p class="section-lead">Ключевая информация, которую ожидают увидеть на сервисе автопостинга.</p>
+    <h2 class="page-title mb-2">Контакты и прозрачные условия</h2>
+    <p class="section-lead">Блок доверия для клиентов, которым важны понятные правила и быстрая связь.</p>
     <div class="trust-grid">
         <div class="trust-card">
             <h6><i class="fas fa-address-book me-1"></i> Контакты</h6>

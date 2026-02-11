@@ -5,7 +5,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" content="light dark">
-    <title>{% block title %}Snoomi Platform - Автопостинг{% endblock %}</title>
+    <title>{% block title %}{{ app_brand_name }} - Простой автопостинг{% endblock %}</title>
+    {% block meta_tags %}
+    <meta name="description" content="{{ app_brand_name }} — простой автопостинг в Telegram и VK для блогов и малого бизнеса. Подключили канал, выбрали темы, получили стабильные публикации.">
+    <meta name="keywords" content="автопостинг, автопостинг telegram, автопостинг vk, постинг по расписанию, контент план">
+    <meta name="robots" content="index,follow">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="{{ app_brand_name }} — простой автопостинг">
+    <meta property="og:description" content="Сервис для стабильных публикаций без сложной настройки: подключение канала, темы, календарь, публикация и результат.">
+    <meta property="og:url" content="{{ request.base_url }}">
+    <link rel="canonical" href="{{ request.base_url }}">
+    {% endblock %}
     
     <!-- Bootstrap 5 -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -34,7 +44,7 @@
     <nav class="navbar navbar-expand-lg navbar-light app-navbar">
         <div class="container">
             <a class="navbar-brand" href="{{ url_for('dashboard') if current_user.is_authenticated else url_for('index') }}">
-                <i class="fas fa-robot"></i> Snoomi Platform
+                <i class="fas fa-robot"></i> {{ app_brand_name }}
             </a>
             
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
@@ -46,47 +56,47 @@
                     {% if current_user.is_authenticated %}
                         <li class="nav-item">
                             <a class="nav-link" href="{{ url_for('dashboard') }}">
-                                <i class="fas fa-tachometer-alt"></i> Дашборд
+                                <i class="fas fa-tachometer-alt"></i> Кабинет
                             </a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link" href="{{ url_for('channels') }}">
-                                <i class="fas fa-broadcast-tower"></i> Каналы
+                                <i class="fas fa-broadcast-tower"></i> 1. Каналы
                             </a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link" href="{{ url_for('posting_setup') }}">
-                                <i class="fas fa-sliders-h"></i> Шаг 2
+                                <i class="fas fa-sliders-h"></i> 2. Темы
                             </a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link" href="{{ url_for('posting_plan') }}">
-                                <i class="fas fa-calendar-check"></i> Шаг 3
+                                <i class="fas fa-calendar-check"></i> 3. Календарь
                             </a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link" href="{{ url_for('agent_console') }}">
-                                <i class="fas fa-brain"></i> AI Агент
+                                <i class="fas fa-brain"></i> AI-помощник
                             </a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link" href="{{ url_for('statistics') }}">
-                                <i class="fas fa-chart-line"></i> Статистика
+                                <i class="fas fa-chart-line"></i> Результаты
                             </a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link" href="{{ url_for('billing') }}">
-                                <i class="fas fa-credit-card"></i> Биллинг
+                                <i class="fas fa-credit-card"></i> Тариф
                             </a>
                         </li>
                         
                         {% if current_user.role == 'admin' %}
                         <li class="nav-item dropdown">
                             <a class="nav-link dropdown-toggle" href="#" id="adminDropdown" role="button" data-bs-toggle="dropdown">
-                                <i class="fas fa-cog"></i> Админ
+                                <i class="fas fa-cog"></i> Админка
                             </a>
                             <ul class="dropdown-menu">
-                                <li><a class="dropdown-item" href="{{ url_for('admin_clients') }}"><i class="fas fa-users"></i> Клиенты и подключения</a></li>
+                                <li><a class="dropdown-item" href="{{ url_for('admin_clients') }}"><i class="fas fa-users"></i> Клиенты и каналы</a></li>
                                 <li><a class="dropdown-item" href="{{ url_for('channels') }}"><i class="fas fa-plug"></i> Каналы</a></li>
                                 <li><hr class="dropdown-divider"></li>
                                 <li><a class="dropdown-item" href="/api/system/health" target="_blank">
@@ -126,7 +136,7 @@
                             </a>
                             <ul class="dropdown-menu dropdown-menu-end">
                                 <li><a class="dropdown-item" href="#"><i class="fas fa-user-cog"></i> Профиль</a></li>
-                                <li><a class="dropdown-item" href="#"><i class="fas fa-question-circle"></i> Помощь</a></li>
+                                <li><a class="dropdown-item" href="#"><i class="fas fa-question-circle"></i> Поддержка</a></li>
                                 <li><hr class="dropdown-divider"></li>
                                 <li><a class="dropdown-item" href="{{ url_for('logout') }}">
                                     <i class="fas fa-sign-out-alt"></i> Выйти
@@ -141,7 +151,7 @@
                         </li>
                         <li class="nav-item">
                             <a class="nav-link" href="{{ url_for('register') }}">
-                                <i class="fas fa-user-plus"></i> Регистрация
+                                <i class="fas fa-user-plus"></i> Создать аккаунт
                             </a>
                         </li>
                     {% endif %}
@@ -175,16 +185,15 @@
         <div class="container">
             <div class="row">
                 <div class="col-md-6">
-                    <h5><i class="fas fa-robot"></i> Snoomi Platform</h5>
-                    <p class="mb-0">Автоматическая система публикации контента в социальные сети.</p>
-                    <small class="text-muted">Использует AI для генерации уникального контента.</small>
+                    <h5><i class="fas fa-robot"></i> {{ app_brand_name }}</h5>
+                    <p class="mb-0">Сервис автопостинга для блогеров и малого бизнеса.</p>
+                    <small class="text-muted">Простой запуск: каналы → темы → календарь → публикация.</small>
                 </div>
                 <div class="col-md-3">
-                    <h6>Платформы</h6>
+                    <h6>Где публикуем</h6>
                     <ul class="list-unstyled">
                         <li><i class="fab fa-telegram"></i> Telegram</li>
                         <li><i class="fab fa-vk"></i> ВКонтакте</li>
-                        <li><i class="fab fa-odnoklassniki"></i> Одноклассники</li>
                     </ul>
                 </div>
                 <div class="col-md-3">
@@ -198,7 +207,7 @@
             </div>
             <hr class="bg-light">
             <div class="text-center">
-                <small>&copy; 2024 Snoomi Platform. Все права защищены.</small>
+                <small>&copy; 2026 {{ app_brand_name }}. Все права защищены.</small>
             </div>
         </div>
     </footer>

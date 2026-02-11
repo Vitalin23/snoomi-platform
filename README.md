@@ -6,6 +6,9 @@
 ### Стратегический документ
 
 - `CLIENT_EXPERT_AGENT_PRD.md` — PRD по клиентскому экспертному AI-агенту (семантика, RAG, quality-gate, roadmap).
+- `FASTVPS_DEPLOY_CHECKLIST.md` — production чеклист развертывания SMI-platforma на FastVPS.
+- `QA_PLAN_CHANNELS_AND_ADMIN.md` — подробный план тестирования каналов и админки перед запуском.
+- `GO_TO_MARKET_SEO_PLAN.md` — портрет ЦА, каналы продвижения, семантическое ядро и SEO-план.
 
 ---
 
