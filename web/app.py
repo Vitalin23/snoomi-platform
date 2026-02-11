@@ -2635,6 +2635,26 @@ def _agent_latest_quality_report(run_id):
     )
 
 
+def _agent_latest_feedback(run_id):
+    return (
+        EditorFeedback.query.filter_by(run_id=run_id)
+        .order_by(EditorFeedback.created_at.desc(), EditorFeedback.id.desc())
+        .first()
+    )
+
+
+def _agent_feedback_payload(feedback):
+    if not feedback:
+        return None
+    return {
+        "id": feedback.id,
+        "feedback_type": feedback.feedback_type,
+        "comment": feedback.comment or "",
+        "accepted": bool(feedback.accepted),
+        "created_at": feedback.created_at.isoformat() if feedback.created_at else None,
+    }
+
+
 def _agent_quality_report_payload(report):
     if not report:
         return None
@@ -2762,6 +2782,8 @@ def _agent_store_quality_report(run, quality_payload):
 
 def _agent_run_payload(run, quality_report=None):
     report_payload = _agent_quality_report_payload(quality_report)
+    latest_feedback = _agent_latest_feedback(run.id)
+    feedback_count = EditorFeedback.query.filter_by(run_id=run.id).count()
     return {
         "id": run.id,
         "client_id": run.client_id,
@@ -2776,6 +2798,8 @@ def _agent_run_payload(run, quality_report=None):
         "output_text": run.output_text,
         "output_image_ref": run.output_image_ref,
         "quality_report": report_payload,
+        "feedback_count": feedback_count,
+        "latest_feedback": _agent_feedback_payload(latest_feedback),
         "created_at": run.created_at.isoformat() if run.created_at else None,
         "published_at": run.published_at.isoformat() if run.published_at else None,
     }
@@ -3141,6 +3165,33 @@ def posting_plan():
 
     channels_payload = [_serialize_channel(ch, include_client_name=True) for ch in channels_data]
     return render_template("posting_plan.html", channels=channels_payload, user=current_user)
+
+
+@app.route("/agent")
+@login_required
+def agent_console():
+    if is_admin_user(current_user):
+        channels_data = (
+            ClientChannel.query.filter_by(is_active=True)
+            .order_by(ClientChannel.created_at.desc())
+            .all()
+        )
+    elif current_user.client_id:
+        channels_data = (
+            ClientChannel.query.filter_by(client_id=current_user.client_id, is_active=True)
+            .order_by(ClientChannel.created_at.desc())
+            .all()
+        )
+    else:
+        channels_data = []
+
+    channels_payload = [_serialize_channel(ch, include_client_name=True) for ch in channels_data]
+    return render_template(
+        "agent_runs.html",
+        channels=channels_payload,
+        user=current_user,
+        agent_enabled=AGENT_FEATURE_ENABLED,
+    )
 
 
 @app.route("/content")
@@ -5019,6 +5070,119 @@ def api_agent_quality_evaluate():
         audience_questions=question_hints,
     )
     return jsonify({"success": True, "quality": quality_payload})
+
+
+@app.route("/api/agent/run/update", methods=["POST"])
+@login_required
+def api_agent_run_update():
+    guard_response = _agent_feature_guard()
+    if guard_response:
+        return guard_response
+
+    data = request.get_json(silent=True) or {}
+    run_id = data.get("run_id")
+    evaluate_quality = bool(data.get("evaluate_quality", True))
+
+    try:
+        run_id = int(run_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный run_id"}), 400
+
+    run = _get_accessible_generation_run(run_id)
+    channel = _get_accessible_channel(run.channel_id)
+    if run.status == "published":
+        return jsonify({"success": False, "error": "Published run нельзя редактировать. Создайте новый draft."}), 400
+
+    topic_text = str(data.get("topic") or run.topic or "").strip()
+    if not topic_text:
+        topic_text = _resolve_manual_publish_topic(channel)
+
+    platform = str(data.get("platform") or run.platform or channel.platform or "").strip().lower()
+    if platform not in SUPPORTED_PLATFORMS:
+        return jsonify({"success": False, "error": "Поддерживаются только Telegram и VK"}), 400
+
+    raw_text = data.get("output_text")
+    if raw_text is None:
+        output_text = str(run.output_text or "").strip()
+    else:
+        output_text = _normalize_publication_text(str(raw_text or "").strip(), topic_text, platform)
+
+    if not output_text:
+        return jsonify({"success": False, "error": "Текст черновика не должен быть пустым"}), 400
+
+    run.topic = topic_text
+    run.platform = platform
+    run.output_text = output_text
+    if run.status in {"publish_failed", "rejected"}:
+        run.status = "draft"
+
+    quality_report = _agent_latest_quality_report(run.id)
+    if evaluate_quality:
+        semantic_hints = _agent_channel_semantic_hints(channel, limit=10)
+        question_hints = _agent_channel_question_hints(channel, limit=8)
+        quality_payload = evaluate_draft_quality(
+            text_value=output_text,
+            topic=topic_text,
+            platform=platform,
+            semantic_hints=semantic_hints,
+            audience_questions=question_hints,
+        )
+        quality_report = _agent_store_quality_report(run, quality_payload)
+
+    db.session.commit()
+    return jsonify({"success": True, "run": _agent_run_payload(run, quality_report=quality_report)})
+
+
+@app.route("/api/agent/feedback", methods=["POST"])
+@login_required
+def api_agent_feedback():
+    guard_response = _agent_feature_guard()
+    if guard_response:
+        return guard_response
+
+    data = request.get_json(silent=True) or {}
+    run_id = data.get("run_id")
+    feedback_type = str(data.get("feedback_type") or "").strip().lower()
+    comment = str(data.get("comment") or "").strip()
+    accepted = bool(data.get("accepted", False))
+
+    try:
+        run_id = int(run_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный run_id"}), 400
+
+    if not feedback_type:
+        return jsonify({"success": False, "error": "Укажите feedback_type"}), 400
+    if len(comment) > 5000:
+        comment = comment[:5000]
+
+    run = _get_accessible_generation_run(run_id)
+    feedback_item = EditorFeedback(
+        run_id=run.id,
+        feedback_type=feedback_type,
+        comment=comment or None,
+        accepted=accepted,
+        created_at=datetime.utcnow(),
+    )
+    db.session.add(feedback_item)
+
+    # Мягкая синхронизация статуса run по ручной обратной связи.
+    if run.status != "published":
+        if accepted or feedback_type in {"approve", "approved", "manual_approve"}:
+            run.status = "approved_manual"
+        elif feedback_type in {"reject", "rejected"}:
+            run.status = "rejected"
+        elif feedback_type in {"revise", "needs_revision"}:
+            run.status = "needs_revision"
+
+    db.session.commit()
+    return jsonify(
+        {
+            "success": True,
+            "run": _agent_run_payload(run, quality_report=_agent_latest_quality_report(run.id)),
+            "feedback": _agent_feedback_payload(feedback_item),
+        }
+    )
 
 
 @app.route("/api/agent/publish", methods=["POST"])

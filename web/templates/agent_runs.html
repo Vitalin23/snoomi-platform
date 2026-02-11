@@ -1,0 +1,720 @@
+{% extends "layout.html" %}
+
+{% block title %}Snoomi Platform - AI Агент{% endblock %}
+
+{% block extra_css %}
+<style>
+    .agent-panel {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        background: var(--color-surface);
+        box-shadow: var(--shadow-1);
+    }
+    .agent-run-row.is-selected {
+        background: color-mix(in srgb, var(--color-primary-soft) 70%, transparent);
+    }
+    .agent-status-badge {
+        font-size: 0.75rem;
+    }
+    .agent-quality-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+        gap: 0.6rem;
+    }
+    .agent-quality-item {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-sm);
+        padding: 0.55rem 0.65rem;
+        background: var(--color-surface-soft);
+    }
+    .agent-quality-label {
+        font-size: 0.78rem;
+        color: var(--color-text-muted);
+        margin-bottom: 0.15rem;
+    }
+    .agent-quality-value {
+        font-weight: 700;
+        font-size: 0.96rem;
+    }
+    .agent-run-textarea {
+        min-height: 280px;
+        line-height: 1.5;
+    }
+    .agent-actions {
+        position: sticky;
+        bottom: 0;
+        background: color-mix(in srgb, var(--color-surface) 85%, transparent);
+        border-top: 1px solid var(--color-border);
+        padding: 0.75rem 0;
+        backdrop-filter: blur(6px);
+    }
+    .agent-feedback-panel {
+        border: 1px dashed var(--color-border);
+        border-radius: var(--radius-sm);
+        background: var(--color-surface-soft);
+        padding: 0.75rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title"><i class="fas fa-brain me-2"></i>AI Агент: черновики и quality gate</h1>
+        <p class="page-subtitle">
+            Единый рабочий контур: semantic core → research → draft → review → publish.
+        </p>
+    </div>
+</div>
+
+{% if not agent_enabled %}
+<div class="card content-card">
+    <div class="card-body">
+        <div class="alert alert-warning mb-0">
+            <strong>Контур AI агента отключен.</strong>
+            Включите <code>ENABLE_EXPERT_AGENT=1</code> в <code>.env</code> и перезапустите веб-панель.
+        </div>
+    </div>
+</div>
+{% elif not channels %}
+<div class="card content-card">
+    <div class="card-body">
+        <div class="operator-empty-state">
+            <i class="fas fa-plug-circle-xmark"></i>
+            <h6>Нет активных каналов для работы агента</h6>
+            <p>Сначала подключите хотя бы один канал, затем вернитесь к работе с черновиками.</p>
+            <a href="{{ url_for('channels') }}" class="btn btn-primary">
+                <i class="fas fa-arrow-left me-1"></i>Перейти к шагу 1
+            </a>
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="row g-4">
+    <div class="col-xl-4">
+        <div class="agent-panel p-3 h-100" id="agentControlPanel">
+            <h5 class="mb-3"><i class="fas fa-cogs me-1"></i>Управление агентом</h5>
+
+            <div class="mb-3">
+                <label class="form-label" for="agentChannelSelect">Канал</label>
+                <select class="form-control" id="agentChannelSelect">
+                    {% for channel in channels %}
+                    <option value="{{ channel.id }}" data-platform="{{ channel.platform }}">
+                        {{ channel.channel_name }} ({{ channel.platform|upper }})
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label" for="agentTopicInput">Тема черновика</label>
+                <input
+                    type="text"
+                    class="form-control"
+                    id="agentTopicInput"
+                    placeholder="Например: Как выбрать матрас при боли в спине"
+                >
+                <div class="form-text">Можно оставить пустым — тема возьмется из плана канала.</div>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label" for="agentPlatformSelect">Платформа</label>
+                <select class="form-control" id="agentPlatformSelect">
+                    <option value="telegram">Telegram</option>
+                    <option value="vk">VK</option>
+                </select>
+            </div>
+
+            <div class="d-flex flex-column gap-2 mb-3">
+                <label class="form-check">
+                    <input class="form-check-input" type="checkbox" id="agentIncludeImage">
+                    <span class="form-check-label">Сгенерировать изображение для draft</span>
+                </label>
+                <label class="form-check">
+                    <input class="form-check-input" type="checkbox" id="agentAutoEvaluate" checked>
+                    <span class="form-check-label">Сразу запускать quality gate после изменений</span>
+                </label>
+            </div>
+
+            <div class="d-grid gap-2" id="agentActionButtons">
+                <button class="btn btn-outline-primary" id="agentRebuildBtn">
+                    <i class="fas fa-layer-group me-1"></i>Пересобрать semantic core
+                </button>
+                <button class="btn btn-outline-secondary" id="agentResearchBtn">
+                    <i class="fas fa-search me-1"></i>Обновить research
+                </button>
+                <button class="btn btn-primary" id="agentDraftBtn">
+                    <i class="fas fa-wand-magic-sparkles me-1"></i>Сгенерировать draft
+                </button>
+            </div>
+
+            <div id="agentControlResult" class="mt-3"></div>
+        </div>
+    </div>
+
+    <div class="col-xl-8">
+        <div class="agent-panel p-3" id="agentRunsPanel">
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+                <h5 class="mb-0"><i class="fas fa-history me-1"></i>История запусков</h5>
+                <div class="d-flex gap-2 align-items-center">
+                    <select class="form-control form-control-sm" id="agentStatusFilter">
+                        <option value="">Все статусы</option>
+                        <option value="draft">draft</option>
+                        <option value="approved">approved</option>
+                        <option value="approved_manual">approved_manual</option>
+                        <option value="needs_revision">needs_revision</option>
+                        <option value="rejected">rejected</option>
+                        <option value="published">published</option>
+                        <option value="publish_failed">publish_failed</option>
+                    </select>
+                    <button class="btn btn-sm btn-outline-primary" id="agentRefreshRunsBtn">
+                        <i class="fas fa-rotate"></i>
+                    </button>
+                </div>
+            </div>
+
+            <div class="table-responsive">
+                <table class="table table-sm align-middle">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Тема</th>
+                            <th>Статус</th>
+                            <th>Quality</th>
+                            <th>Создан</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="agentRunsTableBody">
+                        <tr>
+                            <td colspan="6" class="text-center text-muted py-4">
+                                Запусков пока нет.
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4 mt-1">
+    <div class="col-12">
+        <div class="agent-panel p-3" id="agentPreviewPanel">
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+                <h5 class="mb-0">
+                    <i class="fas fa-file-lines me-1"></i>Предпросмотр и редактура run
+                    <span class="badge bg-light text-dark ms-1" id="agentSelectedRunBadge">run: —</span>
+                </h5>
+                <span class="badge agent-status-badge bg-secondary" id="agentSelectedStatusBadge">не выбрано</span>
+            </div>
+
+            <div id="agentPreviewEmpty" class="operator-empty-state">
+                <i class="fas fa-hand-pointer"></i>
+                <h6>Выберите run из списка выше</h6>
+                <p>После выбора можно править текст, пересчитывать quality и публиковать.</p>
+            </div>
+
+            <div id="agentPreviewContent" style="display:none;">
+                <div class="row g-3 mb-3">
+                    <div class="col-lg-6">
+                        <label class="form-label" for="agentEditTopic">Тема</label>
+                        <input type="text" class="form-control" id="agentEditTopic">
+                    </div>
+                    <div class="col-lg-3">
+                        <label class="form-label" for="agentEditPlatform">Платформа</label>
+                        <select class="form-control" id="agentEditPlatform">
+                            <option value="telegram">Telegram</option>
+                            <option value="vk">VK</option>
+                        </select>
+                    </div>
+                    <div class="col-lg-3">
+                        <label class="form-label" for="agentEditIncludeImage">Изображение</label>
+                        <div class="form-check mt-2">
+                            <input class="form-check-input" type="checkbox" id="agentEditIncludeImage">
+                            <label class="form-check-label" for="agentEditIncludeImage">
+                                при publish
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label" for="agentEditText">Текст draft</label>
+                    <textarea class="form-control agent-run-textarea" id="agentEditText"></textarea>
+                </div>
+
+                <div class="agent-quality-grid mb-3" id="agentQualityGrid"></div>
+
+                <div class="agent-feedback-panel mb-3">
+                    <div class="row g-2 align-items-end">
+                        <div class="col-md-3">
+                            <label class="form-label" for="agentFeedbackType">Feedback type</label>
+                            <select id="agentFeedbackType" class="form-control">
+                                <option value="revise">revise</option>
+                                <option value="approve">approve</option>
+                                <option value="reject">reject</option>
+                                <option value="editor_note">editor_note</option>
+                            </select>
+                        </div>
+                        <div class="col-md-7">
+                            <label class="form-label" for="agentFeedbackComment">Комментарий</label>
+                            <input type="text" class="form-control" id="agentFeedbackComment" placeholder="Что улучшить или почему одобрили">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label d-block">&nbsp;</label>
+                            <label class="form-check">
+                                <input class="form-check-input" type="checkbox" id="agentFeedbackAccepted">
+                                <span class="form-check-label">accepted</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="agent-actions">
+                    <div class="d-flex flex-wrap gap-2">
+                        <button class="btn btn-outline-primary" id="agentSaveRunBtn">
+                            <i class="fas fa-save me-1"></i>Сохранить правки
+                        </button>
+                        <button class="btn btn-outline-secondary" id="agentEvaluateBtn">
+                            <i class="fas fa-check-double me-1"></i>Пересчитать quality
+                        </button>
+                        <button class="btn btn-outline-info" id="agentFeedbackBtn">
+                            <i class="fas fa-comment-dots me-1"></i>Сохранить feedback
+                        </button>
+                        <button class="btn btn-success" id="agentPublishBtn">
+                            <i class="fas fa-paper-plane me-1"></i>Публиковать run
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="agentPreviewResult" class="mt-3"></div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+{% if agent_enabled and channels %}
+<script>
+    let agentRuns = [];
+    let selectedRunId = null;
+
+    function escapeHtml(value) {
+        return (value || "")
+            .toString()
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+    }
+
+    function safeText(value) {
+        return (value || "").toString().trim();
+    }
+
+    function formatDateTime(isoString) {
+        if (!isoString) return "—";
+        const dt = new Date(isoString);
+        if (Number.isNaN(dt.getTime())) return "—";
+        return dt.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+    }
+
+    function statusBadgeClass(status) {
+        const map = {
+            published: "bg-success",
+            approved: "bg-primary",
+            approved_manual: "bg-info",
+            draft: "bg-secondary",
+            needs_revision: "bg-warning text-dark",
+            publish_failed: "bg-danger",
+            rejected: "bg-danger"
+        };
+        return map[status] || "bg-secondary";
+    }
+
+    function qualityValue(value) {
+        if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
+        return (Number(value) * 100).toFixed(1) + "%";
+    }
+
+    function renderBox(targetId, text, kind = "info") {
+        const cls = kind === "success" ? "success" : (kind === "warning" ? "warning" : (kind === "danger" ? "danger" : "secondary"));
+        document.getElementById(targetId).innerHTML = `<div class="alert alert-${cls} mb-0">${escapeHtml(text)}</div>`;
+    }
+
+    function clearBox(targetId) {
+        const node = document.getElementById(targetId);
+        if (node) node.innerHTML = "";
+    }
+
+    function currentChannelId() {
+        return document.getElementById("agentChannelSelect").value;
+    }
+
+    function syncPlatformFromChannel() {
+        const select = document.getElementById("agentChannelSelect");
+        const option = select.options[select.selectedIndex];
+        const platform = (option?.dataset?.platform || "telegram").toLowerCase();
+        document.getElementById("agentPlatformSelect").value = platform;
+    }
+
+    function selectedRun() {
+        return agentRuns.find((item) => item.id === selectedRunId) || null;
+    }
+
+    function applyRunInCache(updatedRun) {
+        if (!updatedRun || !updatedRun.id) return;
+        const idx = agentRuns.findIndex((item) => item.id === updatedRun.id);
+        if (idx >= 0) {
+            agentRuns[idx] = updatedRun;
+        } else {
+            agentRuns.unshift(updatedRun);
+        }
+    }
+
+    function renderRunsTable() {
+        const tbody = document.getElementById("agentRunsTableBody");
+        if (!agentRuns.length) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="6" class="text-center text-muted py-4">Запуски не найдены по текущему фильтру.</td>
+                </tr>
+            `;
+            return;
+        }
+
+        tbody.innerHTML = agentRuns.map((run) => {
+            const decision = safeText(run?.quality_report?.decision || "");
+            const qualityScore = run.quality_score !== null && run.quality_score !== undefined
+                ? qualityValue(run.quality_score)
+                : "—";
+            const selectedClass = run.id === selectedRunId ? "is-selected" : "";
+            return `
+                <tr class="agent-run-row ${selectedClass}">
+                    <td>#${run.id}</td>
+                    <td>
+                        <div class="fw-semibold">${escapeHtml(run.topic || "Без темы")}</div>
+                        <small class="text-muted">${escapeHtml((run.channel_name || "—") + " · " + (run.platform || "—").toUpperCase())}</small>
+                    </td>
+                    <td>
+                        <span class="badge ${statusBadgeClass(run.status)} agent-status-badge">${escapeHtml(run.status || "unknown")}</span>
+                        ${decision ? `<div><small class="text-muted">gate: ${escapeHtml(decision)}</small></div>` : ""}
+                    </td>
+                    <td>${escapeHtml(qualityScore)}</td>
+                    <td>${escapeHtml(formatDateTime(run.created_at))}</td>
+                    <td>
+                        <button class="btn btn-sm btn-outline-primary" type="button" onclick="openRunPreview(${run.id})">
+                            Открыть
+                        </button>
+                    </td>
+                </tr>
+            `;
+        }).join("");
+    }
+
+    function renderQualityGrid(run) {
+        const quality = run?.quality_report || {};
+        const items = [
+            ["Relevance", quality.relevance_score],
+            ["Platform fit", quality.format_score],
+            ["Style", quality.style_score],
+            ["Fact", quality.fact_score],
+            ["Readability", quality.readability_score],
+            ["Quality total", run?.quality_score]
+        ];
+        const grid = document.getElementById("agentQualityGrid");
+        grid.innerHTML = items.map(([label, value]) => `
+            <div class="agent-quality-item">
+                <div class="agent-quality-label">${escapeHtml(label)}</div>
+                <div class="agent-quality-value">${escapeHtml(qualityValue(value))}</div>
+            </div>
+        `).join("");
+    }
+
+    function openRunPreview(runId) {
+        const run = agentRuns.find((item) => item.id === runId);
+        if (!run) return;
+        selectedRunId = run.id;
+        renderRunsTable();
+
+        document.getElementById("agentPreviewEmpty").style.display = "none";
+        document.getElementById("agentPreviewContent").style.display = "";
+        document.getElementById("agentSelectedRunBadge").textContent = `run: #${run.id}`;
+        document.getElementById("agentSelectedStatusBadge").className = `badge agent-status-badge ${statusBadgeClass(run.status)}`;
+        document.getElementById("agentSelectedStatusBadge").textContent = run.status || "unknown";
+
+        document.getElementById("agentEditTopic").value = run.topic || "";
+        document.getElementById("agentEditPlatform").value = (run.platform || "telegram").toLowerCase();
+        document.getElementById("agentEditText").value = run.output_text || "";
+        document.getElementById("agentFeedbackComment").value = run.latest_feedback?.comment || "";
+        document.getElementById("agentFeedbackAccepted").checked = !!run.latest_feedback?.accepted;
+
+        renderQualityGrid(run);
+        clearBox("agentPreviewResult");
+    }
+
+    async function apiJson(url, options = {}) {
+        const response = await fetch(url, options);
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.success) {
+            const message = data.error || `Ошибка запроса (${response.status})`;
+            throw new Error(message);
+        }
+        return data;
+    }
+
+    async function loadRuns(silent = false) {
+        const channelId = currentChannelId();
+        const status = safeText(document.getElementById("agentStatusFilter").value);
+        const params = new URLSearchParams();
+        if (channelId) params.set("channel_id", channelId);
+        if (status) params.set("status", status);
+        params.set("per_page", "50");
+
+        try {
+            const data = await apiJson(`/api/agent/runs?${params.toString()}`);
+            agentRuns = data.runs || [];
+            if (selectedRunId && !agentRuns.some((run) => run.id === selectedRunId)) {
+                selectedRunId = null;
+                document.getElementById("agentPreviewEmpty").style.display = "";
+                document.getElementById("agentPreviewContent").style.display = "none";
+                document.getElementById("agentSelectedRunBadge").textContent = "run: —";
+                document.getElementById("agentSelectedStatusBadge").className = "badge agent-status-badge bg-secondary";
+                document.getElementById("agentSelectedStatusBadge").textContent = "не выбрано";
+            }
+            renderRunsTable();
+            if (!silent) {
+                renderBox("agentControlResult", `Загружено run: ${agentRuns.length}`, "success");
+            }
+        } catch (error) {
+            if (!silent) renderBox("agentControlResult", error.message, "danger");
+        }
+    }
+
+    async function withButtonLoading(buttonId, loadingText, callback) {
+        const button = document.getElementById(buttonId);
+        if (!button) return;
+        const originalHtml = button.innerHTML;
+        button.disabled = true;
+        button.innerHTML = `<i class="fas fa-spinner fa-spin me-1"></i>${escapeHtml(loadingText)}`;
+        try {
+            await callback();
+        } finally {
+            button.disabled = false;
+            button.innerHTML = originalHtml;
+        }
+    }
+
+    async function rebuildSemanticCore() {
+        await withButtonLoading("agentRebuildBtn", "Собираем...", async () => {
+            clearBox("agentControlResult");
+            const payload = {
+                channel_id: currentChannelId(),
+                focus_text: safeText(document.getElementById("agentTopicInput").value),
+                question_limit: 10
+            };
+            try {
+                const data = await apiJson("/api/agent/semantic-core/rebuild", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+                renderBox(
+                    "agentControlResult",
+                    `Semantic core обновлен: ${data.semantic_clusters?.length || 0} кластеров, ${data.audience_questions?.length || 0} вопросов.`,
+                    "success"
+                );
+            } catch (error) {
+                renderBox("agentControlResult", error.message, "danger");
+            }
+        });
+    }
+
+    async function refreshResearch() {
+        await withButtonLoading("agentResearchBtn", "Обновляем...", async () => {
+            clearBox("agentControlResult");
+            const payload = {
+                channel_id: currentChannelId(),
+                focus_text: safeText(document.getElementById("agentTopicInput").value),
+                question_limit: 10
+            };
+            try {
+                const data = await apiJson("/api/agent/research/update", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+                renderBox(
+                    "agentControlResult",
+                    `Research обновлен: ${data.questions_total || 0} вопросов (${data.questions_added || 0} новых).`,
+                    "success"
+                );
+            } catch (error) {
+                renderBox("agentControlResult", error.message, "danger");
+            }
+        });
+    }
+
+    async function createDraft() {
+        await withButtonLoading("agentDraftBtn", "Генерируем...", async () => {
+            clearBox("agentControlResult");
+            const payload = {
+                channel_id: currentChannelId(),
+                topic: safeText(document.getElementById("agentTopicInput").value),
+                platform: safeText(document.getElementById("agentPlatformSelect").value),
+                include_image: document.getElementById("agentIncludeImage").checked,
+                run_mode: "operator_ui"
+            };
+            try {
+                const data = await apiJson("/api/agent/draft", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+                renderBox("agentControlResult", `Draft создан: run #${data.run.id}`, "success");
+                await loadRuns(true);
+                openRunPreview(data.run.id);
+            } catch (error) {
+                renderBox("agentControlResult", error.message, "danger");
+            }
+        });
+    }
+
+    async function saveRunEdits() {
+        const run = selectedRun();
+        if (!run) {
+            renderBox("agentPreviewResult", "Сначала выберите run для редактирования.", "warning");
+            return;
+        }
+
+        await withButtonLoading("agentSaveRunBtn", "Сохраняем...", async () => {
+            const payload = {
+                run_id: run.id,
+                topic: safeText(document.getElementById("agentEditTopic").value),
+                platform: safeText(document.getElementById("agentEditPlatform").value),
+                output_text: document.getElementById("agentEditText").value,
+                evaluate_quality: document.getElementById("agentAutoEvaluate").checked
+            };
+            try {
+                const data = await apiJson("/api/agent/run/update", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+                applyRunInCache(data.run);
+                renderRunsTable();
+                openRunPreview(data.run.id);
+                renderBox("agentPreviewResult", "Правки сохранены.", "success");
+            } catch (error) {
+                renderBox("agentPreviewResult", error.message, "danger");
+            }
+        });
+    }
+
+    async function evaluateSelectedRun() {
+        const run = selectedRun();
+        if (!run) {
+            renderBox("agentPreviewResult", "Сначала выберите run.", "warning");
+            return;
+        }
+        await withButtonLoading("agentEvaluateBtn", "Считаем...", async () => {
+            try {
+                const data = await apiJson("/api/agent/quality/evaluate", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ run_id: run.id })
+                });
+                applyRunInCache(data.run);
+                renderRunsTable();
+                openRunPreview(data.run.id);
+                renderBox("agentPreviewResult", "Quality gate пересчитан.", "success");
+            } catch (error) {
+                renderBox("agentPreviewResult", error.message, "danger");
+            }
+        });
+    }
+
+    async function publishSelectedRun() {
+        const run = selectedRun();
+        if (!run) {
+            renderBox("agentPreviewResult", "Сначала выберите run.", "warning");
+            return;
+        }
+
+        await withButtonLoading("agentPublishBtn", "Публикуем...", async () => {
+            const payload = {
+                run_id: run.id,
+                include_image: document.getElementById("agentEditIncludeImage").checked,
+                force: false
+            };
+            try {
+                const data = await apiJson("/api/agent/publish", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+                applyRunInCache(data.run);
+                renderRunsTable();
+                openRunPreview(data.run.id);
+                renderBox("agentPreviewResult", "Публикация выполнена успешно.", "success");
+            } catch (error) {
+                renderBox("agentPreviewResult", error.message, "danger");
+            }
+        });
+    }
+
+    async function saveFeedback() {
+        const run = selectedRun();
+        if (!run) {
+            renderBox("agentPreviewResult", "Сначала выберите run.", "warning");
+            return;
+        }
+
+        await withButtonLoading("agentFeedbackBtn", "Сохраняем...", async () => {
+            const payload = {
+                run_id: run.id,
+                feedback_type: safeText(document.getElementById("agentFeedbackType").value),
+                comment: safeText(document.getElementById("agentFeedbackComment").value),
+                accepted: document.getElementById("agentFeedbackAccepted").checked
+            };
+            try {
+                const data = await apiJson("/api/agent/feedback", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+                applyRunInCache(data.run);
+                renderRunsTable();
+                openRunPreview(data.run.id);
+                renderBox("agentPreviewResult", "Feedback сохранен.", "success");
+            } catch (error) {
+                renderBox("agentPreviewResult", error.message, "danger");
+            }
+        });
+    }
+
+    document.getElementById("agentChannelSelect").addEventListener("change", async () => {
+        syncPlatformFromChannel();
+        await loadRuns(true);
+    });
+    document.getElementById("agentStatusFilter").addEventListener("change", () => loadRuns(true));
+    document.getElementById("agentRefreshRunsBtn").addEventListener("click", () => loadRuns(false));
+
+    document.getElementById("agentRebuildBtn").addEventListener("click", rebuildSemanticCore);
+    document.getElementById("agentResearchBtn").addEventListener("click", refreshResearch);
+    document.getElementById("agentDraftBtn").addEventListener("click", createDraft);
+
+    document.getElementById("agentSaveRunBtn").addEventListener("click", saveRunEdits);
+    document.getElementById("agentEvaluateBtn").addEventListener("click", evaluateSelectedRun);
+    document.getElementById("agentPublishBtn").addEventListener("click", publishSelectedRun);
+    document.getElementById("agentFeedbackBtn").addEventListener("click", saveFeedback);
+
+    syncPlatformFromChannel();
+    loadRuns(true);
+</script>
+{% endif %}
+{% endblock %}

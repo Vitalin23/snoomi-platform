@@ -269,6 +269,38 @@ const GUIDE_STEPS_BY_PATH = {
             text: 'Здесь отображаются последние публикации и их статус.',
             placement: 'top'
         }
+    ],
+    '/agent': [
+        {
+            selector: '#agentControlPanel',
+            title: 'Шаг 1/5: Контур агента',
+            text: 'Здесь запускается semantic core, research и генерация нового draft.',
+            placement: 'right'
+        },
+        {
+            selector: '#agentRebuildBtn',
+            title: 'Шаг 2/5: Semantic core',
+            text: 'Пересоберите семантику и актуальные вопросы перед новой генерацией.',
+            placement: 'right'
+        },
+        {
+            selector: '#agentRunsPanel',
+            title: 'Шаг 3/5: История run',
+            text: 'Список показывает статусы quality gate и публикации по каждому запуску.',
+            placement: 'left'
+        },
+        {
+            selector: '#agentPreviewPanel',
+            title: 'Шаг 4/5: Редактура',
+            text: 'Откройте run, отредактируйте текст, пересчитайте quality и сохраните feedback.',
+            placement: 'top'
+        },
+        {
+            selector: '#agentPublishBtn',
+            title: 'Шаг 5/5: Публикация',
+            text: 'Публикуйте только approve run (или после ручного подтверждения).',
+            placement: 'top'
+        }
     ]
 };
 
