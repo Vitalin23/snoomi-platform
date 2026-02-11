@@ -398,7 +398,8 @@ class YandexArtGenerator:
             "Ограничения: без текста, логотипов, водяных знаков, коллажей и лишних декоративных элементов."
         ).strip()
 
-        return prompt[:900]
+        # Yandex ART ограничивает positive prompt до 500 символов.
+        return prompt[:500]
 
 # Функция для обратной совместимости
 class YandexArtFinal(YandexArtGenerator):
