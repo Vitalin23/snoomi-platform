@@ -13,6 +13,7 @@ import re
 import sys
 import json
 import uuid
+import secrets
 import smtplib
 import ssl
 import logging
@@ -23,7 +24,7 @@ from functools import lru_cache, wraps
 from html import escape, unescape
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import requests
 
@@ -38,6 +39,7 @@ from flask import (
     redirect,
     render_template,
     request,
+    session,
     url_for,
     got_request_exception,
 )
@@ -321,6 +323,12 @@ class Client(db.Model):
     telegram_id = db.Column(db.String(50), nullable=True)
     phone = db.Column(db.String(50), nullable=True)
     notification_telegram = db.Column(db.String(100), nullable=True)
+    vk_user_id = db.Column(db.String(60), nullable=True)
+    vk_access_token = db.Column(db.Text, nullable=True)
+    vk_token_expires_at = db.Column(db.DateTime, nullable=True)
+    vk_scope = db.Column(db.String(255), nullable=True)
+    vk_groups_cache = db.Column(db.Text, nullable=True)
+    vk_groups_updated_at = db.Column(db.DateTime, nullable=True)
     plan = db.Column(db.String(20), default="basic")
     status = db.Column(db.String(20), default="active")
     trial_days = db.Column(db.Integer, default=14)
@@ -594,12 +602,17 @@ def _resolved_public_base_url():
 
 @app.context_processor
 def inject_common_template_context():
+    vk_status = _vk_oauth_status_for_current_user()
     return {
         "app_brand_name": APP_BRAND_NAME,
         "public_base_url": _resolved_public_base_url(),
         "seo_landing_pages": SEO_LANDING_PAGES,
         "service_telegram_bot_username": _service_telegram_bot_username(),
         "service_telegram_bot_invite_link": _service_telegram_bot_invite_link(),
+        "vk_oauth_enabled": vk_status.get("enabled", False),
+        "vk_oauth_connected": vk_status.get("connected", False),
+        "vk_oauth_groups": vk_status.get("groups", []),
+        "vk_oauth_expires_at": vk_status.get("expires_at"),
         "specialist_telegram_link": _specialist_telegram_link(),
         "token_help_links": _token_help_links(),
         "onboarding_progress": build_onboarding_progress(
@@ -737,6 +750,12 @@ def _ensure_clients_schema():
             "trial_days": "INTEGER DEFAULT 14",
             "trial_started_at": "TIMESTAMP",
             "trial_ends_at": "TIMESTAMP",
+            "vk_user_id": "VARCHAR(60)",
+            "vk_access_token": "TEXT",
+            "vk_token_expires_at": "TIMESTAMP",
+            "vk_scope": "VARCHAR(255)",
+            "vk_groups_cache": "TEXT",
+            "vk_groups_updated_at": "TIMESTAMP",
         }
         for column_name, ddl in additions.items():
             if column_name not in columns:
@@ -792,10 +811,63 @@ def _resolve_telegram_publish_token(access_token=""):
         return ""
 
 
-def _resolve_vk_publish_token(access_token=""):
+def _vk_oauth_client_id():
+    return (
+        (os.environ.get("VK_OAUTH_CLIENT_ID") or "").strip()
+        or (os.environ.get("VK_APP_CLIENT_ID") or "").strip()
+        or (os.environ.get("VK_APP_ID") or "").strip()
+    )
+
+
+def _vk_oauth_client_secret():
+    return (
+        (os.environ.get("VK_OAUTH_CLIENT_SECRET") or "").strip()
+        or (os.environ.get("VK_APP_CLIENT_SECRET") or "").strip()
+        or (os.environ.get("VK_APP_SECRET") or "").strip()
+    )
+
+
+def _vk_oauth_redirect_uri():
+    explicit = (os.environ.get("VK_OAUTH_REDIRECT_URI") or "").strip()
+    if explicit:
+        return explicit
+    return f"{_resolved_public_base_url()}/auth/vk/callback"
+
+
+def _vk_oauth_scope():
+    explicit = (os.environ.get("VK_OAUTH_SCOPE") or "").strip()
+    if explicit:
+        return explicit
+    return "groups,wall,photos,offline"
+
+
+def _vk_oauth_enabled():
+    return bool(_vk_oauth_client_id() and _vk_oauth_client_secret())
+
+
+def _is_vk_token_expired(expires_at):
+    if not expires_at:
+        return False
+    try:
+        return datetime.utcnow() >= expires_at
+    except Exception:
+        return False
+
+
+def _resolve_vk_publish_token(access_token="", client_id=None):
     direct_token = (access_token or "").strip()
     if direct_token:
         return direct_token
+
+    try:
+        if client_id:
+            client_obj = Client.query.get(int(client_id))
+            if client_obj:
+                client_token = (client_obj.vk_access_token or "").strip()
+                if client_token and not _is_vk_token_expired(client_obj.vk_token_expires_at):
+                    return client_token
+    except Exception:
+        pass
 
     env_token = (os.environ.get("VK_ACCESS_TOKEN") or "").strip()
     if env_token:
@@ -943,8 +1015,8 @@ def _telegram_publish_access_payload(channel_reference, access_token=""):
         }
 
 
-def _vk_publish_access_payload(access_token=""):
-    resolved_token = _resolve_vk_publish_token(access_token)
+def _vk_publish_access_payload(access_token="", client_id=None):
+    resolved_token = _resolve_vk_publish_token(access_token, client_id=client_id)
     if not resolved_token:
         return {
             "publish_ready": False,
@@ -953,6 +1025,19 @@ def _vk_publish_access_payload(access_token=""):
                 "Попросите администратора включить сервисный VK-доступ."
             ),
         }
+    if client_id:
+        try:
+            client_obj = Client.query.get(int(client_id))
+            client_token = (client_obj.vk_access_token or "").strip() if client_obj else ""
+            if client_token and not _is_vk_token_expired(client_obj.vk_token_expires_at):
+                return {
+                    "publish_ready": True,
+                    "publish_hint": (
+                        "VK подключен через авторизацию приложения. Публикация выполняется без ручного ключа клиента."
+                    ),
+                }
+        except Exception:
+            pass
     return {
         "publish_ready": True,
         "publish_hint": (
@@ -960,6 +1045,111 @@ def _vk_publish_access_payload(access_token=""):
             "Убедитесь, что сервисный аккаунт имеет права в сообществе."
         ),
     }
+
+
+def _normalize_vk_group_items(raw_items, limit=50):
+    normalized = []
+    for item in raw_items or []:
+        if not isinstance(item, dict):
+            continue
+        group_id = item.get("id")
+        try:
+            group_id = int(group_id)
+        except (TypeError, ValueError):
+            continue
+        if group_id <= 0:
+            continue
+        name = str(item.get("name") or f"VK Group {group_id}").strip()
+        screen_name = str(item.get("screen_name") or "").strip()
+        group_type = str(item.get("type") or "group").strip().lower()
+        if group_type == "group":
+            fallback_slug = f"club{group_id}"
+        elif group_type == "event":
+            fallback_slug = f"event{group_id}"
+        else:
+            fallback_slug = f"public{group_id}"
+        slug = screen_name or fallback_slug
+        normalized.append(
+            {
+                "id": group_id,
+                "name": name,
+                "screen_name": screen_name,
+                "type": group_type,
+                "reference": f"https://vk.com/{slug}",
+            }
+        )
+        if len(normalized) >= limit:
+            break
+    return normalized
+
+
+def _fetch_vk_oauth_groups(access_token):
+    token = (access_token or "").strip()
+    if not token:
+        return []
+    filters_to_try = ("admin,editor", "admin", "editor")
+    try:
+        for filter_value in filters_to_try:
+            response = requests.get(
+                "https://api.vk.com/method/groups.get",
+                params={
+                    "access_token": token,
+                    "v": "5.199",
+                    "extended": 1,
+                    "filter": filter_value,
+                    "count": 200,
+                },
+                timeout=(6, 18),
+            )
+            payload = response.json() if response.content else {}
+            if payload.get("error"):
+                continue
+            result = payload.get("response") or {}
+            items = result.get("items") if isinstance(result, dict) else []
+            normalized = _normalize_vk_group_items(items, limit=50)
+            if normalized:
+                return normalized
+        return []
+    except Exception as e:
+        system_logger.warning("vk_oauth_groups_fetch_failed error=%s", e)
+        return []
+
+
+def _vk_oauth_status_for_current_user():
+    status_payload = {
+        "enabled": _vk_oauth_enabled(),
+        "connected": False,
+        "groups": [],
+        "expires_at": None,
+    }
+    if not has_request_context() or not current_user.is_authenticated:
+        return status_payload
+    if not current_user.client_id:
+        return status_payload
+    client = Client.query.get(current_user.client_id)
+    if not client:
+        return status_payload
+
+    token_value = (client.vk_access_token or "").strip()
+    if not token_value:
+        return status_payload
+    if _is_vk_token_expired(client.vk_token_expires_at):
+        status_payload["connected"] = False
+        status_payload["expires_at"] = client.vk_token_expires_at.isoformat() if client.vk_token_expires_at else None
+        return status_payload
+
+    groups = []
+    try:
+        parsed_groups = json.loads(client.vk_groups_cache or "[]")
+        if isinstance(parsed_groups, list):
+            groups = _normalize_vk_group_items(parsed_groups, limit=50)
+    except Exception:
+        groups = []
+
+    status_payload["connected"] = True
+    status_payload["groups"] = groups
+    status_payload["expires_at"] = client.vk_token_expires_at.isoformat() if client.vk_token_expires_at else None
+    return status_payload
 
 
 def _extract_keywords(text_value, limit=8):
@@ -1200,13 +1390,13 @@ def _fetch_telegram_channel_preview(channel_reference, access_token=None):
         "service_bot_username": str(publish_access.get("service_bot_username") or "").strip(),
     }
 
-def _fetch_vk_channel_preview(channel_reference, access_token):
+def _fetch_vk_channel_preview(channel_reference, access_token, client_id=None):
     vk_identifier = _extract_vk_identifier(channel_reference)
     if not vk_identifier:
         return {"success": False, "error": "Укажите корректную ссылку VK-группы или идентификатор"}
 
     # Верификация VK выполняется публично (без VK API).
-    publish_access = _vk_publish_access_payload(access_token)
+    publish_access = _vk_publish_access_payload(access_token, client_id=client_id)
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (X11; Linux x86_64) "
@@ -1503,16 +1693,16 @@ def _compose_auto_channel_description(channel_name, platform, channel_external_d
     return base_description
 
 
-def _verify_channel_source(platform, channel_reference, access_token):
+def _verify_channel_source(platform, channel_reference, access_token, client_id=None):
     if platform == "telegram":
         return _fetch_telegram_channel_preview(channel_reference, access_token=access_token)
     if platform == "vk":
-        return _fetch_vk_channel_preview(channel_reference, access_token)
+        return _fetch_vk_channel_preview(channel_reference, access_token, client_id=client_id)
     return {"success": False, "error": "Поддерживаются только Telegram и VK"}
 
 
-def _build_channel_intelligence(platform, channel_reference, access_token, run_ai_analysis=True):
-    verification = _verify_channel_source(platform, channel_reference, access_token)
+def _build_channel_intelligence(platform, channel_reference, access_token, run_ai_analysis=True, client_id=None):
+    verification = _verify_channel_source(platform, channel_reference, access_token, client_id=client_id)
     if not verification.get("success"):
         return verification
 
@@ -1908,6 +2098,14 @@ def _serialize_channel(channel, include_client_name=True):
 
 def _serialize_client(client, include_counts=False):
     trial_active = _is_trial_active(client)
+    vk_groups_cached = 0
+    if client.vk_groups_cache:
+        try:
+            parsed_groups = json.loads(client.vk_groups_cache or "[]")
+            if isinstance(parsed_groups, list):
+                vk_groups_cached = len(_normalize_vk_group_items(parsed_groups, limit=999))
+        except Exception:
+            vk_groups_cached = 0
     payload = {
         "id": client.id,
         "name": client.name,
@@ -1921,6 +2119,9 @@ def _serialize_client(client, include_counts=False):
         "trial_started_at": client.trial_started_at.isoformat() if client.trial_started_at else None,
         "trial_ends_at": client.trial_ends_at.isoformat() if client.trial_ends_at else None,
         "trial_active": trial_active,
+        "vk_oauth_connected": bool((client.vk_access_token or "").strip()) and not _is_vk_token_expired(client.vk_token_expires_at),
+        "vk_oauth_expires_at": client.vk_token_expires_at.isoformat() if client.vk_token_expires_at else None,
+        "vk_groups_cached": vk_groups_cached,
         "created_at": client.created_at.isoformat() if client.created_at else None,
     }
     if include_counts:
@@ -3556,6 +3757,157 @@ def logout():
     return redirect(url_for("index"))
 
 
+def _safe_internal_return_path(raw_value, default="/channels"):
+    value = (raw_value or "").strip()
+    if not value.startswith("/"):
+        return default
+    if value.startswith("//"):
+        return default
+    return value
+
+
+@app.route("/auth/vk/start")
+@login_required
+def auth_vk_start():
+    if not current_user.client_id:
+        flash("VK-подключение доступно только для клиентского аккаунта.", "warning")
+        return redirect(url_for("channels"))
+    if not _vk_oauth_enabled():
+        flash("VK OAuth еще не настроен на сервере. Добавьте VK_OAUTH_CLIENT_ID и VK_OAUTH_CLIENT_SECRET.", "warning")
+        return redirect(url_for("channels"))
+
+    state = secrets.token_urlsafe(24)
+    return_to = _safe_internal_return_path(request.args.get("return_to"), default="/channels")
+    session["vk_oauth_state"] = state
+    session["vk_oauth_return_to"] = return_to
+
+    query_params = {
+        "client_id": _vk_oauth_client_id(),
+        "redirect_uri": _vk_oauth_redirect_uri(),
+        "response_type": "code",
+        "scope": _vk_oauth_scope(),
+        "state": state,
+        "v": "5.199",
+    }
+    authorize_url = f"https://oauth.vk.com/authorize?{urlencode(query_params)}"
+    return redirect(authorize_url)
+
+
+@app.route("/auth/vk/callback")
+@login_required
+def auth_vk_callback():
+    if not current_user.client_id:
+        flash("Ваш аккаунт не привязан к клиенту для VK-подключения.", "danger")
+        return redirect(url_for("channels"))
+
+    return_to = _safe_internal_return_path(session.pop("vk_oauth_return_to", "/channels"), default="/channels")
+    state_expected = session.pop("vk_oauth_state", "")
+    state_actual = (request.args.get("state") or "").strip()
+    if not state_expected or state_expected != state_actual:
+        system_logger.warning(
+            "vk_oauth_state_mismatch user_id=%s expected=%s actual=%s",
+            current_user.id if current_user.is_authenticated else None,
+            bool(state_expected),
+            bool(state_actual),
+        )
+        flash("VK OAuth: некорректный state. Повторите подключение.", "danger")
+        return redirect(return_to)
+
+    if request.args.get("error"):
+        error_text = request.args.get("error_description") or request.args.get("error") or "unknown_error"
+        system_logger.warning(
+            "vk_oauth_rejected user_id=%s error=%s",
+            current_user.id if current_user.is_authenticated else None,
+            error_text,
+        )
+        flash(f"VK OAuth отклонен: {error_text}", "danger")
+        return redirect(return_to)
+
+    auth_code = (request.args.get("code") or "").strip()
+    if not auth_code:
+        flash("VK OAuth: отсутствует code в callback.", "danger")
+        return redirect(return_to)
+
+    try:
+        token_response = requests.get(
+            "https://oauth.vk.com/access_token",
+            params={
+                "client_id": _vk_oauth_client_id(),
+                "client_secret": _vk_oauth_client_secret(),
+                "redirect_uri": _vk_oauth_redirect_uri(),
+                "code": auth_code,
+            },
+            timeout=(8, 20),
+        )
+        token_payload = token_response.json() if token_response.content else {}
+    except Exception as e:
+        system_logger.exception(
+            "vk_oauth_exchange_failed user_id=%s error=%s",
+            current_user.id if current_user.is_authenticated else None,
+            e,
+        )
+        flash(f"VK OAuth: ошибка обмена code на токен: {e}", "danger")
+        return redirect(return_to)
+
+    if token_response.status_code != 200 or not token_payload.get("access_token"):
+        error_hint = token_payload.get("error_description") or token_payload.get("error") or f"HTTP {token_response.status_code}"
+        system_logger.warning(
+            "vk_oauth_no_token user_id=%s status=%s hint=%s",
+            current_user.id if current_user.is_authenticated else None,
+            token_response.status_code,
+            error_hint,
+        )
+        flash(f"VK OAuth: не удалось получить токен ({error_hint}).", "danger")
+        return redirect(return_to)
+
+    access_token = str(token_payload.get("access_token") or "").strip()
+    user_id = str(token_payload.get("user_id") or "").strip() or None
+    scope = str(token_payload.get("scope") or "").strip() or None
+    expires_in = token_payload.get("expires_in")
+    expires_at = None
+    try:
+        expires_in_value = int(expires_in)
+        if expires_in_value > 0:
+            expires_at = datetime.utcnow() + timedelta(seconds=expires_in_value)
+    except Exception:
+        expires_at = None
+
+    groups = _fetch_vk_oauth_groups(access_token)
+
+    client = Client.query.get(current_user.client_id)
+    if not client:
+        flash("VK OAuth: клиент не найден.", "danger")
+        return redirect(return_to)
+
+    client.vk_access_token = access_token
+    client.vk_user_id = user_id
+    client.vk_scope = scope
+    client.vk_token_expires_at = expires_at
+    client.vk_groups_cache = json.dumps(groups, ensure_ascii=False)
+    client.vk_groups_updated_at = datetime.utcnow()
+    db.session.commit()
+    system_logger.info(
+        "vk_oauth_connected user_id=%s client_id=%s groups=%s",
+        current_user.id if current_user.is_authenticated else None,
+        client.id,
+        len(groups),
+    )
+
+    if groups:
+        flash(
+            f"VK подключен. Найдено сообществ с доступом: {len(groups)}. "
+            "Выберите сообщество в шаге подключения канала.",
+            "success",
+        )
+    else:
+        flash(
+            "VK подключен, но сообщества с правами публикации не найдены. "
+            "Проверьте роли в группе и повторите авторизацию.",
+            "warning",
+        )
+    return redirect(return_to)
+
+
 # -------------------- ОСНОВНЫЕ СТРАНИЦЫ --------------------
 @app.route("/")
 def index():
@@ -4049,6 +4401,7 @@ def api_public_channel_preview():
         channel_reference=channel_reference,
         access_token=access_token,
         run_ai_analysis=True,
+        client_id=current_user.client_id if current_user.is_authenticated else None,
     )
     if not intelligence.get("success"):
         system_logger.warning(
@@ -4097,6 +4450,7 @@ def api_verify_channel():
         channel_reference=channel_reference,
         access_token=access_token,
         run_ai_analysis=True,
+        client_id=current_user.client_id if current_user.is_authenticated else None,
     )
     if not intelligence.get("success"):
         system_logger.warning(
@@ -4410,33 +4764,6 @@ def api_add_channel():
     if not channel_reference:
         return jsonify({"success": False, "error": "Укажите ссылку или ник канала"}), 400
 
-    if platform == "telegram":
-        resolved_publish_token = _resolve_telegram_publish_token(access_token)
-        if not resolved_publish_token:
-            return jsonify(
-                {
-                    "success": False,
-                    "error": (
-                        "Для Telegram не нужен ключ клиента, но на сервере пока не настроен сервисный бот. "
-                        "Обратитесь к администратору сервиса."
-                    ),
-                }
-            ), 400
-        auth_mode = "custom_token" if access_token else "service_bot_token"
-    else:
-        resolved_publish_token = _resolve_vk_publish_token(access_token)
-        if not resolved_publish_token:
-            return jsonify(
-                {
-                    "success": False,
-                    "error": (
-                        "Для VK не нужен ключ клиента, но на сервере пока не настроен сервисный VK-доступ. "
-                        "Обратитесь к администратору сервиса."
-                    ),
-                }
-            ), 400
-        auth_mode = "custom_token" if access_token else "service_vk_token"
-
     publish_frequency = _normalize_frequency(data.get("publish_frequency"))
     if not publish_frequency:
         return jsonify(
@@ -4498,12 +4825,45 @@ def api_add_channel():
     if notification_telegram:
         client.notification_telegram = notification_telegram
 
+    if platform == "telegram":
+        resolved_publish_token = _resolve_telegram_publish_token(access_token)
+        if not resolved_publish_token:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Для Telegram не нужен ключ клиента, но на сервере пока не настроен сервисный бот. "
+                        "Обратитесь к администратору сервиса."
+                    ),
+                }
+            ), 400
+        auth_mode = "custom_token" if access_token else "service_bot_token"
+    else:
+        resolved_publish_token = _resolve_vk_publish_token(access_token, client_id=client.id)
+        if not resolved_publish_token:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Для VK не нужен ключ клиента, но сервисный доступ не настроен. "
+                        "Подключите VK через кнопку «Подключить VK» или обратитесь к администратору."
+                    ),
+                }
+            ), 400
+        if access_token:
+            auth_mode = "custom_token"
+        elif (client.vk_access_token or "").strip() and not _is_vk_token_expired(client.vk_token_expires_at):
+            auth_mode = "vk_oauth_token"
+        else:
+            auth_mode = "service_vk_token"
+
     # Без успешной проверки ссылки канал не добавляется.
     intelligence = _build_channel_intelligence(
         platform=platform,
         channel_reference=channel_reference,
         access_token=access_token,
         run_ai_analysis=False,
+        client_id=client.id,
     )
     if not intelligence.get("success"):
         return jsonify(
@@ -4566,7 +4926,7 @@ def api_add_channel():
         platform=platform,
         channel_id=verified_channel_id,
         channel_name=verified_channel_name,
-        access_token=access_token or None,
+        access_token=access_token or resolved_publish_token,
         additional_config=json.dumps(additional_config, ensure_ascii=False),
         is_active=bool(data.get("is_active", True)),
     )
@@ -4665,10 +5025,14 @@ def api_update_channel(channel_id):
 
     resolved_platform = (channel.platform or "").strip().lower()
     resolved_channel_token = (channel.access_token or "").strip()
+    access_token_in_payload = "access_token" in data
+    explicit_access_token = ""
     if "access_token" in data:
-        resolved_channel_token = (data.get("access_token") or "").strip()
+        explicit_access_token = (data.get("access_token") or "").strip()
+        resolved_channel_token = explicit_access_token
     if resolved_platform == "telegram":
-        if not _resolve_telegram_publish_token(resolved_channel_token):
+        resolved_publish_token = _resolve_telegram_publish_token(resolved_channel_token)
+        if not resolved_publish_token:
             return jsonify(
                 {
                     "success": False,
@@ -4676,13 +5040,19 @@ def api_update_channel(channel_id):
                 }
             ), 400
     elif resolved_platform == "vk":
-        if not _resolve_vk_publish_token(resolved_channel_token):
+        resolved_publish_token = _resolve_vk_publish_token(resolved_channel_token, client_id=channel.client_id)
+        if not resolved_publish_token:
             return jsonify(
                 {
                     "success": False,
                     "error": "Для VK нужен сервисный или персональный токен публикации.",
                 }
             ), 400
+    else:
+        resolved_publish_token = resolved_channel_token
+
+    if access_token_in_payload and not explicit_access_token:
+        channel.access_token = resolved_publish_token
 
     extra = _channel_extra_config(channel)
     if channel_description is not None:
@@ -4691,9 +5061,24 @@ def api_update_channel(channel_id):
         extra["publish_frequency"] = normalized_frequency
     if reference_channels is not None:
         extra["reference_channels"] = reference_channels
-    extra["auth_mode"] = "custom_token" if resolved_channel_token else (
-        "service_bot_token" if resolved_platform == "telegram" else "service_vk_token"
-    )
+    if access_token_in_payload:
+        oauth_token_active = (
+            resolved_platform == "vk"
+            and bool(channel.client)
+            and bool((channel.client.vk_access_token or "").strip())
+            and not _is_vk_token_expired(channel.client.vk_token_expires_at)
+        )
+        extra["auth_mode"] = (
+            "custom_token"
+            if explicit_access_token
+            else (
+                "service_bot_token"
+                if resolved_platform == "telegram"
+                else ("vk_oauth_token" if oauth_token_active else "service_vk_token")
+            )
+        )
+    elif not extra.get("auth_mode"):
+        extra["auth_mode"] = "service_bot_token" if resolved_platform == "telegram" else "service_vk_token"
     channel.additional_config = json.dumps(extra, ensure_ascii=False)
 
     if "publish_hour" in data:
@@ -4751,7 +5136,7 @@ def api_test_channel(channel_id):
         if not connected:
             error = access_payload.get("publish_hint") or "Бот сервиса не подтвержден как администратор канала"
     elif platform == "vk":
-        connected = bool(_resolve_vk_publish_token((channel.access_token or "").strip()))
+        connected = bool(_resolve_vk_publish_token((channel.access_token or "").strip(), client_id=channel.client_id))
         if not connected:
             error = "Не найден VK-токен публикации (ни персональный, ни сервисный)"
     else:
@@ -4968,12 +5353,12 @@ def api_admin_create_connection():
             ), 400
         auth_mode = "custom_token" if admin_access_token else "service_bot_token"
     else:
-        resolved_publish_token = _resolve_vk_publish_token(admin_access_token)
+        resolved_publish_token = _resolve_vk_publish_token(admin_access_token, client_id=data.get("client_id"))
         if not resolved_publish_token:
             return jsonify(
                 {
                     "success": False,
-                    "error": "Сервисный VK-токен не настроен. Добавьте VK_ACCESS_TOKEN.",
+                    "error": "VK доступ не настроен. Подключите VK через OAuth или задайте VK_ACCESS_TOKEN.",
                 }
             ), 400
         auth_mode = "custom_token" if admin_access_token else "service_vk_token"
@@ -5006,13 +5391,20 @@ def api_admin_create_connection():
     client = Client.query.get(data["client_id"])
     if not client:
         return jsonify({"success": False, "error": "Клиент не найден"}), 404
+    if (
+        platform == "vk"
+        and not admin_access_token
+        and (client.vk_access_token or "").strip()
+        and not _is_vk_token_expired(client.vk_token_expires_at)
+    ):
+        auth_mode = "vk_oauth_token"
 
     channel = ClientChannel(
         client_id=data["client_id"],
         platform=platform,
         channel_id=(data["channel_id"] or "").strip(),
         channel_name=(data["channel_name"] or "").strip(),
-        access_token=admin_access_token or None,
+        access_token=admin_access_token or resolved_publish_token,
         additional_config=json.dumps(
             {
                 "channel_description": admin_description,
@@ -5063,10 +5455,14 @@ def api_admin_update_connection(connection_id):
 
     resolved_platform = (channel.platform or "").strip().lower()
     resolved_channel_token = (channel.access_token or "").strip()
+    access_token_in_payload = "access_token" in data
+    explicit_access_token = ""
     if "access_token" in data:
-        resolved_channel_token = (data.get("access_token") or "").strip()
+        explicit_access_token = (data.get("access_token") or "").strip()
+        resolved_channel_token = explicit_access_token
     if resolved_platform == "telegram":
-        if not _resolve_telegram_publish_token(resolved_channel_token):
+        resolved_publish_token = _resolve_telegram_publish_token(resolved_channel_token)
+        if not resolved_publish_token:
             return jsonify(
                 {
                     "success": False,
@@ -5074,13 +5470,19 @@ def api_admin_update_connection(connection_id):
                 }
             ), 400
     elif resolved_platform == "vk":
-        if not _resolve_vk_publish_token(resolved_channel_token):
+        resolved_publish_token = _resolve_vk_publish_token(resolved_channel_token, client_id=channel.client_id)
+        if not resolved_publish_token:
             return jsonify(
                 {
                     "success": False,
                     "error": "Для VK нужен сервисный или персональный токен публикации.",
                 }
             ), 400
+    else:
+        resolved_publish_token = resolved_channel_token
+
+    if access_token_in_payload and not explicit_access_token:
+        channel.access_token = resolved_publish_token
 
     if (
         "channel_description" in data
@@ -5115,9 +5517,24 @@ def api_admin_update_connection(connection_id):
                     }
                 ), 400
             extra["reference_channels"] = reference_channels
-        extra["auth_mode"] = "custom_token" if resolved_channel_token else (
-            "service_bot_token" if resolved_platform == "telegram" else "service_vk_token"
-        )
+        if access_token_in_payload:
+            oauth_token_active = (
+                resolved_platform == "vk"
+                and bool(channel.client)
+                and bool((channel.client.vk_access_token or "").strip())
+                and not _is_vk_token_expired(channel.client.vk_token_expires_at)
+            )
+            extra["auth_mode"] = (
+                "custom_token"
+                if explicit_access_token
+                else (
+                    "service_bot_token"
+                    if resolved_platform == "telegram"
+                    else ("vk_oauth_token" if oauth_token_active else "service_vk_token")
+                )
+            )
+        elif not extra.get("auth_mode"):
+            extra["auth_mode"] = "service_bot_token" if resolved_platform == "telegram" else "service_vk_token"
         channel.additional_config = json.dumps(extra, ensure_ascii=False)
 
         publish_hour = data.get("publish_hour", 10)

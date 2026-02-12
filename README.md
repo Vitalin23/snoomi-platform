@@ -149,7 +149,22 @@ TELEGRAM_BOT_TOKEN=...
 SERVICE_TELEGRAM_BOT_USERNAME=@your_bot_username   # опционально, для подсказок в UI
 ```
 
-Для VK ручной ключ клиента тоже можно не запрашивать, если на сервере настроен сервисный доступ:
+Для VK есть 2 режима без ручного копирования ключа клиентом:
+
+1) Быстрый fallback: сервисный токен в `.env`  
+2) Рекомендуемый: OAuth через VK приложение (кнопка `Подключить VK через VK ID` в UI)
+
+Минимальная конфигурация VK OAuth:
+
+```env
+VK_OAUTH_CLIENT_ID=...
+VK_OAUTH_CLIENT_SECRET=...
+# если не указать, берется <PUBLIC_BASE_URL>/auth/vk/callback
+VK_OAUTH_REDIRECT_URI=https://smi-platform.ru/auth/vk/callback
+VK_OAUTH_SCOPE=groups,wall,photos,offline
+```
+
+Fallback (если OAuth пока не настроен):
 
 ```env
 VK_ACCESS_TOKEN=...

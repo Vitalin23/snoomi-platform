@@ -22,6 +22,10 @@ class Config:
     # ===== VK =====
     VK_ACCESS_TOKEN = os.getenv('VK_ACCESS_TOKEN', '')
     VK_GROUP_ID = os.getenv('VK_GROUP_ID', '')
+    VK_OAUTH_CLIENT_ID = os.getenv('VK_OAUTH_CLIENT_ID', os.getenv('VK_APP_CLIENT_ID', os.getenv('VK_APP_ID', '')))
+    VK_OAUTH_CLIENT_SECRET = os.getenv('VK_OAUTH_CLIENT_SECRET', os.getenv('VK_APP_CLIENT_SECRET', os.getenv('VK_APP_SECRET', '')))
+    VK_OAUTH_REDIRECT_URI = os.getenv('VK_OAUTH_REDIRECT_URI', '')
+    VK_OAUTH_SCOPE = os.getenv('VK_OAUTH_SCOPE', 'groups,wall,photos,offline')
     
     # ===== НАСТРОЙКИ СИСТЕМЫ =====
     PUBLISH_TO_VK = os.getenv('PUBLISH_TO_VK', 'True').lower() == 'true'

@@ -159,6 +159,26 @@
                             </button>
                         </div>
                     </div>
+                    <div class="col-12" id="vkOauthBox" style="display:none;">
+                        <div class="alert alert-info mb-2" id="vkOauthStatusText">
+                            Для VK рекомендуем подключение через VK ID: клиенту не нужно искать и копировать ключи вручную.
+                        </div>
+                        <div class="d-flex flex-wrap gap-2">
+                            <a href="{{ url_for('auth_vk_start', return_to='/channels') }}" class="btn btn-outline-primary btn-sm" id="vkOauthConnectBtn">
+                                <i class="fab fa-vk me-1"></i>Подключить VK через VK ID
+                            </a>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="vkUseManualTokenBtn">
+                                Ввести ключ вручную (резерв)
+                            </button>
+                        </div>
+                    </div>
+                    <div class="col-12" id="vkGroupSelectBox" style="display:none;">
+                        <label class="form-label">Выберите сообщество из VK ID</label>
+                        <select class="form-select" id="vkOauthGroupSelect">
+                            <option value="">— выбрать из подключенных сообществ —</option>
+                        </select>
+                        <div class="form-text">После выбора ссылка сообщества подставится автоматически в поле ниже.</div>
+                    </div>
                     <div class="col-md-8">
                         <label class="form-label" id="autopostReferenceLabel">Ссылка https://t.me/... или @username *</label>
                         <input
@@ -374,6 +394,10 @@
     <script>
         let verifiedChannelState = null;
         const serviceTelegramBotUsername = "{{ service_telegram_bot_username }}";
+        const vkOauthEnabled = {{ 'true' if vk_oauth_enabled else 'false' }};
+        const vkOauthConnected = {{ 'true' if vk_oauth_connected else 'false' }};
+        const vkOauthGroups = {{ vk_oauth_groups | tojson }};
+        const vkOauthExpiresAt = {{ (vk_oauth_expires_at | tojson) if vk_oauth_expires_at else 'null' }};
         const tokenHelpLinks = {
             telegram: "{{ token_help_links.telegram }}",
             vk: "{{ token_help_links.vk }}"
@@ -513,10 +537,75 @@
             savePlatformDraft(getCurrentPlatform());
         }
 
+        function applySelectedVkGroupReference() {
+            const select = document.getElementById('vkOauthGroupSelect');
+            if (!select) {
+                return;
+            }
+            const selectedRef = (select.value || '').trim();
+            if (!selectedRef) {
+                return;
+            }
+            document.getElementById('autopostChannelReference').value = selectedRef;
+            clearVerificationState();
+        }
+
+        function renderVkOauthUi() {
+            const oauthBox = document.getElementById('vkOauthBox');
+            const statusText = document.getElementById('vkOauthStatusText');
+            const connectBtn = document.getElementById('vkOauthConnectBtn');
+            const groupBox = document.getElementById('vkGroupSelectBox');
+            const groupSelect = document.getElementById('vkOauthGroupSelect');
+            if (!oauthBox || !statusText || !connectBtn || !groupBox || !groupSelect) {
+                return;
+            }
+
+            if (!vkOauthEnabled) {
+                statusText.className = 'alert alert-warning mb-2';
+                statusText.textContent = 'VK ID пока не настроен на сервере. Можно использовать резервный ключ вручную.';
+                connectBtn.classList.add('disabled');
+                connectBtn.setAttribute('aria-disabled', 'true');
+                groupBox.style.display = 'none';
+                return;
+            }
+
+            if (vkOauthConnected) {
+                const groupsCount = Array.isArray(vkOauthGroups) ? vkOauthGroups.length : 0;
+                statusText.className = 'alert alert-success mb-2';
+                const expiresText = vkOauthExpiresAt ? ` Токен активен до: ${String(vkOauthExpiresAt).slice(0, 19).replace('T', ' ')}.` : '';
+                statusText.textContent = `VK ID подключен. Найдено сообществ с правами: ${groupsCount}.${expiresText}`;
+
+                connectBtn.classList.remove('disabled');
+                connectBtn.removeAttribute('aria-disabled');
+                connectBtn.textContent = 'Обновить подключение VK';
+                connectBtn.innerHTML = '<i class="fab fa-vk me-1"></i>Обновить подключение VK';
+
+                groupSelect.innerHTML = '<option value="">— выбрать из подключенных сообществ —</option>';
+                (vkOauthGroups || []).forEach((groupItem) => {
+                    const option = document.createElement('option');
+                    option.value = groupItem.reference || '';
+                    option.textContent = `${groupItem.name || 'VK сообщество'} (${groupItem.reference || ''})`;
+                    groupSelect.appendChild(option);
+                });
+                groupBox.style.display = (vkOauthGroups && vkOauthGroups.length) ? '' : 'none';
+                return;
+            }
+
+            statusText.className = 'alert alert-info mb-2';
+            statusText.textContent = 'Чтобы клиенту не вводить ключи вручную, подключите VK через VK ID.';
+            connectBtn.classList.remove('disabled');
+            connectBtn.removeAttribute('aria-disabled');
+            connectBtn.innerHTML = '<i class="fab fa-vk me-1"></i>Подключить VK через VK ID';
+            groupBox.style.display = 'none';
+        }
+
         function setPlatform(platform) {
             const hiddenPlatform = document.getElementById('autopostPlatform');
             const tgBtn = document.getElementById('platformBtnTelegram');
             const vkBtn = document.getElementById('platformBtnVk');
+            const vkOauthBox = document.getElementById('vkOauthBox');
+            const vkGroupSelectBox = document.getElementById('vkGroupSelectBox');
+            const manualTokenBtn = document.getElementById('vkUseManualTokenBtn');
             const step1 = document.getElementById('channelsStep1');
             const step2 = document.getElementById('channelsStep2');
             const step3 = document.getElementById('channelsStep3');
@@ -534,6 +623,12 @@
             hiddenPlatform.value = platform;
 
             if (platform === 'telegram') {
+                if (vkOauthBox) {
+                    vkOauthBox.style.display = 'none';
+                }
+                if (vkGroupSelectBox) {
+                    vkGroupSelectBox.style.display = 'none';
+                }
                 step1.textContent = 'Выберите Telegram и вставьте ссылку t.me или @username канала.';
                 step2.textContent = 'Добавьте бота сервиса администратором, затем выполните проверку Telegram.';
                 step3.textContent = 'После проверки имя/описание заполняются автоматически, далее сохраните подключение.';
@@ -548,6 +643,9 @@
                     ? `Основной режим без ключей: добавьте ${serviceTelegramBotUsername} администратором в канал.`
                     : 'Основной режим без ключей включится после настройки сервисного Telegram-бота.';
             } else {
+                if (vkOauthBox) {
+                    vkOauthBox.style.display = '';
+                }
                 step1.textContent = 'Выберите VK и вставьте ссылку сообщества (или short name).';
                 step2.textContent = 'Проверка VK выполняется публично по адресу `https://vk.com/...` без ручного API-токена клиента.';
                 step3.textContent = 'После проверки сохраните подключение (публикация через сервисный доступ или ваш резервный токен).';
@@ -559,6 +657,10 @@
                 tokenHelpLink.href = tokenHelpLinks.vk;
                 tokenHelpLink.textContent = 'Как получить VK access token (резерв)?';
                 tokenHint.textContent = 'Основной режим: публикация через сервисный доступ без ручного ключа клиента.';
+                renderVkOauthUi();
+                if (manualTokenBtn) {
+                    manualTokenBtn.textContent = 'Ввести ключ вручную (резерв)';
+                }
             }
 
             restorePlatformDraft(platform);
@@ -650,6 +752,20 @@
         document.getElementById('autopostVerifyBtn').addEventListener('click', verifyChannel);
         document.getElementById('autopostChannelReference').addEventListener('input', clearVerificationState);
         document.getElementById('autopostDescription').addEventListener('input', refreshDescriptionCounter);
+        const vkGroupSelect = document.getElementById('vkOauthGroupSelect');
+        if (vkGroupSelect) {
+            vkGroupSelect.addEventListener('change', applySelectedVkGroupReference);
+        }
+        const vkUseManualTokenBtn = document.getElementById('vkUseManualTokenBtn');
+        if (vkUseManualTokenBtn) {
+            vkUseManualTokenBtn.addEventListener('click', function () {
+                const tokenInput = document.getElementById('autopostAccessToken');
+                if (tokenInput) {
+                    tokenInput.focus();
+                }
+                showAutopostResult('Ручной ключ — резервный сценарий. Основной режим VK работает через VK ID.', true);
+            });
+        }
         setPlatform('telegram');
         refreshDescriptionCounter();
 
