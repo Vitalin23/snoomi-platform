@@ -63,18 +63,9 @@
                         <div class="form-text">Это имя будет использоваться в системе автопостинга</div>
                     </div>
 
-                    <div class="row">
-                        <div class="col-12 mb-3">
-                            <label for="trial_days" class="form-label">
-                                <i class="fas fa-hourglass-half me-1"></i> Тестовый период *
-                            </label>
-                            <select class="form-select" id="trial_days" name="trial_days" required>
-                                <option value="7">7 дней</option>
-                                <option value="14" selected>14 дней</option>
-                                <option value="30">30 дней</option>
-                            </select>
-                            <div class="form-text">Во время trial автопостинг работает без оплаты и подтверждения админом</div>
-                        </div>
+                    <div class="alert alert-info mb-3">
+                        <strong><i class="fas fa-hourglass-half me-1"></i> Бесплатный период: 30 дней</strong><br>
+                        На старте без привязки карты. Включено: до 15 авто-публикаций, до 5 ручных публикаций и до 15 тем в плане.
                     </div>
                     
                     <div class="mb-4">
@@ -104,7 +95,7 @@
         
         <div class="card border-0 shadow-sm mt-4">
             <div class="card-body text-center">
-                <h5 class="card-title mb-3">Почему выбирают Snoomi?</h5>
+                <h5 class="card-title mb-3">Почему выбирают {{ app_brand_name }}?</h5>
                 <div class="row">
                     <div class="col-4">
                         <i class="fas fa-bolt text-warning fa-2x mb-2"></i>

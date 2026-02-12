@@ -192,7 +192,7 @@
                 </div>
                 <div class="mt-2">
                     <label class="form-label">Trial дней</label>
-                    <input class="form-control" id="clientTrialDays" type="number" min="1" max="365" value="14">
+                    <input class="form-control" id="clientTrialDays" type="number" min="1" max="30" value="30">
                 </div>
             </div>
             <div class="modal-footer">
@@ -485,7 +485,7 @@ function openClientModal(client = null) {
     document.getElementById('clientPhone').value = client?.phone || '';
     document.getElementById('clientPlan').value = client?.plan || 'basic';
     document.getElementById('clientStatus').value = client?.status || 'active';
-    document.getElementById('clientTrialDays').value = client?.trial_days || 14;
+    document.getElementById('clientTrialDays').value = client?.trial_days || 30;
     document.getElementById('clientModalTitle').textContent = client ? 'Редактирование клиента' : 'Новый клиент';
     clientModal.show();
 }
@@ -500,7 +500,7 @@ async function saveClient() {
         phone: document.getElementById('clientPhone').value,
         plan: document.getElementById('clientPlan').value,
         status: document.getElementById('clientStatus').value,
-        trial_days: Number(document.getElementById('clientTrialDays').value || 14)
+        trial_days: Number(document.getElementById('clientTrialDays').value || 30)
     };
     try {
         if (id) {

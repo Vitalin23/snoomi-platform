@@ -68,6 +68,12 @@
         box-shadow: var(--shadow-2);
         padding: var(--space-4);
     }
+    .hero-illustration {
+        width: 100%;
+        max-width: 360px;
+        margin: 0 auto var(--space-3);
+        display: block;
+    }
     .demo-topline {
         display: flex;
         justify-content: space-between;
@@ -215,6 +221,20 @@
     }
     .feature-card h5 {
         margin-bottom: var(--space-2);
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+    }
+    .soft-icon {
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--color-primary-soft);
+        color: var(--color-primary);
+        flex-shrink: 0;
     }
     .feature-list {
         margin: 0;
@@ -345,16 +365,16 @@
     <div class="row g-4 align-items-center">
         <div class="col-xl-7">
             <span class="landing-badge">
-                <i class="fas fa-bolt"></i>
-                Автопостинг для блогов и малого бизнеса
+                <i class="fas fa-gift"></i>
+                30 дней бесплатно · без привязки карты
             </span>
             <h1 class="hero-title">
-                Регулярные посты в Telegram и VK без сложной настройки и лишней рутины.
+                Бесплатный запуск автопостинга на 30 дней для Telegram и VK.
             </h1>
             <p class="hero-subtitle">
                 {{ app_brand_name }} создан для людей, которые ведут каналы сами:
                 небольшие блоги, локальный бизнес, эксперты и магазины. Подключили каналы, выбрали темы,
-                поставили в календарь и получили стабильную активность.
+                поставили в календарь и получили стабильную активность без сложной настройки.
             </p>
 
             <div class="hero-cta-group">
@@ -374,14 +394,20 @@
 
             <div class="risk-strip">
                 <span class="risk-chip"><i class="fas fa-credit-card"></i> Без карты на старте</span>
-                <span class="risk-chip"><i class="fas fa-xmark"></i> Отмена в любой момент</span>
-                <span class="risk-chip"><i class="fas fa-share-nodes"></i> Поддерживаем {{ supported_networks|length }} соцсети</span>
-                <span class="risk-chip"><i class="fas fa-stopwatch"></i> Первый запуск за 10-15 минут</span>
+                <span class="risk-chip"><i class="fas fa-lightbulb"></i> До {{ trial_topics_limit }} тем в плане</span>
+                <span class="risk-chip"><i class="fas fa-robot"></i> До {{ trial_auto_posts_limit }} авто-публикаций</span>
+                <span class="risk-chip"><i class="fas fa-paper-plane"></i> До {{ trial_manual_posts_limit }} ручных публикаций</span>
             </div>
         </div>
 
         <div class="col-xl-5">
             <div class="hero-demo">
+                <img
+                    class="hero-illustration"
+                    src="{{ url_for('static', filename='media/hero-trial.svg') }}"
+                    alt="Иллюстрация бесплатного периода {{ app_brand_name }}"
+                    loading="lazy"
+                >
                 <div class="demo-topline">
                     <strong>Понятный сценарий запуска</strong>
                     <span class="demo-dotline"><span></span><span></span><span></span></span>
@@ -535,7 +561,7 @@
     <div class="row g-3">
         <div class="col-md-6 col-xl-4">
             <div class="feature-card">
-                <h5><i class="fas fa-calendar-days me-2 text-primary"></i>Календарь и планировщик</h5>
+                <h5><span class="soft-icon"><i class="fas fa-calendar-days"></i></span>Календарь и планировщик</h5>
                 <ul class="feature-list">
                     <li>Таймслоты и автоповтор для серийных публикаций.</li>
                     <li>Пакетная постановка в расписание.</li>
@@ -545,7 +571,7 @@
         </div>
         <div class="col-md-6 col-xl-4">
             <div class="feature-card">
-                <h5><i class="fas fa-share-nodes me-2 text-primary"></i>Кросспостинг и адаптация</h5>
+                <h5><span class="soft-icon"><i class="fas fa-share-nodes"></i></span>Кросспостинг и адаптация</h5>
                 <ul class="feature-list">
                     <li>Адаптация длины текста под площадку.</li>
                     <li>Предпросмотр перед публикацией.</li>
@@ -555,7 +581,7 @@
         </div>
         <div class="col-md-6 col-xl-4">
             <div class="feature-card">
-                <h5><i class="fas fa-folder-tree me-2 text-primary"></i>Черновики, шаблоны, медиатека</h5>
+                <h5><span class="soft-icon"><i class="fas fa-folder-tree"></i></span>Черновики, шаблоны, медиатека</h5>
                 <ul class="feature-list">
                     <li>Единая база бренд-материалов и ссылок.</li>
                     <li>Повторно используемые шаблоны контента.</li>
@@ -565,7 +591,7 @@
         </div>
         <div class="col-md-6 col-xl-4">
             <div class="feature-card">
-                <h5><i class="fas fa-user-check me-2 text-primary"></i>Простое управление доступами</h5>
+                <h5><span class="soft-icon"><i class="fas fa-user-check"></i></span>Простое управление доступами</h5>
                 <ul class="feature-list">
                     <li>Базовые роли и понятная история действий.</li>
                     <li>Контроль изменений без лишней бюрократии.</li>
@@ -575,7 +601,7 @@
         </div>
         <div class="col-md-6 col-xl-4">
             <div class="feature-card">
-                <h5><i class="fas fa-chart-column me-2 text-primary"></i>Аналитика и отчеты</h5>
+                <h5><span class="soft-icon"><i class="fas fa-chart-column"></i></span>Аналитика и отчеты</h5>
                 <ul class="feature-list">
                     <li>Базовые метрики: охват, реакция, динамика.</li>
                     <li>Экспорт отчетов и быстрый шаринг.</li>
@@ -585,7 +611,7 @@
         </div>
         <div class="col-md-6 col-xl-4">
             <div class="feature-card">
-                <h5><i class="fas fa-shield-halved me-2 text-primary"></i>Безопасность и доступы</h5>
+                <h5><span class="soft-icon"><i class="fas fa-shield-halved"></i></span>Безопасность и доступы</h5>
                 <ul class="feature-list">
                     <li>Подключение по токенам и базовое разграничение прав.</li>
                     <li>Журнал клиентских и системных событий.</li>
@@ -700,63 +726,25 @@
 </section>
 
 <section class="landing-section" id="pricing">
-    <h2 class="page-title mb-2">Сколько это стоит</h2>
+    <h2 class="page-title mb-2">30 дней бесплатно: понятный старт без оплаты</h2>
     <p class="section-lead">
-        Прозрачные условия: понятные лимиты, без скрытых ограничений, trial {{ trial_days_default }} дней без привязки карты.
-        При оплате за год — до 20% экономии.
+        На старте вы тестируете сервис без привязки карты: до {{ trial_topics_limit }} тем в плане,
+        до {{ trial_auto_posts_limit }} авто-публикаций и до {{ trial_manual_posts_limit }} ручных запусков.
+        Коммерческие тарифы сейчас выдаются по запросу из личного кабинета.
     </p>
-    <div class="row g-3 mb-4">
-        <div class="col-md-6 col-xl-4">
-            <div class="pricing-card">
-                <h5>Starter</h5>
-                <div class="pricing-price">990₽</div>
-                <div class="pricing-subtext mb-3">до 3 каналов · 1 пользователь</div>
-                <ul class="pricing-list mb-4">
-                    <li><i class="fas fa-check"></i>До 60 постов/мес</li>
-                    <li><i class="fas fa-check"></i>Базовая аналитика</li>
-                    <li><i class="fas fa-check"></i>Шаблоны и черновики</li>
-                    <li><i class="fas fa-check"></i>Экспорт CSV</li>
-                </ul>
-                <a href="{{ url_for('register') if not current_user.is_authenticated else url_for('billing') }}" class="btn btn-outline-primary w-100">
-                    Выбрать Starter
-                </a>
-            </div>
-        </div>
-        <div class="col-md-6 col-xl-4">
-            <div class="pricing-card pricing-highlight">
-                <h5>Pro</h5>
-                <div class="pricing-price">2 990₽</div>
-                <div class="pricing-subtext mb-3">до 10 каналов · до 5 пользователей</div>
-                <ul class="pricing-list mb-4">
-                    <li><i class="fas fa-check"></i>До 300 постов/мес</li>
-                    <li><i class="fas fa-check"></i>Кросспостинг и адаптация формата</li>
-                    <li><i class="fas fa-check"></i>Расширенная аналитика</li>
-                    <li><i class="fas fa-check"></i>Базовый approval</li>
-                </ul>
-                <a href="{{ url_for('register') if not current_user.is_authenticated else url_for('billing') }}" class="btn btn-primary w-100">
-                    Выбрать Pro
-                </a>
-            </div>
-        </div>
-        <div class="col-md-6 col-xl-4">
-            <div class="pricing-card">
-                <h5>Business</h5>
-                <div class="pricing-price">5 990₽</div>
-                <div class="pricing-subtext mb-3">до 30 каналов · команда</div>
-                <ul class="pricing-list mb-4">
-                    <li><i class="fas fa-check"></i>Безлимитные посты</li>
-                    <li><i class="fas fa-check"></i>Полные роли и журнал действий</li>
-                    <li><i class="fas fa-check"></i>Продвинутый approval-процесс</li>
-                    <li><i class="fas fa-check"></i>Приоритетная поддержка</li>
-                </ul>
-                <a href="{{ url_for('register') if not current_user.is_authenticated else url_for('billing') }}" class="btn btn-outline-primary w-100">
-                    Выбрать Business
-                </a>
-            </div>
-        </div>
-    </div>
     <div class="faq-note">
-        <strong>Нужна помощь с запуском?</strong> Напишите специалисту, подскажем как быстро стартовать даже с одним каналом.
+        <strong>Нужны тарифы и условия после trial?</strong>
+        {% if current_user.is_authenticated %}
+        Нажмите кнопку ниже — менеджер подберет подходящий пакет под ваш формат каналов.
+        <a href="{{ url_for('request_tariff') }}" class="btn btn-sm btn-primary ms-2 mt-2 mt-md-0">
+            <i class="fas fa-paper-plane me-1"></i>Запросить тарифы
+        </a>
+        {% else %}
+        Зарегистрируйтесь и получите бесплатный период на 30 дней, а затем при необходимости запросите тариф в кабинете.
+        <a href="{{ url_for('register') }}" class="btn btn-sm btn-primary ms-2 mt-2 mt-md-0">
+            <i class="fas fa-rocket me-1"></i>Начать бесплатно
+        </a>
+        {% endif %}
         <a href="{{ specialist_telegram_link }}" target="_blank" class="btn btn-sm btn-outline-primary ms-2 mt-2 mt-md-0">
             <i class="fab fa-telegram me-1"></i> Связаться со специалистом
         </a>
@@ -830,8 +818,10 @@
             </h2>
             <div id="faqCollapseFive" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
                 <div class="accordion-body">
-                    Trial действует {{ trial_days_default }} дней без привязки карты. Поддержка доступна в рабочем контуре.
-                    Условия оплаты и возврата фиксируются в оферте/договоре.
+                    Бесплатный период действует {{ trial_days_default }} дней без привязки карты:
+                    до {{ trial_topics_limit }} тем в плане, до {{ trial_auto_posts_limit }} авто-публикаций
+                    и до {{ trial_manual_posts_limit }} ручных публикаций.
+                    После trial тарифы предоставляются по запросу из личного кабинета.
                 </div>
             </div>
         </div>
@@ -885,7 +875,7 @@
             <ul>
                 <li>Политика обработки данных</li>
                 <li>Публичная оферта</li>
-                <li>Условия trial и тарифа</li>
+                <li>Условия бесплатного периода</li>
             </ul>
         </div>
         <div class="trust-card">

@@ -144,7 +144,10 @@ SCHEDULED_POSTS = []
 
 SUPPORTED_PLATFORMS = {"telegram", "vk"}
 SUPPORTED_PUBLISH_FREQUENCIES = {"daily", "every_other_day", "every_two_days"}
-TRIAL_OPTIONS_DAYS = {7, 14, 30}
+TRIAL_MAX_DAYS = 30
+TRIAL_AUTO_TOPICS_LIMIT = 15
+TRIAL_AUTO_POSTS_LIMIT = 15
+TRIAL_MANUAL_POSTS_LIMIT = 5
 SUPPORT_DEFAULT_TELEGRAM_LINK = "https://t.me/snoomi_support"
 APP_BRAND_NAME = (os.environ.get("APP_BRAND_NAME") or "SMI-platforma").strip() or "SMI-platforma"
 APP_CANONICAL_URL = (os.environ.get("APP_CANONICAL_URL") or "").strip().rstrip("/")
@@ -331,9 +334,14 @@ class Client(db.Model):
     vk_groups_updated_at = db.Column(db.DateTime, nullable=True)
     plan = db.Column(db.String(20), default="basic")
     status = db.Column(db.String(20), default="active")
-    trial_days = db.Column(db.Integer, default=14)
+    trial_days = db.Column(db.Integer, default=TRIAL_MAX_DAYS)
     trial_started_at = db.Column(db.DateTime, nullable=True)
     trial_ends_at = db.Column(db.DateTime, nullable=True)
+    trial_auto_posts_limit = db.Column(db.Integer, default=TRIAL_AUTO_POSTS_LIMIT)
+    trial_auto_posts_used = db.Column(db.Integer, default=0)
+    trial_manual_posts_limit = db.Column(db.Integer, default=TRIAL_MANUAL_POSTS_LIMIT)
+    trial_manual_posts_used = db.Column(db.Integer, default=0)
+    trial_completed_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
@@ -413,6 +421,7 @@ class ChannelPost(db.Model):
     likes = db.Column(db.Integer, default=0)
     shares = db.Column(db.Integer, default=0)
     comments = db.Column(db.Integer, default=0)
+    publish_mode = db.Column(db.String(30), default="manual")
     published_at = db.Column(db.DateTime, default=datetime.utcnow)
     error_message = db.Column(db.Text, nullable=True)
 
@@ -609,6 +618,10 @@ def inject_common_template_context():
         "seo_landing_pages": SEO_LANDING_PAGES,
         "service_telegram_bot_username": _service_telegram_bot_username(),
         "service_telegram_bot_invite_link": _service_telegram_bot_invite_link(),
+        "trial_max_days": TRIAL_MAX_DAYS,
+        "trial_auto_posts_limit": TRIAL_AUTO_POSTS_LIMIT,
+        "trial_manual_posts_limit": TRIAL_MANUAL_POSTS_LIMIT,
+        "trial_topics_limit": TRIAL_AUTO_TOPICS_LIMIT,
         "vk_oauth_enabled": vk_status.get("enabled", False),
         "vk_oauth_connected": vk_status.get("connected", False),
         "vk_oauth_groups": vk_status.get("groups", []),
@@ -747,9 +760,14 @@ def _ensure_clients_schema():
         }
         additions = {
             "notification_telegram": "VARCHAR(100)",
-            "trial_days": "INTEGER DEFAULT 14",
+            "trial_days": f"INTEGER DEFAULT {TRIAL_MAX_DAYS}",
             "trial_started_at": "TIMESTAMP",
             "trial_ends_at": "TIMESTAMP",
+            "trial_auto_posts_limit": f"INTEGER DEFAULT {TRIAL_AUTO_POSTS_LIMIT}",
+            "trial_auto_posts_used": "INTEGER DEFAULT 0",
+            "trial_manual_posts_limit": f"INTEGER DEFAULT {TRIAL_MANUAL_POSTS_LIMIT}",
+            "trial_manual_posts_used": "INTEGER DEFAULT 0",
+            "trial_completed_at": "TIMESTAMP",
             "vk_user_id": "VARCHAR(60)",
             "vk_access_token": "TEXT",
             "vk_token_expires_at": "TIMESTAMP",
@@ -760,6 +778,67 @@ def _ensure_clients_schema():
         for column_name, ddl in additions.items():
             if column_name not in columns:
                 conn.execute(text(f"ALTER TABLE clients ADD COLUMN {column_name} {ddl}"))
+
+        conn.execute(
+            text(
+                f"""
+                UPDATE clients
+                SET trial_days = COALESCE(NULLIF(trial_days, 0), {TRIAL_MAX_DAYS})
+                WHERE trial_days IS NULL OR trial_days <= 0
+                """
+            )
+        )
+        conn.execute(
+            text(
+                f"""
+                UPDATE clients
+                SET trial_auto_posts_limit = COALESCE(NULLIF(trial_auto_posts_limit, 0), {TRIAL_AUTO_POSTS_LIMIT})
+                WHERE trial_auto_posts_limit IS NULL OR trial_auto_posts_limit <= 0
+                """
+            )
+        )
+        conn.execute(
+            text(
+                f"""
+                UPDATE clients
+                SET trial_manual_posts_limit = COALESCE(NULLIF(trial_manual_posts_limit, 0), {TRIAL_MANUAL_POSTS_LIMIT})
+                WHERE trial_manual_posts_limit IS NULL OR trial_manual_posts_limit <= 0
+                """
+            )
+        )
+        conn.execute(
+            text("UPDATE clients SET trial_auto_posts_used = COALESCE(trial_auto_posts_used, 0) WHERE trial_auto_posts_used IS NULL")
+        )
+        conn.execute(
+            text("UPDATE clients SET trial_manual_posts_used = COALESCE(trial_manual_posts_used, 0) WHERE trial_manual_posts_used IS NULL")
+        )
+        conn.execute(
+            text(
+                """
+                UPDATE clients
+                SET trial_started_at = COALESCE(trial_started_at, created_at)
+                WHERE plan = 'trial' AND trial_started_at IS NULL
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                UPDATE clients
+                SET trial_ends_at = datetime(COALESCE(trial_started_at, created_at), '+' || trial_days || ' days')
+                WHERE plan = 'trial' AND trial_ends_at IS NULL
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                UPDATE clients
+                SET trial_completed_at = COALESCE(trial_completed_at, CURRENT_TIMESTAMP)
+                WHERE plan = 'trial' AND trial_auto_posts_used >= trial_auto_posts_limit
+                """
+            )
+        )
 
 
 def _ensure_client_channels_schema():
@@ -777,6 +856,23 @@ def _ensure_client_channels_schema():
         }
         if "additional_config" not in columns:
             conn.execute(text("ALTER TABLE client_channels ADD COLUMN additional_config TEXT"))
+
+
+def _ensure_channel_posts_schema():
+    """Миграция таблицы channel_posts для режима публикации."""
+    with db.engine.begin() as conn:
+        table_exists = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='channel_posts'")
+        ).fetchone()
+        if not table_exists:
+            return
+
+        columns = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info('channel_posts')")).fetchall()
+        }
+        if "publish_mode" not in columns:
+            conn.execute(text("ALTER TABLE channel_posts ADD COLUMN publish_mode VARCHAR(30) DEFAULT 'manual'"))
 
 
 def _word_tokens(text_value):
@@ -1997,14 +2093,115 @@ def _channel_extra_config(channel):
         return {}
 
 
+def _safe_nonnegative_int(value, default=0):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return int(default)
+    return parsed if parsed >= 0 else int(default)
+
+
+def _client_trial_limits(client):
+    auto_limit = _safe_nonnegative_int(
+        getattr(client, "trial_auto_posts_limit", TRIAL_AUTO_POSTS_LIMIT),
+        TRIAL_AUTO_POSTS_LIMIT,
+    )
+    manual_limit = _safe_nonnegative_int(
+        getattr(client, "trial_manual_posts_limit", TRIAL_MANUAL_POSTS_LIMIT),
+        TRIAL_MANUAL_POSTS_LIMIT,
+    )
+    auto_used = _safe_nonnegative_int(getattr(client, "trial_auto_posts_used", 0), 0)
+    manual_used = _safe_nonnegative_int(getattr(client, "trial_manual_posts_used", 0), 0)
+    return {
+        "auto_posts_limit": max(1, auto_limit or TRIAL_AUTO_POSTS_LIMIT),
+        "manual_posts_limit": max(1, manual_limit or TRIAL_MANUAL_POSTS_LIMIT),
+        "auto_posts_used": auto_used,
+        "manual_posts_used": manual_used,
+    }
+
+
 def _is_trial_active(client):
     if not client:
         return False
     if client.plan != "trial":
         return True
-    if not client.trial_ends_at:
-        return True
-    return datetime.utcnow() <= client.trial_ends_at
+
+    limits = _client_trial_limits(client)
+    if client.trial_completed_at:
+        return False
+    if client.trial_ends_at and datetime.utcnow() > client.trial_ends_at:
+        return False
+    if limits["auto_posts_used"] >= limits["auto_posts_limit"]:
+        return False
+    return True
+
+
+def _trial_usage_payload(client):
+    if not client:
+        return {
+            "trial_active": False,
+            "is_trial_plan": False,
+            "trial_reason": "no_client",
+            "trial_days": TRIAL_MAX_DAYS,
+            "auto_posts_limit": TRIAL_AUTO_POSTS_LIMIT,
+            "auto_posts_used": 0,
+            "auto_posts_remaining": TRIAL_AUTO_POSTS_LIMIT,
+            "manual_posts_limit": TRIAL_MANUAL_POSTS_LIMIT,
+            "manual_posts_used": 0,
+            "manual_posts_remaining": TRIAL_MANUAL_POSTS_LIMIT,
+            "topics_limit": TRIAL_AUTO_TOPICS_LIMIT,
+        }
+
+    limits = _client_trial_limits(client)
+    is_trial = client.plan == "trial"
+    auto_remaining = max(limits["auto_posts_limit"] - limits["auto_posts_used"], 0)
+    manual_remaining = max(limits["manual_posts_limit"] - limits["manual_posts_used"], 0)
+
+    if not is_trial:
+        reason = "not_trial_plan"
+        trial_active = True
+    elif client.trial_completed_at:
+        reason = "completed_by_auto_limit"
+        trial_active = False
+    elif client.trial_ends_at and datetime.utcnow() > client.trial_ends_at:
+        reason = "expired_by_date"
+        trial_active = False
+    elif auto_remaining <= 0:
+        reason = "auto_posts_exhausted"
+        trial_active = False
+    else:
+        reason = "active"
+        trial_active = True
+
+    return {
+        "trial_active": trial_active,
+        "is_trial_plan": is_trial,
+        "trial_reason": reason,
+        "trial_days": _safe_nonnegative_int(getattr(client, "trial_days", TRIAL_MAX_DAYS), TRIAL_MAX_DAYS),
+        "trial_started_at": client.trial_started_at.isoformat() if client.trial_started_at else None,
+        "trial_ends_at": client.trial_ends_at.isoformat() if client.trial_ends_at else None,
+        "trial_completed_at": client.trial_completed_at.isoformat() if client.trial_completed_at else None,
+        "auto_posts_limit": limits["auto_posts_limit"],
+        "auto_posts_used": limits["auto_posts_used"],
+        "auto_posts_remaining": auto_remaining,
+        "manual_posts_limit": limits["manual_posts_limit"],
+        "manual_posts_used": limits["manual_posts_used"],
+        "manual_posts_remaining": manual_remaining,
+        "topics_limit": TRIAL_AUTO_TOPICS_LIMIT,
+    }
+
+
+def _consume_trial_manual_posts(client, successful_posts):
+    if not client or client.plan != "trial":
+        return
+    increment = _safe_nonnegative_int(successful_posts, 0)
+    if increment <= 0:
+        return
+    limits = _client_trial_limits(client)
+    client.trial_manual_posts_used = min(
+        limits["manual_posts_limit"],
+        limits["manual_posts_used"] + increment,
+    )
 
 
 def _ensure_channel_runtime_setup(channel_id, channel_description, publish_frequency, publish_hour=10):
@@ -2097,7 +2294,7 @@ def _serialize_channel(channel, include_client_name=True):
 
 
 def _serialize_client(client, include_counts=False):
-    trial_active = _is_trial_active(client)
+    trial_usage = _trial_usage_payload(client)
     vk_groups_cached = 0
     if client.vk_groups_cache:
         try:
@@ -2115,10 +2312,19 @@ def _serialize_client(client, include_counts=False):
         "phone": client.phone,
         "plan": client.plan,
         "status": client.status,
-        "trial_days": client.trial_days,
-        "trial_started_at": client.trial_started_at.isoformat() if client.trial_started_at else None,
-        "trial_ends_at": client.trial_ends_at.isoformat() if client.trial_ends_at else None,
-        "trial_active": trial_active,
+        "trial_days": trial_usage.get("trial_days", TRIAL_MAX_DAYS),
+        "trial_started_at": trial_usage.get("trial_started_at"),
+        "trial_ends_at": trial_usage.get("trial_ends_at"),
+        "trial_completed_at": trial_usage.get("trial_completed_at"),
+        "trial_active": bool(trial_usage.get("trial_active")),
+        "trial_reason": trial_usage.get("trial_reason"),
+        "trial_auto_posts_limit": trial_usage.get("auto_posts_limit", TRIAL_AUTO_POSTS_LIMIT),
+        "trial_auto_posts_used": trial_usage.get("auto_posts_used", 0),
+        "trial_auto_posts_remaining": trial_usage.get("auto_posts_remaining", TRIAL_AUTO_POSTS_LIMIT),
+        "trial_manual_posts_limit": trial_usage.get("manual_posts_limit", TRIAL_MANUAL_POSTS_LIMIT),
+        "trial_manual_posts_used": trial_usage.get("manual_posts_used", 0),
+        "trial_manual_posts_remaining": trial_usage.get("manual_posts_remaining", TRIAL_MANUAL_POSTS_LIMIT),
+        "trial_topics_limit": trial_usage.get("topics_limit", TRIAL_AUTO_TOPICS_LIMIT),
         "vk_oauth_connected": bool((client.vk_access_token or "").strip()) and not _is_vk_token_expired(client.vk_token_expires_at),
         "vk_oauth_expires_at": client.vk_token_expires_at.isoformat() if client.vk_token_expires_at else None,
         "vk_groups_cached": vk_groups_cached,
@@ -2658,6 +2864,35 @@ def _frequency_to_interval_days(publish_frequency):
         "every_other_day": 2,
         "every_two_days": 3,
     }.get(normalized, 1)
+
+
+def _trial_auto_posts_capacity(client, publish_frequency="daily", start_date=None):
+    if not client or client.plan != "trial":
+        return None
+
+    usage = _trial_usage_payload(client)
+    remaining_auto = _safe_nonnegative_int(usage.get("auto_posts_remaining"), 0)
+    if remaining_auto <= 0:
+        return 0
+
+    if not client.trial_ends_at:
+        return remaining_auto
+
+    if start_date:
+        try:
+            start_day = datetime.fromisoformat(str(start_date)).date()
+        except Exception:
+            start_day = datetime.utcnow().date()
+    else:
+        start_day = datetime.utcnow().date()
+
+    end_day = client.trial_ends_at.date()
+    if end_day < start_day:
+        return 0
+
+    interval_days = max(1, _frequency_to_interval_days(publish_frequency))
+    slots_by_days = ((end_day - start_day).days // interval_days) + 1
+    return min(remaining_auto, max(slots_by_days, 0))
 
 
 def _extract_channel_topics_for_plan(channel):
@@ -3273,6 +3508,67 @@ def _resolve_publish_target_channels(selected_channel_ids, admin_client_id=None)
     return channels, None
 
 
+def _resolve_single_client_from_channels(channels):
+    client_ids = {channel.client_id for channel in (channels or []) if getattr(channel, "client_id", None)}
+    if len(client_ids) != 1:
+        return None
+    channel = channels[0] if channels else None
+    if not channel:
+        return None
+    if channel.client:
+        return channel.client
+    return Client.query.get(channel.client_id)
+
+
+def _trial_manual_publish_guard(client, requested_posts=1):
+    if not client or client.plan != "trial":
+        return None
+    if not _is_trial_active(client):
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "Тестовый период завершен. Запросите тариф в личном кабинете для продолжения публикаций.",
+                }
+            ),
+            403,
+        )
+
+    usage = _trial_usage_payload(client)
+    remaining = _safe_nonnegative_int(usage.get("manual_posts_remaining"), 0)
+    if remaining <= 0:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        f"Лимит ручных публикаций на trial исчерпан "
+                        f"({usage.get('manual_posts_limit', TRIAL_MANUAL_POSTS_LIMIT)}). "
+                        "Запросите тариф в личном кабинете."
+                    ),
+                }
+            ),
+            403,
+        )
+
+    if requested_posts and _safe_nonnegative_int(requested_posts, 0) > remaining:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        f"На trial осталось ручных публикаций: {remaining}. "
+                        f"Уменьшите количество запусков или запросите тариф."
+                    ),
+                    "manual_posts_remaining": remaining,
+                }
+            ),
+            400,
+        )
+
+    return None
+
+
 def _planned_topics_for_test_batch(channel, limit=3):
     limit = max(1, min(int(limit or 3), 10))
     topics = []
@@ -3312,7 +3608,7 @@ def _planned_topics_for_test_batch(channel, limit=3):
     return topics[:limit]
 
 
-def _publish_generated_post_for_channel(channel, publisher, topic_text):
+def _publish_generated_post_for_channel(channel, publisher, topic_text, publish_mode="manual"):
     content_text = _generate_manual_publication_text(channel, topic_text)
     image_path = None
     if _channel_uses_ai_images(channel):
@@ -3339,6 +3635,7 @@ def _publish_generated_post_for_channel(channel, publisher, topic_text):
         likes=0,
         shares=0,
         comments=0,
+        publish_mode=(publish_mode or "manual")[:30],
         published_at=datetime.utcnow(),
         error_message=error_text,
     )
@@ -3650,7 +3947,6 @@ def register():
         password = request.form.get("password", "")
         confirm_password = request.form.get("confirm_password", "")
         notification_telegram = request.form.get("notification_telegram", "").strip() or None
-        trial_days_raw = request.form.get("trial_days", "14").strip()
 
         if not username:
             flash("Введите имя пользователя", "danger")
@@ -3671,12 +3967,7 @@ def register():
             flash("Пользователь с таким email уже существует", "danger")
             return render_template("register.html")
 
-        try:
-            trial_days = int(trial_days_raw)
-        except ValueError:
-            trial_days = 14
-        if trial_days not in TRIAL_OPTIONS_DAYS:
-            trial_days = 14
+        trial_days = TRIAL_MAX_DAYS
 
         now = datetime.utcnow()
         trial_ends_at = now + timedelta(days=trial_days)
@@ -3690,6 +3981,11 @@ def register():
             trial_days=trial_days,
             trial_started_at=now,
             trial_ends_at=trial_ends_at,
+            trial_auto_posts_limit=TRIAL_AUTO_POSTS_LIMIT,
+            trial_auto_posts_used=0,
+            trial_manual_posts_limit=TRIAL_MANUAL_POSTS_LIMIT,
+            trial_manual_posts_used=0,
+            trial_completed_at=None,
         )
         db.session.add(new_client)
         db.session.flush()
@@ -3718,7 +4014,10 @@ def register():
 
         login_user(new_user)
         flash(
-            f"Регистрация успешна! Вам активирован бесплатный тестовый период на {trial_days} дней.",
+            (
+                "Регистрация успешна! Вам активирован бесплатный период на 30 дней: "
+                "до 15 авто-публикаций и до 5 ручных публикаций без привязки карты."
+            ),
             "success",
         )
         if email and email_sent and str(email_status).startswith("stub_saved:"):
@@ -3933,7 +4232,10 @@ def index():
         active_clients=active_clients,
         active_channels=active_channels,
         supported_networks=supported_networks,
-        trial_days_default=14 if 14 in TRIAL_OPTIONS_DAYS else min(TRIAL_OPTIONS_DAYS),
+        trial_days_default=TRIAL_MAX_DAYS,
+        trial_auto_posts_limit=TRIAL_AUTO_POSTS_LIMIT,
+        trial_manual_posts_limit=TRIAL_MANUAL_POSTS_LIMIT,
+        trial_topics_limit=TRIAL_AUTO_TOPICS_LIMIT,
         landing_pages=SEO_LANDING_PAGES[:15],
     )
 
@@ -4005,6 +4307,7 @@ def sitemap_xml():
 @login_required
 def dashboard():
     publish_channels_payload = []
+    client_info = None
 
     if is_admin_user(current_user):
         stats = {
@@ -4032,6 +4335,8 @@ def dashboard():
             )
     else:
         if current_user.client_id:
+            client = Client.query.get(current_user.client_id)
+            client_info = _serialize_client(client) if client else None
             total_channels = ClientChannel.query.filter_by(client_id=current_user.client_id).count()
             active_channels = ClientChannel.query.filter_by(
                 client_id=current_user.client_id, is_active=True
@@ -4082,6 +4387,7 @@ def dashboard():
         stats=stats,
         user=current_user,
         publish_channels=publish_channels_payload,
+        client_info=client_info,
     )
 
 
@@ -4142,7 +4448,11 @@ def posting_setup():
         channels_data = []
 
     channels_payload = [_serialize_channel(ch, include_client_name=True) for ch in channels_data]
-    return render_template("posting_setup.html", channels=channels_payload, user=current_user)
+    client_info = None
+    if current_user.client_id:
+        client = Client.query.get(current_user.client_id)
+        client_info = _serialize_client(client) if client else None
+    return render_template("posting_setup.html", channels=channels_payload, user=current_user, client_info=client_info)
 
 
 @app.route("/posting-plan")
@@ -4164,7 +4474,11 @@ def posting_plan():
         channels_data = []
 
     channels_payload = [_serialize_channel(ch, include_client_name=True) for ch in channels_data]
-    return render_template("posting_plan.html", channels=channels_payload, user=current_user)
+    client_info = None
+    if current_user.client_id:
+        client = Client.query.get(current_user.client_id)
+        client_info = _serialize_client(client) if client else None
+    return render_template("posting_plan.html", channels=channels_payload, user=current_user, client_info=client_info)
 
 
 @app.route("/agent")
@@ -4241,7 +4555,38 @@ def statistics():
 @app.route("/billing")
 @login_required
 def billing():
+    if not is_admin_user(current_user):
+        flash("Тарифы временно доступны только по запросу через кабинет.", "info")
+        return redirect(url_for("request_tariff"))
     return render_template("billing.html", user=current_user)
+
+
+@app.route("/request-tariff", methods=["GET", "POST"])
+@login_required
+def request_tariff():
+    if request.method == "POST":
+        comment = str(request.form.get("comment") or "").strip()
+        if len(comment) > 1000:
+            comment = comment[:1000]
+
+        system_logger.info(
+            "tariff_request user_id=%s client_id=%s username=%s comment=%s",
+            current_user.id if current_user.is_authenticated else None,
+            current_user.client_id,
+            current_user.username if current_user.is_authenticated else None,
+            comment,
+        )
+        flash(
+            "Запрос на тариф отправлен. Мы свяжемся с вами и предложим подходящий вариант.",
+            "success",
+        )
+        return redirect(url_for("dashboard"))
+
+    client_info = None
+    if current_user.client_id:
+        client = Client.query.get(current_user.client_id)
+        client_info = _serialize_client(client) if client else None
+    return render_template("request_tariff.html", user=current_user, client_info=client_info)
 
 
 @app.route("/profile")
@@ -4499,10 +4844,22 @@ def api_posting_setup_plan():
         desired_count = int(desired_count)
     except (TypeError, ValueError):
         desired_count = 8
+    desired_count = min(max(desired_count, 3), 20)
 
     channel = _get_accessible_channel(channel_id)
     if not channel.is_active:
         return jsonify({"success": False, "error": "Канал отключен. Включите его перед настройкой постинга."}), 400
+    client = channel.client
+
+    if not is_admin_user(current_user) and client and client.plan == "trial":
+        if not _is_trial_active(client):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Тестовый период завершен. Запросите тариф в личном кабинете для продолжения работы.",
+                }
+            ), 403
+        desired_count = min(desired_count, TRIAL_AUTO_TOPICS_LIMIT)
 
     planner_payload = _build_topic_planner_payload(
         channel=channel,
@@ -4519,6 +4876,7 @@ def api_posting_setup_plan():
             "semantic_core": planner_payload.get("semantic_core", [])[:8],
             "actual_questions": _question_text_list(planner_payload.get("actual_questions", []), limit=5),
             "topics": planner_payload.get("topics", []),
+            "topics_limit": TRIAL_AUTO_TOPICS_LIMIT if client and client.plan == "trial" else 30,
         }
     )
 
@@ -4562,6 +4920,22 @@ def api_posting_setup_save_topics():
     channel = _get_accessible_channel(channel_id)
     if not channel.is_active:
         return jsonify({"success": False, "error": "Канал отключен. Включите его перед сохранением тем."}), 400
+    client = channel.client
+    if not is_admin_user(current_user) and client and client.plan == "trial":
+        if not _is_trial_active(client):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Тестовый период завершен. Запросите тариф в личном кабинете для продолжения работы.",
+                }
+            ), 403
+        if len(normalized_topics) > TRIAL_AUTO_TOPICS_LIMIT:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": f"В бесплатном периоде можно сохранить максимум {TRIAL_AUTO_TOPICS_LIMIT} автоматически сформированных тем.",
+                }
+            ), 400
 
     ChannelTopic.query.filter_by(channel_id=channel.id, is_active=True).update({"is_active": False})
     for idx, topic_title in enumerate(normalized_topics, start=1):
@@ -4652,6 +5026,26 @@ def api_posting_plan_preview():
     channel = _get_accessible_channel(channel_id)
     if not channel.is_active:
         return jsonify({"success": False, "error": "Канал отключен. Включите его перед шагом 3."}), 400
+    client = channel.client
+    if not is_admin_user(current_user) and client and client.plan == "trial":
+        if not _is_trial_active(client):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Тестовый период завершен. Запросите тариф в личном кабинете для продолжения работы.",
+                }
+            ), 403
+        publish_frequency = _normalize_frequency(publish_frequency) or "daily"
+        trial_capacity = _trial_auto_posts_capacity(client, publish_frequency=publish_frequency, start_date=start_date)
+        if trial_capacity is not None:
+            posts_count = min(posts_count, max(trial_capacity, 0))
+            if posts_count <= 0:
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": "Для текущих условий trial не осталось слотов автопубликаций в пределах 30 дней.",
+                    }
+                ), 400
 
     preview_payload = _build_posting_plan_preview_payload(
         channel=channel,
@@ -4691,6 +5085,32 @@ def api_posting_plan_save():
     except (TypeError, ValueError):
         normalized_hour = 10
     normalized_hour = min(max(normalized_hour, 0), 23)
+    client = channel.client
+    if not is_admin_user(current_user) and client and client.plan == "trial":
+        if not _is_trial_active(client):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Тестовый период завершен. Запросите тариф в личном кабинете для продолжения работы.",
+                }
+            ), 403
+        first_date = normalized_items[0]["publish_date"] if normalized_items else None
+        trial_capacity = _trial_auto_posts_capacity(
+            client,
+            publish_frequency=normalized_frequency,
+            start_date=first_date,
+        )
+        if trial_capacity is not None and len(normalized_items) > trial_capacity:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "В бесплатном периоде план ограничен 30 днями и остатком автопубликаций. "
+                        f"Сейчас доступно слотов: {trial_capacity}."
+                    ),
+                    "trial_capacity": trial_capacity,
+                }
+            ), 400
 
     settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
     if not settings:
@@ -5171,6 +5591,10 @@ def api_admin_create_client():
     if not name:
         return jsonify({"success": False, "error": "Укажите имя клиента"}), 400
 
+    trial_days = _safe_nonnegative_int(data.get("trial_days", TRIAL_MAX_DAYS), TRIAL_MAX_DAYS)
+    trial_days = min(max(trial_days, 1), TRIAL_MAX_DAYS)
+    trial_auto_limit = _safe_nonnegative_int(data.get("trial_auto_posts_limit", TRIAL_AUTO_POSTS_LIMIT), TRIAL_AUTO_POSTS_LIMIT)
+    trial_manual_limit = _safe_nonnegative_int(data.get("trial_manual_posts_limit", TRIAL_MANUAL_POSTS_LIMIT), TRIAL_MANUAL_POSTS_LIMIT)
     client = Client(
         name=name,
         email=(data.get("email") or "").strip() or None,
@@ -5179,11 +5603,17 @@ def api_admin_create_client():
         phone=(data.get("phone") or "").strip() or None,
         plan=(data.get("plan") or "basic").strip(),
         status=(data.get("status") or "active").strip(),
-        trial_days=int(data.get("trial_days", 14)) if str(data.get("trial_days", "")).isdigit() else 14,
+        trial_days=trial_days,
+        trial_auto_posts_limit=max(1, trial_auto_limit),
+        trial_auto_posts_used=_safe_nonnegative_int(data.get("trial_auto_posts_used", 0), 0),
+        trial_manual_posts_limit=max(1, trial_manual_limit),
+        trial_manual_posts_used=_safe_nonnegative_int(data.get("trial_manual_posts_used", 0), 0),
     )
     if client.plan == "trial":
         client.trial_started_at = datetime.utcnow()
-        client.trial_ends_at = client.trial_started_at + timedelta(days=client.trial_days or 14)
+        client.trial_ends_at = client.trial_started_at + timedelta(days=client.trial_days or TRIAL_MAX_DAYS)
+        if client.trial_auto_posts_used >= client.trial_auto_posts_limit:
+            client.trial_completed_at = datetime.utcnow()
     db.session.add(client)
     db.session.commit()
     return jsonify({"success": True, "client": _serialize_client(client, include_counts=True)})
@@ -5204,9 +5634,25 @@ def api_admin_update_client(client_id):
 
     if "trial_days" in data:
         try:
-            client.trial_days = int(data.get("trial_days", 14))
+            client.trial_days = int(data.get("trial_days", TRIAL_MAX_DAYS))
         except (TypeError, ValueError):
-            client.trial_days = 14
+            client.trial_days = TRIAL_MAX_DAYS
+        client.trial_days = min(max(client.trial_days, 1), TRIAL_MAX_DAYS)
+
+    if "trial_auto_posts_limit" in data:
+        client.trial_auto_posts_limit = max(
+            1,
+            _safe_nonnegative_int(data.get("trial_auto_posts_limit"), TRIAL_AUTO_POSTS_LIMIT),
+        )
+    if "trial_auto_posts_used" in data:
+        client.trial_auto_posts_used = _safe_nonnegative_int(data.get("trial_auto_posts_used"), 0)
+    if "trial_manual_posts_limit" in data:
+        client.trial_manual_posts_limit = max(
+            1,
+            _safe_nonnegative_int(data.get("trial_manual_posts_limit"), TRIAL_MANUAL_POSTS_LIMIT),
+        )
+    if "trial_manual_posts_used" in data:
+        client.trial_manual_posts_used = _safe_nonnegative_int(data.get("trial_manual_posts_used"), 0)
 
     if "trial_ends_at" in data:
         trial_ends_at = data.get("trial_ends_at")
@@ -5217,6 +5663,21 @@ def api_admin_update_client(client_id):
                 pass
         else:
             client.trial_ends_at = None
+
+    if "trial_completed_at" in data:
+        completed_at = data.get("trial_completed_at")
+        if completed_at:
+            try:
+                client.trial_completed_at = datetime.fromisoformat(str(completed_at))
+            except Exception:
+                pass
+        else:
+            client.trial_completed_at = None
+
+    if client.plan == "trial":
+        if client.trial_auto_posts_used >= max(1, _safe_nonnegative_int(client.trial_auto_posts_limit, TRIAL_AUTO_POSTS_LIMIT)):
+            if not client.trial_completed_at:
+                client.trial_completed_at = datetime.utcnow()
 
     db.session.commit()
     return jsonify({"success": True, "client": _serialize_client(client, include_counts=True)})
@@ -5654,6 +6115,11 @@ def api_publish_now():
     )
     if error_response:
         return error_response
+    target_client = _resolve_single_client_from_channels(channels)
+    if not is_admin_user(current_user) and target_client:
+        trial_guard = _trial_manual_publish_guard(target_client, requested_posts=len(channels))
+        if trial_guard:
+            return trial_guard
 
     try:
         from posting.multi_publisher import MultiPlatformPublisher
@@ -5671,7 +6137,12 @@ def api_publish_now():
 
     for channel in channels:
         topic_text = shared_topic if shared_article else _resolve_manual_publish_topic(channel, explicit_topic)
-        publish_payload = _publish_generated_post_for_channel(channel, publisher, topic_text)
+        publish_payload = _publish_generated_post_for_channel(
+            channel,
+            publisher,
+            topic_text,
+            publish_mode="manual",
+        )
         db.session.add(publish_payload["post_record"])
 
         if publish_payload["success"]:
@@ -5684,6 +6155,8 @@ def api_publish_now():
         result_item = {k: v for k, v in publish_payload.items() if k != "post_record"}
         results.append(result_item)
 
+    if not is_admin_user(current_user) and target_client:
+        _consume_trial_manual_posts(target_client, successful_count)
     db.session.commit()
 
     if successful_count == 0:
@@ -5708,6 +6181,9 @@ def api_publish_now():
             "generated_images": generated_images,
             "topic": shared_topic if shared_article else None,
             "results": results,
+            "manual_posts_remaining": _trial_usage_payload(target_client).get("manual_posts_remaining")
+            if target_client and target_client.plan == "trial"
+            else None,
         }
     )
 
@@ -5731,6 +6207,13 @@ def api_publish_test_triplet():
     )
     if error_response:
         return error_response
+    target_client = _resolve_single_client_from_channels(channels)
+    manual_remaining = None
+    if not is_admin_user(current_user) and target_client and target_client.plan == "trial":
+        trial_guard = _trial_manual_publish_guard(target_client, requested_posts=1)
+        if trial_guard:
+            return trial_guard
+        manual_remaining = _safe_nonnegative_int(_trial_usage_payload(target_client).get("manual_posts_remaining"), 0)
 
     try:
         from posting.multi_publisher import MultiPlatformPublisher
@@ -5745,16 +6228,27 @@ def api_publish_test_triplet():
     failed_count = 0
     generated_images = 0
     attempted_posts = 0
+    stopped_by_manual_limit = False
 
     for channel in channels:
         topics_for_channel = _planned_topics_for_test_batch(channel, limit=posts_per_channel)
         for batch_index, topic_text in enumerate(topics_for_channel, start=1):
+            if manual_remaining is not None and manual_remaining <= 0:
+                stopped_by_manual_limit = True
+                break
             attempted_posts += 1
-            publish_payload = _publish_generated_post_for_channel(channel, publisher, topic_text)
+            publish_payload = _publish_generated_post_for_channel(
+                channel,
+                publisher,
+                topic_text,
+                publish_mode="manual_test",
+            )
             db.session.add(publish_payload["post_record"])
 
             if publish_payload["success"]:
                 successful_count += 1
+                if manual_remaining is not None:
+                    manual_remaining -= 1
             else:
                 failed_count += 1
             if publish_payload["image_used"]:
@@ -5764,14 +6258,21 @@ def api_publish_test_triplet():
             result_item["batch_index"] = batch_index
             result_item["batch_total"] = len(topics_for_channel)
             results.append(result_item)
+        if stopped_by_manual_limit:
+            break
 
+    if not is_admin_user(current_user) and target_client:
+        _consume_trial_manual_posts(target_client, successful_count)
     db.session.commit()
 
     if successful_count == 0:
+        failure_error = "Тестовый прогон не опубликовал ни одного поста. Проверьте токены и доступы каналов."
+        if stopped_by_manual_limit:
+            failure_error = "Лимит ручных публикаций trial достигнут. Запросите тариф для продолжения тестовых запусков."
         return jsonify(
             {
                 "success": False,
-                "error": "Тестовый прогон не опубликовал ни одного поста. Проверьте токены и доступы каналов.",
+                "error": failure_error,
                 "attempted_posts": attempted_posts,
                 "published": successful_count,
                 "failed": failed_count,
@@ -5779,6 +6280,7 @@ def api_publish_test_triplet():
                 "channels_count": len(channels),
                 "posts_per_channel": posts_per_channel,
                 "results": results,
+                "manual_limit_reached": stopped_by_manual_limit,
             }
         ), 400
 
@@ -5792,6 +6294,10 @@ def api_publish_test_triplet():
             "channels_count": len(channels),
             "posts_per_channel": posts_per_channel,
             "results": results,
+            "manual_limit_reached": stopped_by_manual_limit,
+            "manual_posts_remaining": _trial_usage_payload(target_client).get("manual_posts_remaining")
+            if target_client and target_client.plan == "trial"
+            else None,
         }
     )
 
@@ -6479,6 +6985,11 @@ def api_agent_publish():
     channel = _get_accessible_channel(run.channel_id)
     if not channel.is_active:
         return jsonify({"success": False, "error": "Канал отключен. Включите его перед публикацией."}), 400
+    target_client = channel.client
+    if not is_admin_user(current_user) and target_client:
+        trial_guard = _trial_manual_publish_guard(target_client, requested_posts=1)
+        if trial_guard:
+            return trial_guard
 
     if run.status == "published" and not force_publish:
         return jsonify({"success": False, "error": "Этот run уже опубликован. Для повторной отправки используйте force=true."}), 400
@@ -6554,6 +7065,7 @@ def api_agent_publish():
         likes=0,
         shares=0,
         comments=0,
+        publish_mode="manual_agent",
         published_at=datetime.utcnow(),
         error_message=error_text,
     )
@@ -6568,6 +7080,9 @@ def api_agent_publish():
     else:
         run.status = "publish_failed"
 
+    if success and not is_admin_user(current_user) and target_client:
+        _consume_trial_manual_posts(target_client, 1)
+
     db.session.commit()
     status_code = 200 if success else 400
     return jsonify(
@@ -6581,6 +7096,9 @@ def api_agent_publish():
                 "post_id": publish_result.get("post_id"),
                 "error": error_text,
                 "image_used": bool(image_path),
+                "manual_posts_remaining": _trial_usage_payload(target_client).get("manual_posts_remaining")
+                if target_client and target_client.plan == "trial"
+                else None,
             },
         }
     ), status_code
@@ -6933,6 +7451,7 @@ with app.app_context():
     _ensure_user_schema()
     _ensure_clients_schema()
     _ensure_client_channels_schema()
+    _ensure_channel_posts_schema()
 
     admin = User.query.filter_by(username="admin").first()
     if not admin:

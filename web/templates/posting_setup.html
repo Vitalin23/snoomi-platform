@@ -27,6 +27,13 @@
     </div>
 </div>
 
+{% if client_info and client_info.plan == 'trial' %}
+<div class="alert alert-info mb-4">
+    Бесплатный период: до {{ client_info.trial_topics_limit }} тем в плане.
+    Используется для автопубликаций (лимит {{ client_info.trial_auto_posts_limit }} за период до {{ client_info.trial_ends_at[:10] if client_info.trial_ends_at else "окончания trial" }}).
+</div>
+{% endif %}
+
 {% if not channels %}
 <div class="card content-card">
     <div class="card-body">
@@ -75,7 +82,7 @@
                     <input
                         type="number"
                         min="3"
-                        max="20"
+                        max="{{ client_info.trial_topics_limit if client_info and client_info.plan == 'trial' else 20 }}"
                         value="8"
                         class="form-control"
                         id="plannerCountInput"

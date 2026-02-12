@@ -29,6 +29,24 @@
         padding: 0.45rem 0.65rem;
         background: var(--color-surface, #fff);
     }
+    .trial-status-card {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        background: color-mix(in srgb, var(--color-info-soft) 45%, var(--color-surface));
+    }
+    .trial-kpi-chip {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-pill);
+        padding: 0.35rem 0.7rem;
+        font-size: 0.85rem;
+        color: var(--color-text-muted);
+        background: var(--color-surface);
+    }
+    .trial-visual {
+        max-width: 220px;
+        width: 100%;
+        margin-left: auto;
+    }
 </style>
 {% endblock %}
 
@@ -43,6 +61,46 @@
         <p class="page-subtitle">Добро пожаловать, {{ user.username }}!</p>
     </div>
 </div>
+
+{% if user.role != 'admin' and client_info and client_info.plan == 'trial' %}
+<div class="card trial-status-card shadow-sm mb-4">
+    <div class="card-body">
+        <div class="row g-3 align-items-center">
+            <div class="col-lg-8">
+                <h6 class="fw-bold mb-2">
+                    <i class="fas fa-gift me-1 text-primary"></i>Бесплатный период активен
+                </h6>
+                <p class="text-muted mb-2">
+                    До {{ client_info.trial_ends_at[:10] if client_info.trial_ends_at else 'окончания trial' }}:
+                    фокус на первые результаты без оплаты и без привязки карты.
+                </p>
+                <div class="d-flex flex-wrap gap-2 mb-2">
+                    <span class="trial-kpi-chip">
+                        Автопубликации: {{ client_info.trial_auto_posts_used }}/{{ client_info.trial_auto_posts_limit }}
+                    </span>
+                    <span class="trial-kpi-chip">
+                        Ручные публикации: {{ client_info.trial_manual_posts_used }}/{{ client_info.trial_manual_posts_limit }}
+                    </span>
+                    <span class="trial-kpi-chip">
+                        Темы в плане: до {{ client_info.trial_topics_limit }}
+                    </span>
+                </div>
+                <a href="{{ url_for('request_tariff') }}" class="btn btn-outline-primary btn-sm">
+                    <i class="fas fa-paper-plane me-1"></i>Запросить тарифы
+                </a>
+            </div>
+            <div class="col-lg-4 text-lg-end">
+                <img
+                    class="trial-visual"
+                    src="{{ url_for('static', filename='media/cabinet-trial.svg') }}"
+                    alt="Иллюстрация бесплатного периода"
+                    loading="lazy"
+                >
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
 
 <!-- Карточки статистики -->
 <div class="row mb-4">
@@ -249,10 +307,17 @@
                         <i class="fas fa-chart-bar text-warning me-2"></i>
                         Подробная статистика
                     </a>
+                    {% if user.role == 'admin' %}
                     <a href="{{ url_for('billing') }}" class="list-group-item list-group-item-action">
                         <i class="fas fa-credit-card text-danger me-2"></i>
                         Управление подпиской
                     </a>
+                    {% else %}
+                    <a href="{{ url_for('request_tariff') }}" class="list-group-item list-group-item-action">
+                        <i class="fas fa-paper-plane text-danger me-2"></i>
+                        Запросить тарифы
+                    </a>
+                    {% endif %}
                 </div>
             </div>
         </div>
@@ -275,6 +340,12 @@
                             Выберите один или несколько каналов. Можно задать одну тему, а текст будет адаптирован
                             отдельно под платформу и специфику каждого канала.
                         </p>
+                        {% if client_info and client_info.plan == 'trial' %}
+                        <div class="alert alert-light border mb-0 py-2">
+                            На trial осталось ручных публикаций: <strong>{{ client_info.trial_manual_posts_remaining }}</strong>
+                            из {{ client_info.trial_manual_posts_limit }}.
+                        </div>
+                        {% endif %}
 
                         <div class="row g-3">
                             <div class="col-12">

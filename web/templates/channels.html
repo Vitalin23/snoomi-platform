@@ -121,10 +121,15 @@
             <div class="card-body">
                 {% if client_info and client_info.plan == 'trial' %}
                 <div class="alert alert-info">
-                    <strong>Тестовый период:</strong>
-                    {{ client_info.trial_days }} дн.
-                    {% if client_info.trial_ends_at %}
-                        (до {{ client_info.trial_ends_at[:10] }})
+                    <strong>Бесплатный период:</strong> до {{ client_info.trial_ends_at[:10] if client_info.trial_ends_at else 'окончания trial' }}.
+                    Лимиты: авто {{ client_info.trial_auto_posts_used }}/{{ client_info.trial_auto_posts_limit }},
+                    ручные {{ client_info.trial_manual_posts_used }}/{{ client_info.trial_manual_posts_limit }},
+                    темы — до {{ client_info.trial_topics_limit }}.
+                    {% if not client_info.trial_active %}
+                        <div class="mt-2">
+                            Trial завершен. Продолжить работу можно через кнопку
+                            <a href="{{ url_for('request_tariff') }}" class="alert-link">«Запросить тарифы»</a>.
+                        </div>
                     {% endif %}
                 </div>
                 {% endif %}

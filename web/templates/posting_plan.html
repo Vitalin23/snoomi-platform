@@ -18,6 +18,14 @@
     </div>
 </div>
 
+{% if client_info and client_info.plan == 'trial' %}
+<div class="alert alert-info mb-4">
+    Бесплатный период ограничен 30 днями и {{ client_info.trial_auto_posts_limit }} авто-публикациями.
+    При графике “каждый день” обычно закрываются все 15 публикаций, при “через день” — также до 15,
+    при “через 2 дня” — ориентировочно 10-11 публикаций в пределах 30 дней.
+</div>
+{% endif %}
+
 {% if not channels %}
 <div class="card content-card">
     <div class="card-body">
@@ -75,7 +83,14 @@
 
                 <div class="mb-3">
                     <label class="form-label">Количество публикаций</label>
-                    <input type="number" min="1" max="60" class="form-control" id="planCount" value="14">
+                    <input
+                        type="number"
+                        min="1"
+                        max="{{ client_info.trial_auto_posts_limit if client_info and client_info.plan == 'trial' else 60 }}"
+                        class="form-control"
+                        id="planCount"
+                        value="{{ client_info.trial_auto_posts_limit if client_info and client_info.plan == 'trial' else 14 }}"
+                    >
                 </div>
 
                 <div class="d-grid gap-2">
