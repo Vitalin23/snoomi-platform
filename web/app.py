@@ -1,731 +1,7474 @@
-# web/app.py
 """
-Flask веб-панель для управления системой монетизации Snoomi Platform
-"""
-import os
-import sys
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, flash
-from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
-from werkzeug.security import generate_password_hash, check_password_hash
-import sqlite3
-from datetime import datetime, timedelta
-import json
+Основной файл веб-приложения Snoomi Platform.
 
-# Добавляем пути для импорта модулей проекта
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, project_root)
+Сфокусирован на админ-контуре для управления:
+1) аккаунтами клиентов (web users)
+2) клиентами (карточки клиентов)
+3) подключениями клиентов (каналы/группы и токены)
+"""
+
+import math
+import os
+import re
+import sys
+import json
+import uuid
+import secrets
+import smtplib
+import ssl
+import logging
+from collections import Counter
+from datetime import datetime, timedelta
+from email.message import EmailMessage
+from functools import lru_cache, wraps
+from html import escape, unescape
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+from urllib.parse import urlencode, urlparse
+
+import requests
+
+from flask import (
+    Flask,
+    Response,
+    abort,
+    flash,
+    g,
+    has_request_context,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+    got_request_exception,
+)
+from flask_login import (
+    LoginManager,
+    UserMixin,
+    current_user,
+    login_required,
+    login_user,
+    logout_user,
+)
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import text
+from werkzeug.exceptions import HTTPException
+from werkzeug.security import check_password_hash, generate_password_hash
+
+from web.services.expert_agent import (
+    build_research_queries,
+    build_retrieved_context,
+    build_semantic_clusters,
+    evaluate_draft_quality,
+    prepare_knowledge_documents,
+)
+from web.services.onboarding_progress import build_onboarding_progress
+
+# Настройка путей
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "ai"))
+sys.path.insert(0, str(PROJECT_ROOT / "posting"))
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SESSION_SECRET', 'snoomi-platform-secret-key-2024')
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-secret-key")
+app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
+    "WEB_DATABASE_URL",
+    f"sqlite:///{(PROJECT_ROOT / 'snoomi_channels.db').as_posix()}",
+)
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-# Настройка Flask-Login
-login_manager = LoginManager()
-login_manager.init_app(app)
-login_manager.login_view = 'login'
+db = SQLAlchemy(app)
+login_manager = LoginManager(app)
+login_manager.login_view = "login"
 
-# Модель пользователя
-class User(UserMixin):
-    def __init__(self, id, username, email, role='client'):
-        self.id = id
-        self.username = username
-        self.email = email
-        self.role = role
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+LOGS_DIR = PROJECT_ROOT / "logs"
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+DEV_OUTBOX_DIR = LOGS_DIR / "dev_outbox"
+DEV_OUTBOX_DIR.mkdir(parents=True, exist_ok=True)
+DEV_OUTBOX_INDEX_FILE = LOGS_DIR / "dev_outbox.log"
+
+SYSTEM_LOG_FILE = LOGS_DIR / "system.log"
+ERROR_LOG_FILE = LOGS_DIR / "errors.log"
+CLIENT_BEHAVIOR_LOG_FILE = LOGS_DIR / "client_behavior.log"
+
+
+def _build_rotating_file_handler(log_file, level):
+    handler = RotatingFileHandler(
+        log_file,
+        maxBytes=5 * 1024 * 1024,  # 5MB per file
+        backupCount=5,
+        encoding="utf-8",
+    )
+    handler.setLevel(level)
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+    return handler
+
+
+def _attach_file_handler(logger_obj, log_file, level):
+    log_file_str = str(log_file)
+    for handler in logger_obj.handlers:
+        if isinstance(handler, RotatingFileHandler) and getattr(handler, "baseFilename", "") == log_file_str:
+            return
+    logger_obj.addHandler(_build_rotating_file_handler(log_file, level))
+
+
+system_logger = logging.getLogger("snoomi.system")
+system_logger.setLevel(logging.INFO)
+system_logger.propagate = False
+_attach_file_handler(system_logger, SYSTEM_LOG_FILE, logging.INFO)
+
+error_logger = logging.getLogger("snoomi.error")
+error_logger.setLevel(logging.ERROR)
+error_logger.propagate = False
+_attach_file_handler(error_logger, ERROR_LOG_FILE, logging.ERROR)
+
+behavior_logger = logging.getLogger("snoomi.behavior")
+behavior_logger.setLevel(logging.INFO)
+behavior_logger.propagate = False
+_attach_file_handler(behavior_logger, CLIENT_BEHAVIOR_LOG_FILE, logging.INFO)
+
+logger.info(f"📝 Web logging enabled in: {LOGS_DIR}")
+
+# Временное in-memory хранилище планирования из UI /channels
+SCHEDULED_POSTS = []
+
+SUPPORTED_PLATFORMS = {"telegram", "vk"}
+SUPPORTED_PUBLISH_FREQUENCIES = {"daily", "every_other_day", "every_two_days"}
+TRIAL_MAX_DAYS = 30
+TRIAL_AUTO_TOPICS_LIMIT = 15
+TRIAL_AUTO_POSTS_LIMIT = 15
+TRIAL_MANUAL_POSTS_LIMIT = 5
+SUPPORT_DEFAULT_TELEGRAM_LINK = "https://t.me/snoomi_support"
+APP_BRAND_NAME = (os.environ.get("APP_BRAND_NAME") or "SMI-platforma").strip() or "SMI-platforma"
+APP_CANONICAL_URL = (os.environ.get("APP_CANONICAL_URL") or "").strip().rstrip("/")
+AGENT_FEATURE_ENABLED = (
+    (os.environ.get("ENABLE_EXPERT_AGENT", "1") or "").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
+SEO_LANDING_PAGES = [
+    {
+        "slug": "avtoposting-telegram",
+        "title": "Автопостинг в Telegram для малого бизнеса",
+        "h1": "Автопостинг в Telegram: стабильные посты без лишней рутины",
+        "description": "Подходит для магазинов, экспертов и небольших блогов: подключили канал, задали темы, получили стабильные публикации по расписанию.",
+        "audience": "Малый бизнес, эксперты, локальные сервисы с Telegram-каналом.",
+        "benefits": [
+            "Публикации выходят вовремя, даже если вы заняты клиентами.",
+            "Один пост с картинкой публикуется в Telegram единым сообщением.",
+            "Можно быстро проверить результат по статистике без сложных отчетов.",
+        ],
+        "faq": "Частый вопрос: нужно ли быть SMM-специалистом? Нет, интерфейс построен пошагово.",
+    },
+    {
+        "slug": "avtoposting-vk",
+        "title": "Автопостинг ВКонтакте для сообщества",
+        "h1": "Автопостинг ВКонтакте для стабильной активности группы",
+        "description": "Для владельцев групп и магазинов во ВКонтакте: меньше ручной работы, больше регулярности и понятного процесса.",
+        "audience": "Группы VK, локальные бренды, интернет-магазины.",
+        "benefits": [
+            "Запланируйте публикации заранее на неделю или месяц.",
+            "Темы и тексты можно редактировать под специфику вашей аудитории.",
+            "Поддержка базового теста публикаций перед запуском в рабочем режиме.",
+        ],
+        "faq": "Частый вопрос: можно ли сначала протестировать? Да, доступен тестовый сценарий публикации.",
+    },
+    {
+        "slug": "kontent-plan-dlya-biznesa",
+        "title": "Контент-план для малого бизнеса в соцсетях",
+        "h1": "Контент-план без хаоса: от идей до календаря публикаций",
+        "description": "Соберите темы, сохраните план и сразу перенесите его в календарь публикаций — без таблиц и запутанных сервисов.",
+        "audience": "Предприниматели и менеджеры, которые ведут соцсети сами.",
+        "benefits": [
+            "Шаг 2 помогает собрать список тем, которые можно править вручную.",
+            "Шаг 3 превращает темы в календарь с датой и временем.",
+            "План и черновики сохраняются, их можно открыть и отредактировать позже.",
+        ],
+        "faq": "Частый вопрос: нужно ли каждый раз начинать заново? Нет, все сохраненные темы и планы доступны повторно.",
+    },
+    {
+        "slug": "ai-posty-dlya-malogo-biznesa",
+        "title": "AI-посты для малого бизнеса: просто и по делу",
+        "h1": "AI-помощник для постов: быстрее писать и не терять качество",
+        "description": "Сервис помогает генерировать тексты и изображения, но оставляет вам контроль: правки, утверждение, ручной запуск.",
+        "audience": "Малый бизнес и авторы, которым нужны регулярные посты без найма большой команды.",
+        "benefits": [
+            "Тексты адаптируются под платформу и канал.",
+            "Можно задать тему вручную и быстро получить готовый вариант.",
+            "Публикация запускается в пару кликов из кабинета.",
+        ],
+        "faq": "Частый вопрос: текст будет выглядеть «роботом»? Система использует инструкции под человеческую подачу и позволяет редактирование.",
+    },
+    {
+        "slug": "vedenie-telegram-kanala-nedorogo",
+        "title": "Ведение Telegram-канала недорого",
+        "h1": "Ведение Telegram-канала недорого: стабильность вместо выгорания",
+        "description": "Если вы ведете канал сами, автоплан и регулярные посты снижают нагрузку и помогают не пропадать из ленты.",
+        "audience": "Соло-блогеры и специалисты, ведущие Telegram в одиночку.",
+        "benefits": [
+            "План публикаций формируется заранее и сохраняется в кабинете.",
+            "Можно публиковать сразу в несколько каналов по одной теме.",
+            "Подходит для режима «минимум времени — максимум регулярности».",
+        ],
+        "faq": "Частый вопрос: подойдет ли для маленького канала? Да, сервис рассчитан и на небольшие проекты.",
+    },
+    {
+        "slug": "vedenie-vk-soobshchestva-nedorogo",
+        "title": "Ведение сообщества ВК недорого",
+        "h1": "Регулярный контент для VK-сообщества без лишних затрат",
+        "description": "Подходит для небольших брендов и локального бизнеса: публикации по графику и простое управление без сложной настройки.",
+        "audience": "Микробизнес, локальные магазины, услуги, мастерские.",
+        "benefits": [
+            "Быстрое подключение группы и проверка перед сохранением.",
+            "Гибкая частота: каждый день, через день, через 2 дня.",
+            "История публикаций и базовая аналитика по результатам.",
+        ],
+        "faq": "Частый вопрос: нужно ли платить за дорогие SMM-сервисы? Нет, можно стартовать с базового тарифа.",
+    },
+    {
+        "slug": "avtomatizaciya-postinga-dlya-eksperta",
+        "title": "Автоматизация постинга для эксперта и личного бренда",
+        "h1": "Автоматизация постинга для эксперта: меньше рутины, больше пользы аудитории",
+        "description": "Для психологов, коучей, врачей, преподавателей и консультантов: планируйте контент заранее и публикуйте стабильно.",
+        "audience": "Эксперты и авторы личных блогов.",
+        "benefits": [
+            "Сервис помогает удерживать регулярность даже в загруженные недели.",
+            "Темы можно собрать из вопросов аудитории и доработать вручную.",
+            "Пошаговый интерфейс понятен без технической подготовки.",
+        ],
+        "faq": "Частый вопрос: можно ли подключить только один канал? Да, система работает и с одним каналом.",
+    },
+    {
+        "slug": "kontent-dlya-internet-magazina",
+        "title": "Контент для интернет-магазина: план и автопостинг",
+        "h1": "Контент для интернет-магазина без ручного аврала",
+        "description": "Поддерживайте активность в Telegram и VK, чтобы не терять охваты и продажи в периоды загрузки.",
+        "audience": "Небольшие интернет-магазины и e-commerce команды до 5 человек.",
+        "benefits": [
+            "Публикации о товарах, подборках и советах можно запланировать заранее.",
+            "Один кабинет для управления каналами и графиком постов.",
+            "Понятный контроль: что запланировано, что опубликовано, что с ошибкой.",
+        ],
+        "faq": "Частый вопрос: подойдёт ли для сезонных акций? Да, можно готовить календарь под распродажи и кампании.",
+    },
+    {
+        "slug": "posting-po-raspisaniyu-dlya-bloga",
+        "title": "Постинг по расписанию для блога",
+        "h1": "Постинг по расписанию: блог живет даже когда у вас мало времени",
+        "description": "Регулярные публикации помогают блогу расти. Система закрывает техническую часть и оставляет вам контент-контроль.",
+        "audience": "Авторы тематических блогов и нишевых каналов.",
+        "benefits": [
+            "Создайте пул тем и равномерно распределите их по календарю.",
+            "Можно заранее посмотреть и скорректировать план.",
+            "Снижается риск «пустых недель» без постов.",
+        ],
+        "faq": "Частый вопрос: можно ли менять тему в последний момент? Да, темы и календарь редактируются.",
+    },
+    {
+        "slug": "servis-avtopostinga-dlya-samozanyatyh",
+        "title": "Сервис автопостинга для самозанятых",
+        "h1": "Сервис автопостинга для самозанятых: просто, недорого, стабильно",
+        "description": "Подходит для мастеров и специалистов услуг: контент выходит регулярно, даже если день занят клиентами.",
+        "audience": "Самозанятые, мастера, частные специалисты.",
+        "benefits": [
+            "Быстрое подключение и пошаговый запуск без сложной терминологии.",
+            "График публикаций можно настроить под ваш рабочий ритм.",
+            "Есть поддержка и понятные подсказки внутри кабинета.",
+        ],
+        "faq": "Частый вопрос: можно ли без команды и маркетолога? Да, продукт рассчитан на самостоятельную работу.",
+    },
+    {
+        "slug": "avtoposting-dlya-lokalnogo-biznesa",
+        "title": "Автопостинг для локального бизнеса",
+        "h1": "Автопостинг для локального бизнеса: оставайтесь на виду каждый день",
+        "description": "Кафе, салоны, студии, сервисы услуг — поддерживайте стабильную активность в каналах без перегруза команды.",
+        "audience": "Локальные офлайн-бизнесы и услуги.",
+        "benefits": [
+            "Регулярные публикации акций, новостей и полезных советов.",
+            "Простой режим публикации «сейчас» для срочных сообщений.",
+            "Единый кабинет для контроля статусов и результатов.",
+        ],
+        "faq": "Частый вопрос: если у нас мало контента? Можно стартовать с коротких полезных постов и постепенно наращивать план.",
+    },
+    {
+        "slug": "publikacii-v-socseti-bez-smm-agentstva",
+        "title": "Публикации в соцсети без SMM-агентства",
+        "h1": "Публикации в соцсетях без SMM-агентства: контроль остается у вас",
+        "description": "Если вы не хотите зависеть от подрядчиков, сервис помогает выстроить стабильный процесс внутри команды или самостоятельно.",
+        "audience": "Малый бизнес, который хочет вести каналы самостоятельно.",
+        "benefits": [
+            "Понятный пошаговый процесс без сложного внедрения.",
+            "Прозрачная история действий и публикаций.",
+            "Можно расти от одного канала к нескольким без смены инструмента.",
+        ],
+        "faq": "Частый вопрос: подойдет ли для старта с нуля? Да, можно начать с минимальной настройки и постепенно расширяться.",
+    },
+]
+SEO_LANDING_MAP = {item["slug"]: item for item in SEO_LANDING_PAGES}
+
+
+class Client(db.Model):
+    __tablename__ = "clients"
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(150), nullable=False)
+    email = db.Column(db.String(150), nullable=True)
+    telegram_id = db.Column(db.String(50), nullable=True)
+    phone = db.Column(db.String(50), nullable=True)
+    notification_telegram = db.Column(db.String(100), nullable=True)
+    vk_user_id = db.Column(db.String(60), nullable=True)
+    vk_access_token = db.Column(db.Text, nullable=True)
+    vk_token_expires_at = db.Column(db.DateTime, nullable=True)
+    vk_scope = db.Column(db.String(255), nullable=True)
+    vk_groups_cache = db.Column(db.Text, nullable=True)
+    vk_groups_updated_at = db.Column(db.DateTime, nullable=True)
+    plan = db.Column(db.String(20), default="basic")
+    status = db.Column(db.String(20), default="active")
+    trial_days = db.Column(db.Integer, default=TRIAL_MAX_DAYS)
+    trial_started_at = db.Column(db.DateTime, nullable=True)
+    trial_ends_at = db.Column(db.DateTime, nullable=True)
+    trial_auto_posts_limit = db.Column(db.Integer, default=TRIAL_AUTO_POSTS_LIMIT)
+    trial_auto_posts_used = db.Column(db.Integer, default=0)
+    trial_manual_posts_limit = db.Column(db.Integer, default=TRIAL_MANUAL_POSTS_LIMIT)
+    trial_manual_posts_used = db.Column(db.Integer, default=0)
+    trial_completed_at = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class User(db.Model, UserMixin):
+    __tablename__ = "user"  # сохраняем legacy-таблицу
+
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=True)
+    password_hash = db.Column(db.String(200), nullable=False)
+    role = db.Column(db.String(20), default="client")
+    client_id = db.Column(db.Integer, db.ForeignKey("clients.id"), nullable=True)
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    client = db.relationship("Client", backref=db.backref("users", lazy=True))
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+
+class ClientChannel(db.Model):
+    __tablename__ = "client_channels"
+
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey("clients.id"), nullable=False)
+    platform = db.Column(db.String(20), nullable=False)  # telegram, vk, ok, dzen
+    channel_id = db.Column(db.String(120), nullable=False)
+    channel_name = db.Column(db.String(150), nullable=False)
+    access_token = db.Column(db.Text, nullable=True)
+    additional_config = db.Column(db.Text, nullable=True)
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    client = db.relationship("Client", backref=db.backref("channels", lazy=True))
+
+
+class ChannelSetting(db.Model):
+    __tablename__ = "channel_settings"
+
+    id = db.Column(db.Integer, primary_key=True)
+    channel_id = db.Column(db.Integer, db.ForeignKey("client_channels.id"), nullable=False)
+    publish_hour = db.Column(db.Integer, default=10)
+    publish_frequency = db.Column(db.String(30), default="daily")
+    topics = db.Column(db.Text, nullable=True)
+    hashtags = db.Column(db.Text, nullable=True)
+    max_posts_per_day = db.Column(db.Integer, default=1)
+    is_auto_generate = db.Column(db.Boolean, default=True)
+    use_ai_images = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class ChannelTopic(db.Model):
+    __tablename__ = "channel_topics"
+
+    id = db.Column(db.Integer, primary_key=True)
+    channel_id = db.Column(db.Integer, db.ForeignKey("client_channels.id"), nullable=False)
+    topic = db.Column(db.Text, nullable=False)
+    keywords = db.Column(db.Text, nullable=True)
+    priority = db.Column(db.Integer, default=5)
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class ChannelPost(db.Model):
+    __tablename__ = "channel_posts"
+
+    id = db.Column(db.Integer, primary_key=True)
+    channel_id = db.Column(db.Integer, db.ForeignKey("client_channels.id"), nullable=False)
+    topic = db.Column(db.String(300), nullable=True)
+    content = db.Column(db.Text, nullable=True)
+    success = db.Column(db.Boolean, default=True)
+    views = db.Column(db.Integer, default=0)
+    likes = db.Column(db.Integer, default=0)
+    shares = db.Column(db.Integer, default=0)
+    comments = db.Column(db.Integer, default=0)
+    publish_mode = db.Column(db.String(30), default="manual")
+    published_at = db.Column(db.DateTime, default=datetime.utcnow)
+    error_message = db.Column(db.Text, nullable=True)
+
+    channel = db.relationship("ClientChannel", backref=db.backref("posts", lazy=True))
+
+
+class KnowledgeSource(db.Model):
+    __tablename__ = "knowledge_source"
+
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey("clients.id"), nullable=False)
+    channel_id = db.Column(db.Integer, db.ForeignKey("client_channels.id"), nullable=False)
+    source_type = db.Column(db.String(40), nullable=False)  # channel_post/web/article/competitor
+    url = db.Column(db.Text, nullable=True)
+    title = db.Column(db.String(255), nullable=True)
+    published_at = db.Column(db.DateTime, nullable=True)
+    fetched_at = db.Column(db.DateTime, default=datetime.utcnow)
+    authority_score = db.Column(db.Float, default=0.5)
+    lang = db.Column(db.String(16), default="ru")
+    raw_payload = db.Column(db.Text, nullable=True)
+
+    client = db.relationship("Client", backref=db.backref("knowledge_sources", lazy=True))
+    channel = db.relationship("ClientChannel", backref=db.backref("knowledge_sources", lazy=True))
+
+
+class KnowledgeDocument(db.Model):
+    __tablename__ = "knowledge_document"
+
+    id = db.Column(db.Integer, primary_key=True)
+    source_id = db.Column(db.Integer, db.ForeignKey("knowledge_source.id"), nullable=False)
+    chunk_index = db.Column(db.Integer, default=0)
+    text = db.Column(db.Text, nullable=False)
+    embedding_vector_ref = db.Column(db.String(255), nullable=True)
+    keywords = db.Column(db.Text, nullable=True)
+    entities = db.Column(db.Text, nullable=True)
+    summary = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    source = db.relationship("KnowledgeSource", backref=db.backref("documents", lazy=True))
+
+
+class SemanticCluster(db.Model):
+    __tablename__ = "semantic_cluster"
+
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey("clients.id"), nullable=False)
+    channel_id = db.Column(db.Integer, db.ForeignKey("client_channels.id"), nullable=False)
+    cluster_name = db.Column(db.String(255), nullable=False)
+    intent_type = db.Column(db.String(40), default="informational")
+    priority = db.Column(db.Integer, default=5)
+    seasonality = db.Column(db.String(40), default="all_year")
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    client = db.relationship("Client", backref=db.backref("semantic_clusters", lazy=True))
+    channel = db.relationship("ClientChannel", backref=db.backref("semantic_clusters", lazy=True))
+
+
+class AudienceQuestion(db.Model):
+    __tablename__ = "audience_question"
+
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey("clients.id"), nullable=False)
+    channel_id = db.Column(db.Integer, db.ForeignKey("client_channels.id"), nullable=False)
+    question_text = db.Column(db.Text, nullable=False)
+    source_ref = db.Column(db.String(255), nullable=True)
+    trend_score = db.Column(db.Float, default=0.5)
+    last_seen_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    client = db.relationship("Client", backref=db.backref("audience_questions", lazy=True))
+    channel = db.relationship("ClientChannel", backref=db.backref("audience_questions", lazy=True))
+
+
+class GenerationRun(db.Model):
+    __tablename__ = "generation_run"
+
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey("clients.id"), nullable=False)
+    channel_id = db.Column(db.Integer, db.ForeignKey("client_channels.id"), nullable=False)
+    topic = db.Column(db.String(300), nullable=True)
+    platform = db.Column(db.String(20), nullable=False)
+    run_mode = db.Column(db.String(30), default="manual")
+    input_context_ref = db.Column(db.Text, nullable=True)
+    output_text = db.Column(db.Text, nullable=True)
+    output_image_ref = db.Column(db.Text, nullable=True)
+    quality_score = db.Column(db.Float, nullable=True)
+    status = db.Column(db.String(30), default="draft")
+    error = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    published_at = db.Column(db.DateTime, nullable=True)
+
+    client = db.relationship("Client", backref=db.backref("generation_runs", lazy=True))
+    channel = db.relationship("ClientChannel", backref=db.backref("generation_runs", lazy=True))
+
+
+class QualityReport(db.Model):
+    __tablename__ = "quality_report"
+
+    id = db.Column(db.Integer, primary_key=True)
+    run_id = db.Column(db.Integer, db.ForeignKey("generation_run.id"), nullable=False)
+    relevance_score = db.Column(db.Float, default=0.0)
+    fact_score = db.Column(db.Float, default=0.0)
+    style_score = db.Column(db.Float, default=0.0)
+    format_score = db.Column(db.Float, default=0.0)
+    readability_score = db.Column(db.Float, default=0.0)
+    risk_flags = db.Column(db.Text, nullable=True)
+    decision = db.Column(db.String(20), default="revise")
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    run = db.relationship("GenerationRun", backref=db.backref("quality_reports", lazy=True))
+
+
+class EditorFeedback(db.Model):
+    __tablename__ = "editor_feedback"
+
+    id = db.Column(db.Integer, primary_key=True)
+    run_id = db.Column(db.Integer, db.ForeignKey("generation_run.id"), nullable=False)
+    feedback_type = db.Column(db.String(50), nullable=False)
+    comment = db.Column(db.Text, nullable=True)
+    accepted = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    run = db.relationship("GenerationRun", backref=db.backref("editor_feedback", lazy=True))
+
+
+def is_admin_user(user):
+    return bool(user and (getattr(user, "role", None) == "admin" or user.username == "admin"))
+
+
+def admin_required(func):
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        if not current_user.is_authenticated:
+            return login_manager.unauthorized()
+        if not is_admin_user(current_user):
+            abort(403)
+        return func(*args, **kwargs)
+
+    return wrapped
+
+
+def _request_user_context():
+    if not has_request_context():
+        return {"user_id": None, "username": None, "client_id": None, "role": None}
+
+    if current_user.is_authenticated:
+        return {
+            "user_id": current_user.id,
+            "username": current_user.username,
+            "client_id": current_user.client_id,
+            "role": current_user.role,
+        }
+
+    return {"user_id": None, "username": "anonymous", "client_id": None, "role": None}
+
+
+def _specialist_telegram_link():
+    explicit_link = (os.environ.get("SPECIALIST_TELEGRAM_LINK") or "").strip()
+    if explicit_link:
+        return explicit_link
+
+    tg_admin = (os.environ.get("TG_ADMIN") or "").strip()
+    if tg_admin.startswith("@") and len(tg_admin) > 1:
+        return f"https://t.me/{tg_admin[1:]}"
+    if tg_admin and tg_admin.isdigit():
+        # Работает если у клиента установлен Telegram.
+        return f"tg://user?id={tg_admin}"
+
+    return SUPPORT_DEFAULT_TELEGRAM_LINK
+
+
+def _token_help_links():
+    default_help = "/help"
+    return {
+        "telegram": (os.environ.get("TELEGRAM_TOKEN_HELP_URL") or default_help).strip(),
+        "vk": (os.environ.get("VK_TOKEN_HELP_URL") or default_help).strip(),
+    }
+
+
+def _resolved_public_base_url():
+    configured = (os.environ.get("PUBLIC_BASE_URL") or APP_CANONICAL_URL or "").strip().rstrip("/")
+    if configured:
+        return configured
+    if has_request_context():
+        return request.url_root.rstrip("/")
+    return "http://localhost:5000"
+
+
+@app.context_processor
+def inject_common_template_context():
+    vk_status = _vk_oauth_status_for_current_user()
+    return {
+        "app_brand_name": APP_BRAND_NAME,
+        "public_base_url": _resolved_public_base_url(),
+        "seo_landing_pages": SEO_LANDING_PAGES,
+        "service_telegram_bot_username": _service_telegram_bot_username(),
+        "service_telegram_bot_invite_link": _service_telegram_bot_invite_link(),
+        "trial_max_days": TRIAL_MAX_DAYS,
+        "trial_auto_posts_limit": TRIAL_AUTO_POSTS_LIMIT,
+        "trial_manual_posts_limit": TRIAL_MANUAL_POSTS_LIMIT,
+        "trial_topics_limit": TRIAL_AUTO_TOPICS_LIMIT,
+        "vk_oauth_enabled": vk_status.get("enabled", False),
+        "vk_oauth_connected": vk_status.get("connected", False),
+        "vk_oauth_groups": vk_status.get("groups", []),
+        "vk_oauth_expires_at": vk_status.get("expires_at"),
+        "specialist_telegram_link": _specialist_telegram_link(),
+        "token_help_links": _token_help_links(),
+        "onboarding_progress": build_onboarding_progress(
+            client_channel_model=ClientChannel,
+            channel_topic_model=ChannelTopic,
+            channel_setting_model=ChannelSetting,
+            channel_post_model=ChannelPost,
+            is_admin_user=is_admin_user,
+        ),
+    }
+
+
+@app.before_request
+def _start_request_trace():
+    g.request_id = uuid.uuid4().hex[:12]
+    g.request_started_at = datetime.utcnow()
+
+
+@app.after_request
+def _finish_request_trace(response):
+    if request.path.startswith("/static/"):
+        return response
+
+    started_at = getattr(g, "request_started_at", datetime.utcnow())
+    elapsed_ms = int((datetime.utcnow() - started_at).total_seconds() * 1000)
+    user_ctx = _request_user_context()
+    base_msg = (
+        f"request_id={getattr(g, 'request_id', 'n/a')} method={request.method} "
+        f"path={request.path} status={response.status_code} elapsed_ms={elapsed_ms} "
+        f"user_id={user_ctx['user_id']} client_id={user_ctx['client_id']} ip={request.remote_addr}"
+    )
+
+    if response.status_code >= 500:
+        error_logger.error(base_msg)
+    elif response.status_code >= 400:
+        system_logger.warning(base_msg)
+    else:
+        system_logger.info(base_msg)
+
+    return response
+
+
+def _log_flask_exception(sender, exception, **extra):
+    if isinstance(exception, HTTPException):
+        if exception.code and exception.code < 500:
+            return
+
+    user_ctx = _request_user_context()
+    error_logger.exception(
+        "Unhandled exception | request_id=%s method=%s path=%s user_id=%s client_id=%s ip=%s",
+        getattr(g, "request_id", "n/a"),
+        request.method if has_request_context() else "n/a",
+        request.path if has_request_context() else "n/a",
+        user_ctx.get("user_id"),
+        user_ctx.get("client_id"),
+        request.remote_addr if has_request_context() else "n/a",
+        exc_info=exception,
+    )
+
+
+got_request_exception.connect(_log_flask_exception, app)
+
+
+def _ensure_user_schema():
+    """
+    Легкая миграция без Alembic для legacy-таблицы user:
+    добавляем колонки, которые появились после рефакторинга.
+    """
+    with db.engine.begin() as conn:
+        table_exists = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='user'")
+        ).fetchone()
+        if not table_exists:
+            return
+
+        columns = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info('user')")).fetchall()
+        }
+
+        additions = {
+            "email": "VARCHAR(120)",
+            "role": "VARCHAR(20) DEFAULT 'client'",
+            "client_id": "INTEGER",
+            "is_active": "BOOLEAN DEFAULT 1",
+        }
+        for column_name, ddl in additions.items():
+            if column_name not in columns:
+                conn.execute(text(f'ALTER TABLE "user" ADD COLUMN {column_name} {ddl}'))
+
+        conn.execute(
+            text(
+                """
+                UPDATE "user"
+                SET role='admin'
+                WHERE username='admin' AND (role IS NULL OR role='')
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                UPDATE "user"
+                SET role='client'
+                WHERE role IS NULL OR role=''
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                UPDATE "user"
+                SET is_active=1
+                WHERE is_active IS NULL
+                """
+            )
+        )
+
+
+def _ensure_clients_schema():
+    """Миграция legacy-таблицы clients под trial и уведомления."""
+    with db.engine.begin() as conn:
+        table_exists = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='clients'")
+        ).fetchone()
+        if not table_exists:
+            return
+
+        columns = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info('clients')")).fetchall()
+        }
+        additions = {
+            "notification_telegram": "VARCHAR(100)",
+            "trial_days": f"INTEGER DEFAULT {TRIAL_MAX_DAYS}",
+            "trial_started_at": "TIMESTAMP",
+            "trial_ends_at": "TIMESTAMP",
+            "trial_auto_posts_limit": f"INTEGER DEFAULT {TRIAL_AUTO_POSTS_LIMIT}",
+            "trial_auto_posts_used": "INTEGER DEFAULT 0",
+            "trial_manual_posts_limit": f"INTEGER DEFAULT {TRIAL_MANUAL_POSTS_LIMIT}",
+            "trial_manual_posts_used": "INTEGER DEFAULT 0",
+            "trial_completed_at": "TIMESTAMP",
+            "vk_user_id": "VARCHAR(60)",
+            "vk_access_token": "TEXT",
+            "vk_token_expires_at": "TIMESTAMP",
+            "vk_scope": "VARCHAR(255)",
+            "vk_groups_cache": "TEXT",
+            "vk_groups_updated_at": "TIMESTAMP",
+        }
+        for column_name, ddl in additions.items():
+            if column_name not in columns:
+                conn.execute(text(f"ALTER TABLE clients ADD COLUMN {column_name} {ddl}"))
+
+        conn.execute(
+            text(
+                f"""
+                UPDATE clients
+                SET trial_days = COALESCE(NULLIF(trial_days, 0), {TRIAL_MAX_DAYS})
+                WHERE trial_days IS NULL OR trial_days <= 0
+                """
+            )
+        )
+        conn.execute(
+            text(
+                f"""
+                UPDATE clients
+                SET trial_auto_posts_limit = COALESCE(NULLIF(trial_auto_posts_limit, 0), {TRIAL_AUTO_POSTS_LIMIT})
+                WHERE trial_auto_posts_limit IS NULL OR trial_auto_posts_limit <= 0
+                """
+            )
+        )
+        conn.execute(
+            text(
+                f"""
+                UPDATE clients
+                SET trial_manual_posts_limit = COALESCE(NULLIF(trial_manual_posts_limit, 0), {TRIAL_MANUAL_POSTS_LIMIT})
+                WHERE trial_manual_posts_limit IS NULL OR trial_manual_posts_limit <= 0
+                """
+            )
+        )
+        conn.execute(
+            text("UPDATE clients SET trial_auto_posts_used = COALESCE(trial_auto_posts_used, 0) WHERE trial_auto_posts_used IS NULL")
+        )
+        conn.execute(
+            text("UPDATE clients SET trial_manual_posts_used = COALESCE(trial_manual_posts_used, 0) WHERE trial_manual_posts_used IS NULL")
+        )
+        conn.execute(
+            text(
+                """
+                UPDATE clients
+                SET trial_started_at = COALESCE(trial_started_at, created_at)
+                WHERE plan = 'trial' AND trial_started_at IS NULL
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                UPDATE clients
+                SET trial_ends_at = datetime(COALESCE(trial_started_at, created_at), '+' || trial_days || ' days')
+                WHERE plan = 'trial' AND trial_ends_at IS NULL
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                UPDATE clients
+                SET trial_completed_at = COALESCE(trial_completed_at, CURRENT_TIMESTAMP)
+                WHERE plan = 'trial' AND trial_auto_posts_used >= trial_auto_posts_limit
+                """
+            )
+        )
+
+
+def _ensure_client_channels_schema():
+    """Миграция таблицы client_channels для хранения расширенной конфигурации канала."""
+    with db.engine.begin() as conn:
+        table_exists = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='client_channels'")
+        ).fetchone()
+        if not table_exists:
+            return
+
+        columns = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info('client_channels')")).fetchall()
+        }
+        if "additional_config" not in columns:
+            conn.execute(text("ALTER TABLE client_channels ADD COLUMN additional_config TEXT"))
+
+
+def _ensure_channel_posts_schema():
+    """Миграция таблицы channel_posts для режима публикации."""
+    with db.engine.begin() as conn:
+        table_exists = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='channel_posts'")
+        ).fetchone()
+        if not table_exists:
+            return
+
+        columns = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info('channel_posts')")).fetchall()
+        }
+        if "publish_mode" not in columns:
+            conn.execute(text("ALTER TABLE channel_posts ADD COLUMN publish_mode VARCHAR(30) DEFAULT 'manual'"))
+
+
+def _word_tokens(text_value):
+    """Универсальный токенайзер: поддерживает кириллицу и латиницу."""
+    return re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", text_value or "", flags=re.UNICODE)
+
+
+def _count_words(text_value):
+    return len(_word_tokens(text_value))
+
+
+def _resolve_telegram_publish_token(access_token=""):
+    direct_token = (access_token or "").strip()
+    if direct_token:
+        return direct_token
+
+    env_token = (
+        (os.environ.get("TELEGRAM_CHANNEL_TOKEN") or "").strip()
+        or (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+    )
+    if env_token:
+        return env_token
+
+    try:
+        from config import Config
+
+        return (
+            (getattr(Config, "TELEGRAM_CHANNEL_TOKEN", "") or "").strip()
+            or (getattr(Config, "TELEGRAM_BOT_TOKEN", "") or "").strip()
+        )
+    except Exception:
+        return ""
+
+
+def _vk_oauth_client_id():
+    return (
+        (os.environ.get("VK_OAUTH_CLIENT_ID") or "").strip()
+        or (os.environ.get("VK_APP_CLIENT_ID") or "").strip()
+        or (os.environ.get("VK_APP_ID") or "").strip()
+    )
+
+
+def _vk_oauth_client_secret():
+    return (
+        (os.environ.get("VK_OAUTH_CLIENT_SECRET") or "").strip()
+        or (os.environ.get("VK_APP_CLIENT_SECRET") or "").strip()
+        or (os.environ.get("VK_APP_SECRET") or "").strip()
+    )
+
+
+def _vk_oauth_redirect_uri():
+    explicit = (os.environ.get("VK_OAUTH_REDIRECT_URI") or "").strip()
+    if explicit:
+        return explicit
+    return f"{_resolved_public_base_url()}/auth/vk/callback"
+
+
+def _vk_oauth_scope():
+    explicit = (os.environ.get("VK_OAUTH_SCOPE") or "").strip()
+    if explicit:
+        return explicit
+    return "groups,wall,photos,offline"
+
+
+def _vk_oauth_enabled():
+    return bool(_vk_oauth_client_id() and _vk_oauth_client_secret())
+
+
+def _is_vk_token_expired(expires_at):
+    if not expires_at:
+        return False
+    try:
+        return datetime.utcnow() >= expires_at
+    except Exception:
+        return False
+
+
+def _resolve_vk_publish_token(access_token="", client_id=None):
+    direct_token = (access_token or "").strip()
+    if direct_token:
+        return direct_token
+
+    try:
+        if client_id:
+            client_obj = Client.query.get(int(client_id))
+            if client_obj:
+                client_token = (client_obj.vk_access_token or "").strip()
+                if client_token and not _is_vk_token_expired(client_obj.vk_token_expires_at):
+                    return client_token
+    except Exception:
+        pass
+
+    env_token = (os.environ.get("VK_ACCESS_TOKEN") or "").strip()
+    if env_token:
+        return env_token
+
+    try:
+        from config import Config
+
+        return (getattr(Config, "VK_ACCESS_TOKEN", "") or "").strip()
+    except Exception:
+        return ""
+
+
+@lru_cache(maxsize=4)
+def _telegram_bot_identity_cached(bot_token):
+    token = (bot_token or "").strip()
+    if not token:
+        return {"ok": False, "bot_id": None, "username": "", "error": "TOKEN_EMPTY"}
+    try:
+        response = requests.get(
+            f"https://api.telegram.org/bot{token}/getMe",
+            timeout=(6, 12),
+        )
+        payload = response.json() if response.content else {}
+        if response.status_code == 200 and payload.get("ok"):
+            result = payload.get("result") or {}
+            username = str(result.get("username") or "").strip()
+            return {
+                "ok": True,
+                "bot_id": result.get("id"),
+                "username": f"@{username}" if username else "",
+                "error": "",
+            }
+        error_text = str(payload.get("description") or f"HTTP {response.status_code}")
+        return {"ok": False, "bot_id": None, "username": "", "error": error_text}
+    except Exception as e:
+        return {"ok": False, "bot_id": None, "username": "", "error": str(e)}
+
+
+def _service_telegram_bot_username():
+    explicit = (os.environ.get("SERVICE_TELEGRAM_BOT_USERNAME") or "").strip()
+    if explicit:
+        return explicit if explicit.startswith("@") else f"@{explicit}"
+    identity = _telegram_bot_identity_cached(_resolve_telegram_publish_token(""))
+    return str(identity.get("username") or "").strip()
+
+
+def _service_telegram_bot_invite_link():
+    username = _service_telegram_bot_username().lstrip("@")
+    if not username:
+        return ""
+    return f"https://t.me/{username}"
+
+
+def _telegram_publish_access_payload(channel_reference, access_token=""):
+    resolved_token = _resolve_telegram_publish_token(access_token)
+    service_bot_username = ""
+    raw_reference = str(channel_reference or "").strip()
+    if not raw_reference:
+        return {
+            "publish_ready": False,
+            "publish_hint": "Не передан идентификатор Telegram-канала для проверки прав бота.",
+            "service_bot_username": "",
+        }
+    if raw_reference.startswith("@") or raw_reference.startswith("-"):
+        chat_id = raw_reference
+    else:
+        chat_id = f"@{raw_reference}"
+
+    if not resolved_token:
+        return {
+            "publish_ready": False,
+            "publish_hint": (
+                "На сервере не настроен Telegram-бот для публикации. "
+                "Сообщите администратору сервиса, чтобы включить режим подключения без ключей."
+            ),
+            "service_bot_username": "",
+        }
+
+    identity = _telegram_bot_identity_cached(resolved_token)
+    service_bot_username = str(identity.get("username") or "").strip()
+    if not identity.get("ok") or not identity.get("bot_id"):
+        return {
+            "publish_ready": False,
+            "publish_hint": (
+                "Не удалось проверить сервисного Telegram-бота. "
+                f"Детали: {identity.get('error') or 'unknown'}"
+            ),
+            "service_bot_username": service_bot_username,
+        }
+
+    try:
+        response = requests.get(
+            f"https://api.telegram.org/bot{resolved_token}/getChatMember",
+            params={"chat_id": chat_id, "user_id": identity.get("bot_id")},
+            timeout=(6, 12),
+        )
+        payload = response.json() if response.content else {}
+        if response.status_code == 200 and payload.get("ok"):
+            member = payload.get("result") or {}
+            status = str(member.get("status") or "").strip().lower()
+            if status in {"administrator", "creator"}:
+                return {
+                    "publish_ready": True,
+                    "publish_hint": (
+                        f"Бот {service_bot_username or 'сервиса'} уже имеет права администратора в канале."
+                    ),
+                    "service_bot_username": service_bot_username,
+                }
+            if status == "member":
+                return {
+                    "publish_ready": False,
+                    "publish_hint": (
+                        f"Добавьте боту {service_bot_username or 'сервиса'} права администратора в канале "
+                        "и повторите проверку."
+                    ),
+                    "service_bot_username": service_bot_username,
+                }
+            return {
+                "publish_ready": False,
+                "publish_hint": (
+                    f"Бот {service_bot_username or 'сервиса'} пока не добавлен в канал. "
+                    "Добавьте его администратором и повторите проверку."
+                ),
+                "service_bot_username": service_bot_username,
+            }
+
+        error_text = str(payload.get("description") or f"HTTP {response.status_code}")
+        return {
+            "publish_ready": False,
+            "publish_hint": (
+                f"Не удалось подтвердить права бота {service_bot_username or 'сервиса'}: {error_text}. "
+                "Добавьте бота администратором и повторите проверку."
+            ),
+            "service_bot_username": service_bot_username,
+        }
+    except Exception as e:
+        return {
+            "publish_ready": False,
+            "publish_hint": (
+                f"Сбой проверки прав Telegram-бота: {e}. "
+                "Проверьте, что бот добавлен в канал как администратор."
+            ),
+            "service_bot_username": service_bot_username,
+        }
+
+
+def _vk_publish_access_payload(access_token="", client_id=None):
+    resolved_token = _resolve_vk_publish_token(access_token, client_id=client_id)
+    if not resolved_token:
+        return {
+            "publish_ready": False,
+            "publish_hint": (
+                "На сервере не настроен VK-токен публикации. "
+                "Попросите администратора включить сервисный VK-доступ."
+            ),
+        }
+    if client_id:
+        try:
+            client_obj = Client.query.get(int(client_id))
+            client_token = (client_obj.vk_access_token or "").strip() if client_obj else ""
+            if client_token and not _is_vk_token_expired(client_obj.vk_token_expires_at):
+                return {
+                    "publish_ready": True,
+                    "publish_hint": (
+                        "VK подключен через авторизацию приложения. Публикация выполняется без ручного ключа клиента."
+                    ),
+                }
+        except Exception:
+            pass
+    return {
+        "publish_ready": True,
+        "publish_hint": (
+            "Публикация VK будет выполняться через сервисный доступ. "
+            "Убедитесь, что сервисный аккаунт имеет права в сообществе."
+        ),
+    }
+
+
+def _normalize_vk_group_items(raw_items, limit=50):
+    normalized = []
+    for item in raw_items or []:
+        if not isinstance(item, dict):
+            continue
+        group_id = item.get("id")
+        try:
+            group_id = int(group_id)
+        except (TypeError, ValueError):
+            continue
+        if group_id <= 0:
+            continue
+        name = str(item.get("name") or f"VK Group {group_id}").strip()
+        screen_name = str(item.get("screen_name") or "").strip()
+        group_type = str(item.get("type") or "group").strip().lower()
+        if group_type == "group":
+            fallback_slug = f"club{group_id}"
+        elif group_type == "event":
+            fallback_slug = f"event{group_id}"
+        else:
+            fallback_slug = f"public{group_id}"
+        slug = screen_name or fallback_slug
+        normalized.append(
+            {
+                "id": group_id,
+                "name": name,
+                "screen_name": screen_name,
+                "type": group_type,
+                "reference": f"https://vk.com/{slug}",
+            }
+        )
+        if len(normalized) >= limit:
+            break
+    return normalized
+
+
+def _fetch_vk_oauth_groups(access_token):
+    token = (access_token or "").strip()
+    if not token:
+        return []
+    filters_to_try = ("admin,editor", "admin", "editor")
+    try:
+        for filter_value in filters_to_try:
+            response = requests.get(
+                "https://api.vk.com/method/groups.get",
+                params={
+                    "access_token": token,
+                    "v": "5.199",
+                    "extended": 1,
+                    "filter": filter_value,
+                    "count": 200,
+                },
+                timeout=(6, 18),
+            )
+            payload = response.json() if response.content else {}
+            if payload.get("error"):
+                continue
+            result = payload.get("response") or {}
+            items = result.get("items") if isinstance(result, dict) else []
+            normalized = _normalize_vk_group_items(items, limit=50)
+            if normalized:
+                return normalized
+        return []
+    except Exception as e:
+        system_logger.warning("vk_oauth_groups_fetch_failed error=%s", e)
+        return []
+
+
+def _vk_oauth_status_for_current_user():
+    status_payload = {
+        "enabled": _vk_oauth_enabled(),
+        "connected": False,
+        "groups": [],
+        "expires_at": None,
+    }
+    if not has_request_context() or not current_user.is_authenticated:
+        return status_payload
+    if not current_user.client_id:
+        return status_payload
+    client = Client.query.get(current_user.client_id)
+    if not client:
+        return status_payload
+
+    token_value = (client.vk_access_token or "").strip()
+    if not token_value:
+        return status_payload
+    if _is_vk_token_expired(client.vk_token_expires_at):
+        status_payload["connected"] = False
+        status_payload["expires_at"] = client.vk_token_expires_at.isoformat() if client.vk_token_expires_at else None
+        return status_payload
+
+    groups = []
+    try:
+        parsed_groups = json.loads(client.vk_groups_cache or "[]")
+        if isinstance(parsed_groups, list):
+            groups = _normalize_vk_group_items(parsed_groups, limit=50)
+    except Exception:
+        groups = []
+
+    status_payload["connected"] = True
+    status_payload["groups"] = groups
+    status_payload["expires_at"] = client.vk_token_expires_at.isoformat() if client.vk_token_expires_at else None
+    return status_payload
+
+
+def _extract_keywords(text_value, limit=8):
+    words = [w.lower() for w in _word_tokens(text_value)]
+    stop_words = {
+        "и", "в", "во", "на", "по", "к", "для", "с", "со", "о", "об", "это", "как",
+        "что", "при", "или", "не", "а", "но", "до", "от", "из", "под", "над", "у",
+    }
+    filtered = []
+    seen = set()
+    for word in words:
+        if len(word) < 4 or word in stop_words:
+            continue
+        if word in seen:
+            continue
+        seen.add(word)
+        filtered.append(word)
+        if len(filtered) >= limit:
+            break
+    return filtered
+
+
+def _strip_html(text_value):
+    if not text_value:
+        return ""
+    text_value = re.sub(r"<br\s*/?>", "\n", text_value, flags=re.IGNORECASE)
+    text_value = re.sub(r"</p>", "\n", text_value, flags=re.IGNORECASE)
+    text_value = re.sub(r"<[^>]+>", " ", text_value)
+    text_value = unescape(text_value)
+    text_value = re.sub(r"\s+", " ", text_value).strip()
+    return text_value
+
+
+def _extract_telegram_username(channel_reference):
+    raw_reference = (channel_reference or "").strip()
+    if not raw_reference:
+        return None
+
+    if raw_reference.startswith("@"):
+        candidate = raw_reference[1:]
+    else:
+        # Поддерживаем только публичный формат ссылки https://t.me/<username>.
+        if not raw_reference.startswith("https://"):
+            return None
+        parsed = urlparse(raw_reference)
+        if parsed.netloc.lower() not in {"t.me", "www.t.me"}:
+            return None
+
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if not path_parts:
+            return None
+        if path_parts[0] == "s":
+            # Нормализуем через прямой username-ссылочный формат без /s.
+            return None
+        candidate = path_parts[0]
+
+    candidate = candidate.split("?")[0].split("#")[0].strip().lstrip("@")
+    candidate = candidate.replace("-", "_")
+    if not re.fullmatch(r"[A-Za-z0-9_]{4,64}", candidate):
+        return None
+    return candidate
+
+
+def _extract_vk_identifier(channel_reference):
+    raw_reference = (channel_reference or "").strip()
+    if not raw_reference:
+        return None
+
+    if raw_reference.startswith("-") and raw_reference[1:].isdigit():
+        return raw_reference[1:]
+    if raw_reference.isdigit():
+        return raw_reference
+    if re.fullmatch(r"(club|public)\d+", raw_reference):
+        return raw_reference
+
+    if not raw_reference.startswith(("http://", "https://")):
+        if "/" not in raw_reference and "." not in raw_reference:
+            return raw_reference
+        raw_reference = f"https://{raw_reference}"
+
+    parsed = urlparse(raw_reference)
+    if "vk.com" not in parsed.netloc:
+        return None
+
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if not path_parts:
+        return None
+
+    return path_parts[0]
+
+
+def _extract_telegram_posts_from_html(page_html, limit=10):
+    post_blocks = re.findall(
+        r'<div class="tgme_widget_message_text[^>]*>(.*?)</div>',
+        page_html,
+        flags=re.DOTALL,
+    )
+    posts = []
+    for block in post_blocks:
+        clean_text = _strip_html(block)
+        if _count_words(clean_text) >= 5:
+            posts.append(clean_text)
+        if len(posts) >= limit:
+            break
+    return posts
+
+
+def _fetch_telegram_channel_preview(channel_reference, access_token=None):
+    username = _extract_telegram_username(channel_reference)
+    if not username:
+        return {
+            "success": False,
+            "error": "Для Telegram укажите ссылку вида https://t.me/channel или ник вида @channel",
+        }
+
+    source_url = f"https://t.me/{username}"
+    channel_name = f"@{username}"
+    channel_description = ""
+    recent_posts = []
+    verification_errors = []
+    verified = False
+    publish_token = _resolve_telegram_publish_token(access_token)
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        )
+    }
+
+    def _absorb_page_data(page_html):
+        nonlocal channel_name, channel_description, recent_posts, verified
+        title_match = re.search(r'<meta property="og:title" content="([^"]+)"', page_html)
+        desc_match = re.search(r'<meta property="og:description" content="([^"]*)"', page_html)
+
+        page_channel_name = _strip_html(title_match.group(1)) if title_match else ""
+        page_description = _strip_html(desc_match.group(1)) if desc_match else ""
+        posts_from_page = _extract_telegram_posts_from_html(page_html, limit=10)
+
+        if page_channel_name:
+            channel_name = page_channel_name
+            verified = True
+        if page_description:
+            channel_description = page_description
+            verified = True
+        if posts_from_page:
+            recent_posts = posts_from_page
+            verified = True
+
+    def _try_public_url(url, label):
+        nonlocal verified
+        try:
+            response = requests.get(url, timeout=(6, 12), headers=headers)
+            if response.status_code == 200:
+                # Доступность публичной ссылки уже считается успешной верификацией.
+                verified = True
+                _absorb_page_data(response.text)
+                return True
+            verification_errors.append(f"{label}: HTTP {response.status_code}")
+        except Exception as request_error:
+            verification_errors.append(f"{label}: {request_error}")
+        return False
+
+    # Сначала проверяем канонический адрес t.me.
+    primary_ok = _try_public_url(source_url, "публичная ссылка")
+    # Если t.me недоступен/не прошел, пробуем технический fallback tg.me.
+    if not primary_ok:
+        fallback_public_url = f"https://tg.me/{username}"
+        fallback_ok = _try_public_url(fallback_public_url, "fallback tg.me")
+        if fallback_ok:
+            system_logger.warning(
+                "telegram_public_verify_fallback_used username=%s canonical=%s fallback=%s",
+                username,
+                source_url,
+                fallback_public_url,
+            )
+
+    # После успешной публичной проверки можно дополнить данные через Bot API.
+    if verified and publish_token and not channel_description:
+        try:
+            bot_resp = requests.get(
+                f"https://api.telegram.org/bot{publish_token}/getChat",
+                params={"chat_id": f"@{username}"},
+                timeout=(6, 12),
+            )
+            bot_payload = bot_resp.json()
+            if bot_resp.status_code == 200 and bot_payload.get("ok"):
+                chat_data = bot_payload.get("result") or {}
+                chat_title = (chat_data.get("title") or chat_data.get("username") or "").strip()
+                chat_description = (chat_data.get("description") or "").strip()
+                if chat_title:
+                    channel_name = chat_title
+                if chat_description:
+                    channel_description = chat_description
+            else:
+                bot_error = bot_payload.get("description") or f"HTTP {bot_resp.status_code}"
+                verification_errors.append(f"Bot API: {bot_error}")
+        except Exception as e:
+            verification_errors.append(f"Bot API недоступен: {e}")
+
+    if not verified:
+        error_hint = (
+            "Не удалось проверить публичную ссылку Telegram-канала. "
+            "Проверьте адрес в формате https://t.me/channel или @channel и повторите попытку."
+        )
+        if verification_errors:
+            error_hint += f" Детали: {' | '.join(verification_errors[:2])}"
+        return {"success": False, "error": error_hint}
+
+    if not recent_posts:
+        if _count_words(channel_description) >= 5:
+            recent_posts = [channel_description]
+        else:
+            recent_posts = [
+                (
+                    f"Канал @{username}. Для более точного стилистического анализа добавьте открытый доступ "
+                    "к последним публикациям канала."
+                )
+            ]
+
+    if not channel_name:
+        channel_name = f"@{username}"
+    if not channel_description:
+        channel_description = ""
+
+    publish_access = _telegram_publish_access_payload(channel_reference=f"@{username}", access_token=access_token or "")
+
+    return {
+        "success": True,
+        "platform": "telegram",
+        "channel_id": f"@{username}",
+        "channel_name": channel_name,
+        "source_url": source_url,
+        "channel_external_description": channel_description,
+        "recent_posts": recent_posts[:10],
+        "publish_ready": bool(publish_access.get("publish_ready")),
+        "publish_hint": str(publish_access.get("publish_hint") or "").strip(),
+        "service_bot_username": str(publish_access.get("service_bot_username") or "").strip(),
+    }
+
+def _fetch_vk_channel_preview(channel_reference, access_token, client_id=None):
+    vk_identifier = _extract_vk_identifier(channel_reference)
+    if not vk_identifier:
+        return {"success": False, "error": "Укажите корректную ссылку VK-группы или идентификатор"}
+
+    # Верификация VK выполняется публично (без VK API).
+    publish_access = _vk_publish_access_payload(access_token, client_id=client_id)
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        )
+    }
+    raw_reference = (channel_reference or "").strip()
+    verification_errors = []
+
+    def _build_candidate_urls():
+        candidates = []
+
+        if raw_reference.startswith(("http://", "https://")):
+            parsed = urlparse(raw_reference)
+            if "vk.com" in parsed.netloc.lower():
+                path_parts = [part for part in parsed.path.split("/") if part]
+                if path_parts:
+                    candidates.append(f"https://vk.com/{path_parts[0]}")
+
+        if re.fullmatch(r"(club|public|event)\d+", vk_identifier):
+            candidates.append(f"https://vk.com/{vk_identifier}")
+        elif vk_identifier.isdigit():
+            candidates.append(f"https://vk.com/club{vk_identifier}")
+            candidates.append(f"https://vk.com/public{vk_identifier}")
+        else:
+            candidates.append(f"https://vk.com/{vk_identifier}")
+
+        unique_candidates = []
+        seen = set()
+        for candidate_url in candidates:
+            normalized = candidate_url.rstrip("/")
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            unique_candidates.append(normalized)
+        return unique_candidates
+
+    def _normalize_vk_source_url(url_value):
+        parsed = urlparse(url_value)
+        if "vk.com" not in parsed.netloc.lower():
+            return ""
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if not path_parts:
+            return "https://vk.com"
+        return f"https://vk.com/{path_parts[0]}"
+
+    def _is_vk_missing_page(page_html, final_url):
+        page_text = (page_html or "").lower()
+        final_link = (final_url or "").lower()
+        markers = (
+            "такой страницы нет",
+            "страница удалена",
+            "page not found",
+            "error 404",
+            "cannot find page",
+        )
+        if any(marker in page_text for marker in markers):
+            return True
+        if "/404.php" in final_link:
+            return True
+        return False
+
+    def _extract_vk_page_title(page_html):
+        og_title_match = re.search(r'<meta property="og:title" content="([^"]+)"', page_html)
+        title = _strip_html(og_title_match.group(1)) if og_title_match else ""
+        if not title:
+            title_match = re.search(r"<title>(.*?)</title>", page_html, flags=re.IGNORECASE | re.DOTALL)
+            title = _strip_html(title_match.group(1)) if title_match else ""
+        if title:
+            title = re.sub(r"\s*\|\s*(вконтакте|vk)\s*$", "", title, flags=re.IGNORECASE).strip()
+        return title
+
+    candidate_urls = _build_candidate_urls()
+    if not candidate_urls:
+        return {"success": False, "error": "Не удалось сформировать публичный адрес VK для проверки"}
+
+    for candidate_url in candidate_urls:
+        try:
+            response = requests.get(candidate_url, timeout=(6, 12), headers=headers, allow_redirects=True)
+        except Exception as e:
+            verification_errors.append(f"{candidate_url}: {e}")
+            continue
+
+        if response.status_code != 200:
+            verification_errors.append(f"{candidate_url}: HTTP {response.status_code}")
+            continue
+
+        page_html = response.text or ""
+        source_url = _normalize_vk_source_url(response.url or candidate_url) or candidate_url
+        if _is_vk_missing_page(page_html, source_url):
+            verification_errors.append(f"{candidate_url}: страница не найдена")
+            continue
+
+        channel_name = _extract_vk_page_title(page_html) or vk_identifier
+        desc_match = re.search(r'<meta property="og:description" content="([^"]*)"', page_html)
+        channel_description = _strip_html(desc_match.group(1)) if desc_match else ""
+
+        source_slug = source_url.rstrip("/").split("/")[-1]
+        numeric_source_match = re.fullmatch(r"(club|public|event)(\d+)", source_slug or "")
+        if numeric_source_match:
+            platform_channel_id = f"-{numeric_source_match.group(2)}"
+        elif vk_identifier.startswith("-") and vk_identifier[1:].isdigit():
+            platform_channel_id = vk_identifier
+        elif vk_identifier.isdigit():
+            platform_channel_id = f"-{vk_identifier}"
+        else:
+            platform_channel_id = source_slug or vk_identifier
+
+        recent_posts = []
+        if _count_words(channel_description) >= 5:
+            recent_posts.append(channel_description)
+        else:
+            recent_posts.append(
+                f"Публичная страница VK «{channel_name}». Для более точного анализа добавьте описание и открытые посты."
+            )
+
+        return {
+            "success": True,
+            "platform": "vk",
+            "channel_id": platform_channel_id,
+            "channel_name": channel_name,
+            "source_url": source_url,
+            "channel_external_description": channel_description,
+            "recent_posts": recent_posts[:10],
+            "publish_ready": bool(publish_access.get("publish_ready")),
+            "publish_hint": str(publish_access.get("publish_hint") or "").strip(),
+            "service_bot_username": "",
+        }
+
+    error_hint = "Не удалось проверить публичную ссылку VK-сообщества. Проверьте адрес и повторите попытку."
+    if verification_errors:
+        error_hint += f" Детали: {' | '.join(verification_errors[:2])}"
+    return {"success": False, "error": error_hint}
+
+
+def _heuristic_style_profile(channel_name, platform, channel_description, recent_posts):
+    posts = [p.strip() for p in (recent_posts or []) if p and p.strip()]
+    joined_text = " ".join([channel_description or "", *posts]).strip()
+    words = [w.lower() for w in _word_tokens(joined_text) if len(w) >= 4]
+    top_keywords = [word for word, _ in Counter(words).most_common(8)]
+
+    avg_post_length = 0
+    if posts:
+        avg_post_length = int(sum(len(p) for p in posts) / max(len(posts), 1))
+
+    exclamation_count = joined_text.count("!")
+    question_count = joined_text.count("?")
+    emoji_count = len(re.findall(r"[\U0001F300-\U0001FAFF]", joined_text))
+
+    tone = "экспертный и спокойный"
+    if exclamation_count > question_count and exclamation_count >= 3:
+        tone = "энергичный и вовлекающий"
+    elif question_count >= 3:
+        tone = "диалоговый и вовлекающий"
+    elif emoji_count >= 3:
+        tone = "дружелюбный и эмоциональный"
+
+    summary = (
+        f"Канал «{channel_name}» ({platform}) ведет коммуникацию в тоне «{tone}». "
+        f"Средняя длина поста около {max(avg_post_length, 180)} символов. "
+        f"Ключевые слова: {', '.join(top_keywords[:5]) if top_keywords else 'тематика канала'}."
+    )
+
+    return {
+        "summary": summary,
+        "tone": tone,
+        "audience": "подписчики канала и заинтересованная целевая аудитория",
+        "keywords": top_keywords,
+        "dos": [
+            "Сохранять структуру коротких абзацев и практический фокус",
+            "Добавлять конкретику и действия для читателя",
+            "Поддерживать тон и лексику, привычные аудитории канала",
+        ],
+        "donts": [
+            "Не уходить в слишком формальный канцелярит",
+            "Не делать длинные перегруженные абзацы",
+            "Не менять резко голос бренда между публикациями",
+        ],
+        "recent_posts_count": len(posts),
+    }
+
+
+def _extract_json_object(raw_text):
+    if not raw_text:
+        return None
+    match = re.search(r"\{.*\}", raw_text, flags=re.DOTALL)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(0))
+    except Exception:
+        return None
+
+
+def _ai_style_profile(channel_name, platform, channel_description, recent_posts):
+    try:
+        from config import Config
+    except Exception:
+        return None
+
+    if not (getattr(Config, "YANDEX_API_KEY", "") and getattr(Config, "YANDEX_FOLDER_ID", "")):
+        return None
+
+    posts_excerpt = []
+    for idx, post in enumerate((recent_posts or [])[:10], start=1):
+        posts_excerpt.append(f"{idx}. {post[:450]}")
+    posts_text = "\n".join(posts_excerpt) or "Посты не обнаружены."
+
+    prompt = f"""
+Проанализируй стиль канала и верни СТРОГО JSON (без markdown и комментариев) с полями:
+summary (string), tone (string), audience (string), keywords (array of strings),
+dos (array of strings), donts (array of strings).
+
+Платформа: {platform}
+Название: {channel_name}
+Описание канала: {channel_description or "нет описания"}
+Последние 10 постов:
+{posts_text}
+"""
+
+    payload = {
+        "modelUri": f"gpt://{Config.YANDEX_FOLDER_ID}/yandexgpt",
+        "completionOptions": {
+            "stream": False,
+            "temperature": 0.2,
+            "maxTokens": 1500,
+        },
+        "messages": [
+            {
+                "role": "system",
+                "text": "Ты редактор контента. Всегда отвечай только валидным JSON без дополнительного текста.",
+            },
+            {"role": "user", "text": prompt},
+        ],
+    }
+    headers = {
+        "Authorization": f"Api-Key {Config.YANDEX_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        response = requests.post(
+            "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
+            headers=headers,
+            json=payload,
+            timeout=35,
+        )
+        if response.status_code != 200:
+            return None
+        text_result = (
+            response.json()
+            .get("result", {})
+            .get("alternatives", [{}])[0]
+            .get("message", {})
+            .get("text", "")
+        )
+        parsed = _extract_json_object(text_result)
+        if not isinstance(parsed, dict):
+            return None
+
+        return {
+            "summary": str(parsed.get("summary", "")).strip(),
+            "tone": str(parsed.get("tone", "")).strip(),
+            "audience": str(parsed.get("audience", "")).strip(),
+            "keywords": [str(x).strip() for x in (parsed.get("keywords") or []) if str(x).strip()][:10],
+            "dos": [str(x).strip() for x in (parsed.get("dos") or []) if str(x).strip()][:6],
+            "donts": [str(x).strip() for x in (parsed.get("donts") or []) if str(x).strip()][:6],
+        }
+    except Exception:
+        return None
+
+
+def _compose_auto_channel_description(channel_name, platform, channel_external_description, style_profile):
+    platform_label = "Telegram" if platform == "telegram" else "VK"
+    keyword_text = ", ".join((style_profile.get("keywords") or [])[:5])
+    if not keyword_text:
+        keyword_text = "экспертный контент, полезные рекомендации, регулярные публикации"
+
+    base_description = (
+        f"Канал «{channel_name}» на платформе {platform_label}. "
+        f"Основная тематика и стиль: {style_profile.get('summary') or 'практические материалы для аудитории канала'}. "
+        f"Ключевые направления контента: {keyword_text}. "
+        f"Важно сохранять узнаваемый тон коммуникации и публиковать структурированные материалы с понятной пользой для подписчиков."
+    )
+
+    if channel_external_description:
+        base_description += f" Дополнительно из описания канала: {channel_external_description[:300]}."
+
+    if _count_words(base_description) < 20:
+        base_description += (
+            " Канал ориентирован на стабильную вовлеченность, прикладные советы, понятную структуру текстов "
+            "и аккуратную адаптацию контента под ожидания аудитории."
+        )
+    return base_description
+
+
+def _verify_channel_source(platform, channel_reference, access_token, client_id=None):
+    if platform == "telegram":
+        return _fetch_telegram_channel_preview(channel_reference, access_token=access_token)
+    if platform == "vk":
+        return _fetch_vk_channel_preview(channel_reference, access_token, client_id=client_id)
+    return {"success": False, "error": "Поддерживаются только Telegram и VK"}
+
+
+def _build_channel_intelligence(platform, channel_reference, access_token, run_ai_analysis=True, client_id=None):
+    verification = _verify_channel_source(platform, channel_reference, access_token, client_id=client_id)
+    if not verification.get("success"):
+        return verification
+
+    channel_name = verification.get("channel_name") or "Канал"
+    channel_external_description = verification.get("channel_external_description") or ""
+    recent_posts = verification.get("recent_posts") or []
+
+    style_profile = None
+    if run_ai_analysis:
+        style_profile = _ai_style_profile(
+            channel_name=channel_name,
+            platform=platform,
+            channel_description=channel_external_description,
+            recent_posts=recent_posts,
+        )
+    if not style_profile:
+        style_profile = _heuristic_style_profile(
+            channel_name=channel_name,
+            platform=platform,
+            channel_description=channel_external_description,
+            recent_posts=recent_posts,
+        )
+
+    verification["style_profile"] = style_profile
+    verification["style_summary"] = style_profile.get("summary", "")
+    verification["auto_description"] = _compose_auto_channel_description(
+        channel_name=channel_name,
+        platform=platform,
+        channel_external_description=channel_external_description,
+        style_profile=style_profile,
+    )
+    verification["recent_posts"] = recent_posts[:10]
+    verification["verified_at"] = datetime.utcnow().isoformat()
+    return verification
+
+
+def _build_login_url_for_email():
+    public_base_url = (os.environ.get("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if public_base_url:
+        if not public_base_url.startswith(("http://", "https://")):
+            public_base_url = f"http://{public_base_url}"
+        return f"{public_base_url}/login"
+
+    web_host = (os.environ.get("WEB_HOST") or "localhost").strip()
+    if web_host in {"0.0.0.0", "::", "[::]"}:
+        web_host = "localhost"
+    web_port_raw = (os.environ.get("WEB_PORT") or "5000").strip()
+    try:
+        web_port = int(web_port_raw)
+    except (TypeError, ValueError):
+        web_port = 5000
+    return f"http://{web_host}:{web_port}/login"
+
+
+def _save_email_to_local_outbox(message, email_to):
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+    safe_to = re.sub(r"[^A-Za-z0-9._-]+", "_", email_to or "unknown")[:80] or "unknown"
+    eml_path = DEV_OUTBOX_DIR / f"{timestamp}_{safe_to}.eml"
+    eml_path.write_bytes(message.as_bytes())
+
+    with DEV_OUTBOX_INDEX_FILE.open("a", encoding="utf-8") as outbox_index:
+        outbox_index.write(
+            f"{datetime.utcnow().isoformat()} | to={email_to} | subject={message.get('Subject', '')} | file={eml_path}\n"
+        )
+    return str(eml_path)
+
+
+def _send_registration_email(email_to, username, password, client_name, trial_days):
+    if not email_to:
+        return False, "email_empty"
+
+    email_mode = (os.environ.get("EMAIL_DELIVERY_MODE") or "auto").strip().lower()
+    if email_mode not in {"auto", "smtp", "stub"}:
+        email_mode = "auto"
+
+    smtp_host = (os.environ.get("SMTP_HOST") or "").strip()
+    smtp_port_raw = (os.environ.get("SMTP_PORT") or "587").strip()
+    try:
+        smtp_port = int(smtp_port_raw)
+    except (TypeError, ValueError):
+        smtp_port = 587
+    smtp_user = (os.environ.get("SMTP_USER") or "").strip()
+    smtp_password = (os.environ.get("SMTP_PASSWORD") or "").strip()
+    smtp_from = (os.environ.get("SMTP_FROM_EMAIL") or smtp_user or "noreply@snoomi.local").strip()
+    smtp_from_name = (os.environ.get("SMTP_FROM_NAME") or "Snoomi Platform").strip()
+    smtp_use_ssl = (os.environ.get("SMTP_USE_SSL", "False").strip().lower() == "true")
+    smtp_use_tls = (os.environ.get("SMTP_USE_TLS", "True").strip().lower() == "true")
+
+    subject = "Добро пожаловать в Snoomi Platform"
+    login_url = _build_login_url_for_email()
+    support_link = _specialist_telegram_link()
+
+    plain_body = f"""
+Здравствуйте!
+
+Добро пожаловать в Snoomi Platform — сервис автопостинга и AI-генерации контента для Telegram и VK.
+
+Ваши регистрационные данные:
+Логин: {username}
+Пароль: {password}
+Клиент: {client_name}
+Тестовый период: {trial_days} дней
+
+Вход в систему:
+{login_url}
+
+Если нужна помощь с настройкой — свяжитесь со специалистом:
+{support_link}
+
+С уважением,
+Команда Snoomi Platform
+""".strip()
+
+    html_body = f"""
+<html>
+  <body>
+    <h2>Добро пожаловать в Snoomi Platform</h2>
+    <p><b>Snoomi Platform</b> — сервис автопостинга и AI-генерации контента для Telegram и VK.</p>
+    <p>Ваши регистрационные данные:</p>
+    <ul>
+      <li><b>Логин:</b> {username}</li>
+      <li><b>Пароль:</b> {password}</li>
+      <li><b>Клиент:</b> {client_name}</li>
+      <li><b>Тестовый период:</b> {trial_days} дней</li>
+    </ul>
+    <p><a href="{login_url}">Войти в систему</a></p>
+    <p>Нужна помощь с настройкой? <a href="{support_link}">Вызов специалиста в Telegram</a></p>
+    <hr>
+    <small>С уважением, команда Snoomi Platform</small>
+  </body>
+</html>
+""".strip()
+
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = f"{smtp_from_name} <{smtp_from}>"
+    message["To"] = email_to
+    message.set_content(plain_body)
+    message.add_alternative(html_body, subtype="html")
+
+    use_local_stub = email_mode == "stub" or (email_mode == "auto" and not smtp_host)
+    if use_local_stub:
+        try:
+            eml_path = _save_email_to_local_outbox(message, email_to)
+            system_logger.info(
+                "Registration email stored in local outbox for %s: %s",
+                email_to,
+                eml_path,
+            )
+            return True, f"stub_saved:{eml_path}"
+        except Exception as e:
+            error_logger.error("Registration email stub save failed for %s: %s", email_to, e)
+            return False, f"stub_error:{e}"
+
+    if not smtp_host:
+        system_logger.warning("SMTP is not configured, registration email skipped")
+        return False, "smtp_not_configured"
+
+    ssl_context = ssl.create_default_context()
+    try:
+        if smtp_use_ssl:
+            with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=20, context=ssl_context) as smtp:
+                if smtp_user and smtp_password:
+                    smtp.login(smtp_user, smtp_password)
+                smtp.send_message(message)
+        else:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as smtp:
+                if smtp_use_tls:
+                    smtp.starttls(context=ssl_context)
+                if smtp_user and smtp_password:
+                    smtp.login(smtp_user, smtp_password)
+                smtp.send_message(message)
+        return True, "sent"
+    except Exception as e:
+        error_logger.error("Registration email send failed for %s: %s", email_to, e)
+        return False, str(e)
+
+
+def _frequency_to_human(freq):
+    mapping = {
+        "daily": "каждый день",
+        "every_other_day": "через день",
+        "every_two_days": "через 2 дня",
+    }
+    return mapping.get(freq, freq or "daily")
+
+
+def _normalize_frequency(freq):
+    if not freq:
+        return "daily"
+    normalized = str(freq).strip().lower()
+    aliases = {
+        "через день": "every_other_day",
+        "через 2 дня": "every_two_days",
+        "every_2_days": "every_two_days",
+        "every_3_days": "every_two_days",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in SUPPORTED_PUBLISH_FREQUENCIES:
+        return None
+    return normalized
+
+
+def _has_nonempty_reference_input(raw_value):
+    if raw_value is None:
+        return False
+    if isinstance(raw_value, str):
+        return bool(raw_value.strip())
+    if isinstance(raw_value, (list, tuple, set)):
+        return any(str(item or "").strip() for item in raw_value)
+    return bool(str(raw_value).strip())
+
+
+def _normalize_reference_channels(raw_value, limit=15):
+    raw_items = []
+    if isinstance(raw_value, str):
+        raw_items = re.split(r"[\n;,]+", raw_value)
+    elif isinstance(raw_value, (list, tuple, set)):
+        raw_items = list(raw_value)
+
+    normalized = []
+    seen = set()
+    for item in raw_items:
+        candidate = str(item or "").strip()
+        if not candidate:
+            continue
+
+        if candidate.startswith("@"):
+            username = candidate[1:].strip().lower()
+            if not re.fullmatch(r"[a-z0-9_]{4,64}", username):
+                continue
+            value = f"@{username}"
+        else:
+            if not re.match(r"^https?://", candidate, flags=re.IGNORECASE):
+                if re.match(r"^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(/.*)?$", candidate):
+                    candidate = f"https://{candidate}"
+                else:
+                    continue
+
+            parsed = urlparse(candidate)
+            host = (parsed.netloc or "").strip().lower()
+            if not host:
+                continue
+            if host.startswith("www."):
+                host = host[4:]
+            path = (parsed.path or "").strip()
+            path = re.sub(r"/{2,}", "/", path)
+            if path != "/" and path.endswith("/"):
+                path = path[:-1]
+            value = f"https://{host}{path}" if path else f"https://{host}"
+
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(value)
+        if len(normalized) >= limit:
+            break
+
+    return normalized
+
+
+def _reference_channel_query_hints(reference_channels, limit=8):
+    hints = []
+    for item in reference_channels or []:
+        reference = str(item or "").strip()
+        if not reference:
+            continue
+        if reference.startswith("@"):
+            hints.append(reference[1:].replace("_", " "))
+            continue
+
+        parsed = urlparse(reference)
+        host = (parsed.netloc or "").lower()
+        path_parts = [part for part in (parsed.path or "").split("/") if part]
+        if path_parts:
+            slug = path_parts[-1].replace("-", " ").replace("_", " ")
+            hints.append(slug)
+            hints.append(f"{host} {slug}".strip())
+        else:
+            hints.append(host)
+
+    return _normalize_phrase_list(hints, limit=limit)
+
+
+def _channel_extra_config(channel):
+    if not channel.additional_config:
+        return {}
+    try:
+        return json.loads(channel.additional_config)
+    except Exception:
+        return {}
+
+
+def _safe_nonnegative_int(value, default=0):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return int(default)
+    return parsed if parsed >= 0 else int(default)
+
+
+def _client_trial_limits(client):
+    auto_limit = _safe_nonnegative_int(
+        getattr(client, "trial_auto_posts_limit", TRIAL_AUTO_POSTS_LIMIT),
+        TRIAL_AUTO_POSTS_LIMIT,
+    )
+    manual_limit = _safe_nonnegative_int(
+        getattr(client, "trial_manual_posts_limit", TRIAL_MANUAL_POSTS_LIMIT),
+        TRIAL_MANUAL_POSTS_LIMIT,
+    )
+    auto_used = _safe_nonnegative_int(getattr(client, "trial_auto_posts_used", 0), 0)
+    manual_used = _safe_nonnegative_int(getattr(client, "trial_manual_posts_used", 0), 0)
+    return {
+        "auto_posts_limit": max(1, auto_limit or TRIAL_AUTO_POSTS_LIMIT),
+        "manual_posts_limit": max(1, manual_limit or TRIAL_MANUAL_POSTS_LIMIT),
+        "auto_posts_used": auto_used,
+        "manual_posts_used": manual_used,
+    }
+
+
+def _is_trial_active(client):
+    if not client:
+        return False
+    if client.plan != "trial":
+        return True
+
+    limits = _client_trial_limits(client)
+    if client.trial_completed_at:
+        return False
+    if client.trial_ends_at and datetime.utcnow() > client.trial_ends_at:
+        return False
+    if limits["auto_posts_used"] >= limits["auto_posts_limit"]:
+        return False
+    return True
+
+
+def _trial_usage_payload(client):
+    if not client:
+        return {
+            "trial_active": False,
+            "is_trial_plan": False,
+            "trial_reason": "no_client",
+            "trial_days": TRIAL_MAX_DAYS,
+            "auto_posts_limit": TRIAL_AUTO_POSTS_LIMIT,
+            "auto_posts_used": 0,
+            "auto_posts_remaining": TRIAL_AUTO_POSTS_LIMIT,
+            "manual_posts_limit": TRIAL_MANUAL_POSTS_LIMIT,
+            "manual_posts_used": 0,
+            "manual_posts_remaining": TRIAL_MANUAL_POSTS_LIMIT,
+            "topics_limit": TRIAL_AUTO_TOPICS_LIMIT,
+        }
+
+    limits = _client_trial_limits(client)
+    is_trial = client.plan == "trial"
+    auto_remaining = max(limits["auto_posts_limit"] - limits["auto_posts_used"], 0)
+    manual_remaining = max(limits["manual_posts_limit"] - limits["manual_posts_used"], 0)
+
+    if not is_trial:
+        reason = "not_trial_plan"
+        trial_active = True
+    elif client.trial_completed_at:
+        reason = "completed_by_auto_limit"
+        trial_active = False
+    elif client.trial_ends_at and datetime.utcnow() > client.trial_ends_at:
+        reason = "expired_by_date"
+        trial_active = False
+    elif auto_remaining <= 0:
+        reason = "auto_posts_exhausted"
+        trial_active = False
+    else:
+        reason = "active"
+        trial_active = True
+
+    return {
+        "trial_active": trial_active,
+        "is_trial_plan": is_trial,
+        "trial_reason": reason,
+        "trial_days": _safe_nonnegative_int(getattr(client, "trial_days", TRIAL_MAX_DAYS), TRIAL_MAX_DAYS),
+        "trial_started_at": client.trial_started_at.isoformat() if client.trial_started_at else None,
+        "trial_ends_at": client.trial_ends_at.isoformat() if client.trial_ends_at else None,
+        "trial_completed_at": client.trial_completed_at.isoformat() if client.trial_completed_at else None,
+        "auto_posts_limit": limits["auto_posts_limit"],
+        "auto_posts_used": limits["auto_posts_used"],
+        "auto_posts_remaining": auto_remaining,
+        "manual_posts_limit": limits["manual_posts_limit"],
+        "manual_posts_used": limits["manual_posts_used"],
+        "manual_posts_remaining": manual_remaining,
+        "topics_limit": TRIAL_AUTO_TOPICS_LIMIT,
+    }
+
+
+def _consume_trial_manual_posts(client, successful_posts):
+    if not client or client.plan != "trial":
+        return
+    increment = _safe_nonnegative_int(successful_posts, 0)
+    if increment <= 0:
+        return
+    limits = _client_trial_limits(client)
+    client.trial_manual_posts_used = min(
+        limits["manual_posts_limit"],
+        limits["manual_posts_used"] + increment,
+    )
+
+
+def _ensure_channel_runtime_setup(channel_id, channel_description, publish_frequency, publish_hour=10):
+    """Создает/обновляет настройки канала для планировщика."""
+    if not channel_description or _count_words(channel_description) < 20:
+        channel_description = (
+            "Канал клиента для автопостинга с регулярными экспертными публикациями, ориентированными "
+            "на практическую пользу аудитории, вовлечение подписчиков и развитие бренда клиента."
+        )
+
+    publish_frequency = _normalize_frequency(publish_frequency) or "daily"
+    try:
+        publish_hour = int(publish_hour)
+    except (TypeError, ValueError):
+        publish_hour = 10
+    publish_hour = min(max(publish_hour, 0), 23)
+
+    settings = ChannelSetting.query.filter_by(channel_id=channel_id).first()
+    topics_json = json.dumps([], ensure_ascii=False)
+    hashtags_json = json.dumps([], ensure_ascii=False)
+    if not settings:
+        settings = ChannelSetting(
+            channel_id=channel_id,
+            publish_hour=publish_hour,
+            publish_frequency=publish_frequency,
+            topics=topics_json,
+            hashtags=hashtags_json,
+            max_posts_per_day=1,
+            is_auto_generate=True,
+            use_ai_images=True,
+        )
+        db.session.add(settings)
+    else:
+        settings.publish_hour = publish_hour
+        settings.publish_frequency = publish_frequency
+        settings.topics = topics_json
+        if not settings.hashtags:
+            settings.hashtags = hashtags_json
+
+    active_topics = ChannelTopic.query.filter_by(channel_id=channel_id, is_active=True).all()
+    if not active_topics:
+        channel = ClientChannel.query.get(channel_id)
+        channel_name = channel.channel_name if channel else "канала"
+        short_topic = f"Актуальный контент для аудитории канала «{channel_name}»"
+
+        topic = ChannelTopic(
+            channel_id=channel_id,
+            topic=short_topic,
+            keywords=json.dumps([], ensure_ascii=False),
+            priority=8,
+            is_active=True,
+        )
+        db.session.add(topic)
+
+
+def _serialize_channel(channel, include_client_name=True):
+    extra = _channel_extra_config(channel)
+    reference_channels = _normalize_reference_channels(extra.get("reference_channels") or [], limit=20)
+    settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
+    publish_frequency = (
+        settings.publish_frequency
+        if settings and settings.publish_frequency
+        else extra.get("publish_frequency", "daily")
+    )
+    publish_hour = settings.publish_hour if settings and settings.publish_hour is not None else 10
+
+    payload = {
+        "id": channel.id,
+        "client_id": channel.client_id,
+        "platform": channel.platform,
+        "channel_id": channel.channel_id,
+        "channel_name": channel.channel_name,
+        "access_token": channel.access_token,
+        "is_active": bool(channel.is_active),
+        "channel_description": extra.get("channel_description", ""),
+        "reference_channels": reference_channels,
+        "reference_channels_count": len(reference_channels),
+        "channel_source_url": extra.get("source_url"),
+        "style_summary": (extra.get("style_profile") or {}).get("summary", ""),
+        "auth_mode": extra.get("auth_mode") or ("custom_token" if channel.access_token else "service_token"),
+        "publish_hint": extra.get("publish_hint", ""),
+        "publish_frequency": publish_frequency,
+        "publish_frequency_label": _frequency_to_human(publish_frequency),
+        "publish_hour": publish_hour,
+        "created_at": channel.created_at.isoformat() if channel.created_at else None,
+    }
+    if include_client_name:
+        payload["client_name"] = channel.client.name if channel.client else None
+    return payload
+
+
+def _serialize_client(client, include_counts=False):
+    trial_usage = _trial_usage_payload(client)
+    vk_groups_cached = 0
+    if client.vk_groups_cache:
+        try:
+            parsed_groups = json.loads(client.vk_groups_cache or "[]")
+            if isinstance(parsed_groups, list):
+                vk_groups_cached = len(_normalize_vk_group_items(parsed_groups, limit=999))
+        except Exception:
+            vk_groups_cached = 0
+    payload = {
+        "id": client.id,
+        "name": client.name,
+        "email": client.email,
+        "telegram_id": client.telegram_id,
+        "notification_telegram": client.notification_telegram,
+        "phone": client.phone,
+        "plan": client.plan,
+        "status": client.status,
+        "trial_days": trial_usage.get("trial_days", TRIAL_MAX_DAYS),
+        "trial_started_at": trial_usage.get("trial_started_at"),
+        "trial_ends_at": trial_usage.get("trial_ends_at"),
+        "trial_completed_at": trial_usage.get("trial_completed_at"),
+        "trial_active": bool(trial_usage.get("trial_active")),
+        "trial_reason": trial_usage.get("trial_reason"),
+        "trial_auto_posts_limit": trial_usage.get("auto_posts_limit", TRIAL_AUTO_POSTS_LIMIT),
+        "trial_auto_posts_used": trial_usage.get("auto_posts_used", 0),
+        "trial_auto_posts_remaining": trial_usage.get("auto_posts_remaining", TRIAL_AUTO_POSTS_LIMIT),
+        "trial_manual_posts_limit": trial_usage.get("manual_posts_limit", TRIAL_MANUAL_POSTS_LIMIT),
+        "trial_manual_posts_used": trial_usage.get("manual_posts_used", 0),
+        "trial_manual_posts_remaining": trial_usage.get("manual_posts_remaining", TRIAL_MANUAL_POSTS_LIMIT),
+        "trial_topics_limit": trial_usage.get("topics_limit", TRIAL_AUTO_TOPICS_LIMIT),
+        "vk_oauth_connected": bool((client.vk_access_token or "").strip()) and not _is_vk_token_expired(client.vk_token_expires_at),
+        "vk_oauth_expires_at": client.vk_token_expires_at.isoformat() if client.vk_token_expires_at else None,
+        "vk_groups_cached": vk_groups_cached,
+        "created_at": client.created_at.isoformat() if client.created_at else None,
+    }
+    if include_counts:
+        payload["channels_count"] = len(client.channels)
+        payload["users_count"] = len(client.users)
+    return payload
+
+
+def _serialize_user(user):
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "role": user.role,
+        "client_id": user.client_id,
+        "client_name": user.client.name if user.client else None,
+        "is_active": bool(user.is_active),
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+    }
+
+
+def _normalize_phrase_list(raw_items, limit=12):
+    phrases = []
+    seen = set()
+    for item in raw_items or []:
+        if isinstance(item, str):
+            candidate = item
+        elif isinstance(item, dict):
+            candidate = (
+                item.get("phrase")
+                or item.get("title")
+                or item.get("text")
+                or item.get("keyword")
+                or ""
+            )
+        else:
+            candidate = ""
+        candidate = re.sub(r"^[\-\d\)\.\s]+", "", str(candidate or "").strip())
+        candidate = re.sub(r"\s+", " ", candidate).strip(" \n\t-.,;")
+        if not candidate:
+            continue
+        key = candidate.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        phrases.append(candidate)
+        if len(phrases) >= limit:
+            break
+    return phrases
+
+
+def _normalize_actual_questions(raw_items, limit=15):
+    normalized = []
+    seen = set()
+    for item in raw_items or []:
+        if isinstance(item, str):
+            question = item.strip()
+            intent = ""
+            source_hint = ""
+        elif isinstance(item, dict):
+            question = str(item.get("question") or item.get("q") or item.get("title") or "").strip()
+            intent = str(item.get("intent") or "").strip()
+            source_hint = str(item.get("source_hint") or item.get("source") or "").strip()
+        else:
+            continue
+
+        if not question:
+            continue
+        if not question.endswith("?"):
+            question = question.rstrip(".!") + "?"
+
+        key = question.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(
+            {
+                "question": question,
+                "intent": intent,
+                "source_hint": source_hint,
+            }
+        )
+        if len(normalized) >= limit:
+            break
+    return normalized
+
+
+def _normalize_topic_plan_items(raw_items, desired_count, semantic_core):
+    topics = []
+    seen = set()
+    semantic_core = semantic_core or []
+    for idx, item in enumerate(raw_items or []):
+        if isinstance(item, str):
+            title = item.strip()
+            why = ""
+            keyword = semantic_core[idx % len(semantic_core)] if semantic_core else ""
+            questions = []
+        elif isinstance(item, dict):
+            title = str(item.get("title") or item.get("topic") or "").strip()
+            why = str(item.get("why") or item.get("rationale") or "").strip()
+            keyword = str(item.get("keyword") or item.get("cluster") or "").strip()
+            questions = _normalize_phrase_list(item.get("questions") or item.get("audience_questions") or [], limit=4)
+        else:
+            continue
+
+        if not title:
+            continue
+        dedupe_key = title.lower()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+
+        if not keyword and semantic_core:
+            keyword = semantic_core[idx % len(semantic_core)]
+
+        topics.append(
+            {
+                "id": len(topics) + 1,
+                "title": title,
+                "keyword": keyword,
+                "questions": questions,
+                "rationale": why,
+            }
+        )
+        if len(topics) >= desired_count:
+            break
+    return topics
+
+
+def _fetch_public_web_question_hints(query_text, limit=12):
+    query_text = (query_text or "").strip()
+    if not query_text:
+        return []
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        )
+    }
+    try:
+        response = requests.get(
+            "https://duckduckgo.com/html/",
+            params={"q": query_text, "kl": "ru-ru"},
+            timeout=(6, 12),
+            headers=headers,
+        )
+    except Exception:
+        return []
+
+    if response.status_code != 200:
+        return []
+
+    html_text = response.text or ""
+    snippet_matches = re.findall(
+        r'result__snippet[^>]*>(.*?)</(?:a|div)>',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    title_matches = re.findall(
+        r'result__a[^>]*>(.*?)</a>',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    raw_questions = []
+    for block in [*title_matches, *snippet_matches]:
+        clean_text = _strip_html(block)
+        if not clean_text:
+            continue
+        question_fragments = re.findall(r"[^?]{8,180}\?", clean_text)
+        for fragment in question_fragments:
+            fragment = re.sub(r"\s+", " ", fragment).strip()
+            if fragment:
+                raw_questions.append(fragment)
+
+    return _normalize_actual_questions(raw_questions, limit=limit)
+
+
+def _collect_top_web_questions(query_candidates, limit=5):
+    merged_questions = []
+    normalized_queries = _normalize_phrase_list(query_candidates, limit=12)
+    current_year = datetime.utcnow().year
+
+    for base_query in normalized_queries:
+        # Приоритет актуальности: сначала запрос с текущим годом.
+        query_variants = [
+            f"{base_query} {current_year} вопросы аудитории",
+            f"{base_query} актуальные вопросы аудитории",
+            base_query,
+        ]
+        for query in query_variants:
+            hints = _fetch_public_web_question_hints(query, limit=max(limit * 2, 10))
+            merged_questions = _normalize_actual_questions(
+                [*merged_questions, *hints],
+                limit=limit,
+            )
+            if len(merged_questions) >= limit:
+                return merged_questions[:limit]
+    return merged_questions[:limit]
+
+
+def _ai_topic_plan_with_web_search(
+    channel_name,
+    platform,
+    channel_client_description,
+    channel_external_description,
+    reference_channels,
+    recent_posts,
+    style_summary,
+    focus_text,
+    desired_count,
+):
+    try:
+        from config import Config
+    except Exception:
+        return None
+
+    if not (getattr(Config, "YANDEX_API_KEY", "") and getattr(Config, "YANDEX_FOLDER_ID", "")):
+        return None
+
+    posts_block = []
+    for idx, post in enumerate((recent_posts or [])[:10], start=1):
+        post_text = str(post).strip()
+        if post_text:
+            posts_block.append(f"{idx}. {post_text[:450]}")
+    posts_text = "\n".join(posts_block) if posts_block else "Посты недоступны."
+    reference_block = "\n".join(f"- {item}" for item in (reference_channels or [])[:10]) or "не указаны"
+    current_year = datetime.utcnow().year
+
+    prompt = f"""
+Сформируй контент-план для канала. Работай как стратег-контентолог.
+
+ВАЖНО:
+1) Сначала выдели ЕДИНУЮ тематику канала (ниша, ЦА, задачи), не распадай ее на отдельные несвязанные ключи.
+2) Используй web search, чтобы найти актуальные вопросы аудитории по этой тематике.
+3) Верни результат СТРОГО в JSON (без markdown и комментариев).
+4) Приоритет по данным: актуальные материалы {current_year} года и последних 12 месяцев.
+5) Устаревшие примеры (2024 и ранее) включай только если это базовая справка, а не тренд.
+
+Формат JSON:
+{{
+  "semantic_core": ["фраза 1", "фраза 2"],
+  "audience_profile": "краткое описание аудитории",
+  "search_queries": ["поисковый запрос 1", "поисковый запрос 2"],
+  "actual_questions": [
+    {{"question":"...", "intent":"...", "source_hint":"..."}}
+  ],
+  "topic_plan": [
+    {{
+      "title":"...",
+      "why":"почему это важно аудитории",
+      "keyword":"кластер/вектор темы",
+      "questions":["вопрос 1","вопрос 2"]
+    }}
+  ]
+}}
+
+Количество тем в topic_plan: ровно {desired_count}
+
+КОНТЕКСТ КАНАЛА:
+Платформа: {platform}
+Название: {channel_name}
+Описание от клиента: {channel_client_description or "нет"}
+Публичное описание канала: {channel_external_description or "нет"}
+Референс-каналы/конкуренты: {reference_block}
+Сводка стиля: {style_summary or "нет"}
+Фокус пользователя на период: {focus_text or "не задан"}
+Последние посты:
+{posts_text}
+""".strip()
+
+    payload = {
+        "modelUri": f"gpt://{Config.YANDEX_FOLDER_ID}/yandexgpt",
+        "completionOptions": {
+            "stream": False,
+            "temperature": 0.2,
+            "maxTokens": 3500,
+            "useWebSearch": True,
+            "searchRegion": "ru",
+        },
+        "messages": [
+            {
+                "role": "system",
+                "text": (
+                    "Ты senior контент-стратег. Отвечай только JSON, "
+                    "без markdown, пояснений и служебного текста."
+                ),
+            },
+            {"role": "user", "text": prompt},
+        ],
+    }
+    headers = {
+        "Authorization": f"Api-Key {Config.YANDEX_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        response = requests.post(
+            "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
+            headers=headers,
+            json=payload,
+            timeout=70,
+        )
+        if response.status_code != 200:
+            return None
+        raw_text = (
+            response.json()
+            .get("result", {})
+            .get("alternatives", [{}])[0]
+            .get("message", {})
+            .get("text", "")
+        )
+    except Exception:
+        return None
+
+    parsed = _extract_json_object(raw_text)
+    if not isinstance(parsed, dict):
+        return None
+
+    semantic_core = _normalize_phrase_list(
+        parsed.get("semantic_core") or parsed.get("semantic_vectors") or [],
+        limit=12,
+    )
+    audience_profile = str(parsed.get("audience_profile") or "").strip()
+    search_queries = _normalize_phrase_list(parsed.get("search_queries") or [], limit=10)
+    actual_questions = _normalize_actual_questions(
+        parsed.get("actual_questions") or parsed.get("audience_questions") or [],
+        limit=max(desired_count + 4, 10),
+    )
+    topic_items = _normalize_topic_plan_items(
+        parsed.get("topic_plan") or parsed.get("topics") or [],
+        desired_count=desired_count,
+        semantic_core=semantic_core,
+    )
+
+    if not topic_items:
+        return None
+
+    return {
+        "semantic_core": semantic_core,
+        "audience_profile": audience_profile,
+        "search_queries": search_queries,
+        "actual_questions": actual_questions,
+        "topics": topic_items,
+    }
+
+
+def _build_topic_planner_payload(channel, focus_text="", desired_count=8):
+    """Готовит идеи тем для шага 2 (настройка постинга)."""
+    desired_count = min(max(int(desired_count or 8), 3), 20)
+    focus_text = (focus_text or "").strip()
+    extra = _channel_extra_config(channel)
+    current_year = datetime.utcnow().year
+
+    channel_client_description = (extra.get("channel_description") or "").strip()
+    channel_external_description = (extra.get("channel_external_description") or "").strip()
+    reference_channels = _normalize_reference_channels(extra.get("reference_channels") or [], limit=15)
+    reference_query_hints = _reference_channel_query_hints(reference_channels, limit=8)
+    recent_posts_raw = extra.get("recent_posts_preview") or []
+    if not isinstance(recent_posts_raw, list):
+        recent_posts_raw = []
+    recent_posts = [str(item).strip() for item in recent_posts_raw if str(item).strip()][:10]
+    if not recent_posts and channel_external_description:
+        recent_posts = [channel_external_description]
+
+    style_profile = _ai_style_profile(
+        channel_name=channel.channel_name,
+        platform=channel.platform,
+        channel_description=channel_external_description or channel_client_description,
+        recent_posts=recent_posts,
+    )
+    if not style_profile:
+        style_profile = _heuristic_style_profile(
+            channel_name=channel.channel_name,
+            platform=channel.platform,
+            channel_description=channel_external_description or channel_client_description,
+            recent_posts=recent_posts,
+        )
+
+    style_summary = (style_profile.get("summary") or "").strip()
+    semantic_core = []
+    actual_questions = []
+    search_queries = []
+    topic_items = []
+    source_mode = "heuristic_fallback"
+
+    ai_plan = _ai_topic_plan_with_web_search(
+        channel_name=channel.channel_name,
+        platform=channel.platform,
+        channel_client_description=channel_client_description,
+        channel_external_description=channel_external_description,
+        reference_channels=reference_channels,
+        recent_posts=recent_posts,
+        style_summary=style_summary,
+        focus_text=focus_text,
+        desired_count=desired_count,
+    )
+
+    if ai_plan:
+        source_mode = "yandexgpt_web_search"
+        semantic_core = ai_plan.get("semantic_core") or []
+        search_queries = ai_plan.get("search_queries") or []
+        topic_items = ai_plan.get("topics") or []
+
+        query_candidates = [
+            *search_queries,
+            *semantic_core,
+            *reference_query_hints,
+            *reference_channels[:4],
+            f"{channel.channel_name} {focus_text} {current_year}".strip(),
+            f"{channel.channel_name} {current_year}".strip(),
+            channel.channel_name,
+        ]
+        actual_questions = _collect_top_web_questions(query_candidates, limit=5)
+    else:
+        semantic_seed_text = " ".join(
+            part
+            for part in [
+                focus_text,
+                channel_client_description,
+                channel_external_description,
+                " ".join(reference_query_hints),
+                style_summary,
+            ]
+            if part
+        )
+        semantic_core = _normalize_phrase_list(
+            [s.strip() for s in re.split(r"[.\n;:]+", semantic_seed_text) if _count_words(s) >= 3],
+            limit=8,
+        )
+        if not semantic_core:
+            fallback_keywords = _extract_keywords(
+                f"{channel.channel_name} {semantic_seed_text} {' '.join(recent_posts)}",
+                limit=8,
+            )
+            if fallback_keywords:
+                semantic_core = [", ".join(fallback_keywords[:4])]
+            else:
+                semantic_core = [f"Контент по тематике канала «{channel.channel_name}»"]
+
+        query_keywords = _extract_keywords(
+            f"{channel.channel_name} {semantic_seed_text}",
+            limit=7,
+        )
+        query_text = " ".join(query_keywords[:5]) or channel.channel_name
+        search_queries = [
+            f"{query_text} {current_year}",
+            f"{query_text} актуальные вопросы аудитории",
+            query_text,
+        ]
+        actual_questions = _collect_top_web_questions(
+            [*search_queries, *semantic_core, *reference_query_hints, channel.channel_name],
+            limit=5,
+        )
+
+        for idx in range(desired_count):
+            semantic_vector = semantic_core[idx % len(semantic_core)]
+            base_question = actual_questions[idx % len(actual_questions)] if actual_questions else {}
+            question_text = (base_question.get("question") or "").strip()
+            if question_text:
+                short_question = question_text.rstrip("?")
+                title = f"{semantic_vector}: {short_question[:95]}"
+                questions = [question_text]
+            else:
+                title = f"Практический разбор по теме «{semantic_vector}»"
+                questions = []
+            topic_items.append(
+                {
+                    "id": idx + 1,
+                    "title": title,
+                    "keyword": semantic_vector,
+                    "questions": questions,
+                    "rationale": "Тема сформирована на базе тематики канала и текущего спроса аудитории.",
+                }
+            )
+
+    if not topic_items:
+        semantic_stub = semantic_core[0] if semantic_core else channel.channel_name
+        for idx in range(desired_count):
+            topic_items.append(
+                {
+                    "id": idx + 1,
+                    "title": f"{semantic_stub}: выпуск #{idx + 1}",
+                    "keyword": semantic_stub,
+                    "questions": [],
+                    "rationale": "",
+                }
+            )
+
+    keywords_for_ui = _normalize_phrase_list(
+        [*(style_profile.get("keywords") or []), *semantic_core],
+        limit=12,
+    )
+
+    return {
+        "channel_id": channel.id,
+        "channel_name": channel.channel_name,
+        "platform": channel.platform,
+        "style_summary": style_summary,
+        "keywords": keywords_for_ui,
+        "semantic_core": semantic_core[:12],
+        "actual_questions": actual_questions[:5],
+        "search_queries": search_queries[:10],
+        "reference_channels": reference_channels[:15],
+        "topics": topic_items[:desired_count],
+        "source": source_mode,
+    }
+
+
+def _normalize_topic_items(raw_topics):
+    normalized = []
+    for item in raw_topics or []:
+        if isinstance(item, str):
+            title = item.strip()
+        elif isinstance(item, dict):
+            title = str(item.get("title") or item.get("topic") or "").strip()
+        else:
+            title = ""
+        if not title:
+            continue
+        if title in normalized:
+            continue
+        normalized.append(title)
+        if len(normalized) >= 30:
+            break
+    return normalized
+
+
+def _frequency_to_interval_days(publish_frequency):
+    normalized = _normalize_frequency(publish_frequency) or "daily"
+    return {
+        "daily": 1,
+        "every_other_day": 2,
+        "every_two_days": 3,
+    }.get(normalized, 1)
+
+
+def _trial_auto_posts_capacity(client, publish_frequency="daily", start_date=None):
+    if not client or client.plan != "trial":
+        return None
+
+    usage = _trial_usage_payload(client)
+    remaining_auto = _safe_nonnegative_int(usage.get("auto_posts_remaining"), 0)
+    if remaining_auto <= 0:
+        return 0
+
+    if not client.trial_ends_at:
+        return remaining_auto
+
+    if start_date:
+        try:
+            start_day = datetime.fromisoformat(str(start_date)).date()
+        except Exception:
+            start_day = datetime.utcnow().date()
+    else:
+        start_day = datetime.utcnow().date()
+
+    end_day = client.trial_ends_at.date()
+    if end_day < start_day:
+        return 0
+
+    interval_days = max(1, _frequency_to_interval_days(publish_frequency))
+    slots_by_days = ((end_day - start_day).days // interval_days) + 1
+    return min(remaining_auto, max(slots_by_days, 0))
+
+
+def _extract_channel_topics_for_plan(channel):
+    topics = []
+    seen = set()
+    extra = _channel_extra_config(channel)
+
+    # 1) Сначала берём темы из сохраненного календаря (шаг 3), если он есть.
+    posting_draft = extra.get("posting_plan_draft") if isinstance(extra.get("posting_plan_draft"), dict) else {}
+    for item in _normalize_posting_plan_items_for_save(posting_draft.get("plan_items") or []):
+        topic_text = (item.get("topic") or "").strip()
+        if not topic_text:
+            continue
+        key = topic_text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        topics.append(topic_text)
+
+    # 2) Затем темы, сохраненные на шаге 2.
+    topic_plan = extra.get("topic_plan") if isinstance(extra.get("topic_plan"), dict) else {}
+    for topic_text in _normalize_topic_items(topic_plan.get("topics") or []):
+        key = topic_text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        topics.append(topic_text)
+
+    # 3) Активные темы канала.
+    active_topics = (
+        ChannelTopic.query.filter_by(channel_id=channel.id, is_active=True)
+        .order_by(ChannelTopic.priority.desc(), ChannelTopic.created_at.asc())
+        .all()
+    )
+    for item in active_topics:
+        topic_text = (item.topic or "").strip()
+        if not topic_text:
+            continue
+        key = topic_text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        topics.append(topic_text)
+
+    # 4) Темы из настроек.
+    settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
+    if settings and settings.topics:
+        try:
+            parsed_topics = json.loads(settings.topics)
+        except Exception:
+            parsed_topics = []
+        for topic_text in _normalize_topic_items(parsed_topics):
+            key = topic_text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            topics.append(topic_text)
+
+    if not topics:
+        topics = [f"Контент-публикация для канала «{channel.channel_name}»"]
+
+    return topics[:60]
+
+
+def _extract_saved_topic_state(channel):
+    extra = _channel_extra_config(channel)
+    topic_plan = extra.get("topic_plan") if isinstance(extra.get("topic_plan"), dict) else {}
+    settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
+
+    topics = _normalize_topic_items((topic_plan.get("topics") or []))
+    if not topics:
+        active_topics = (
+            ChannelTopic.query.filter_by(channel_id=channel.id, is_active=True)
+            .order_by(ChannelTopic.priority.desc(), ChannelTopic.created_at.asc())
+            .all()
+        )
+        topics = [item.topic for item in active_topics if (item.topic or "").strip()]
+    if not topics and settings and settings.topics:
+        try:
+            topics = _normalize_topic_items(json.loads(settings.topics))
+        except Exception:
+            topics = []
+
+    return {
+        "channel_id": channel.id,
+        "channel_name": channel.channel_name,
+        "style_summary": str(topic_plan.get("style_summary") or "").strip(),
+        "semantic_core": _normalize_phrase_list(topic_plan.get("semantic_core") or [], limit=8),
+        "actual_questions": _question_text_list(topic_plan.get("actual_questions") or [], limit=5),
+        "reference_channels": _normalize_reference_channels(extra.get("reference_channels") or [], limit=15),
+        "topics": topics[:60],
+        "updated_at": topic_plan.get("updated_at"),
+    }
+
+
+def _build_posting_plan_preview_payload(
+    channel,
+    start_date=None,
+    posts_count=14,
+    publish_frequency=None,
+    publish_hour=None,
+):
+    posts_count = min(max(int(posts_count or 14), 1), 60)
+    settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
+    extra = _channel_extra_config(channel)
+
+    resolved_frequency = _normalize_frequency(
+        publish_frequency
+        or (settings.publish_frequency if settings else None)
+        or extra.get("publish_frequency")
+        or "daily"
+    ) or "daily"
+
+    if publish_hour is None:
+        resolved_hour = settings.publish_hour if settings and settings.publish_hour is not None else extra.get("publish_hour", 10)
+    else:
+        resolved_hour = publish_hour
+    try:
+        resolved_hour = int(resolved_hour)
+    except (TypeError, ValueError):
+        resolved_hour = 10
+    resolved_hour = min(max(resolved_hour, 0), 23)
+
+    if start_date:
+        try:
+            start_day = datetime.fromisoformat(str(start_date)).date()
+        except Exception:
+            start_day = datetime.utcnow().date()
+    else:
+        start_day = datetime.utcnow().date()
+
+    interval_days = _frequency_to_interval_days(resolved_frequency)
+    topics = _extract_channel_topics_for_plan(channel)
+
+    plan_items = []
+    for idx in range(posts_count):
+        publish_day = start_day + timedelta(days=idx * interval_days)
+        topic_text = topics[idx % len(topics)]
+        plan_items.append(
+            {
+                "index": idx + 1,
+                "publish_date": publish_day.isoformat(),
+                "publish_time": f"{resolved_hour:02d}:00",
+                "topic": topic_text,
+            }
+        )
+
+    return {
+        "channel_id": channel.id,
+        "channel_name": channel.channel_name,
+        "platform": channel.platform,
+        "publish_frequency": resolved_frequency,
+        "publish_frequency_label": _frequency_to_human(resolved_frequency),
+        "publish_hour": resolved_hour,
+        "start_date": start_day.isoformat(),
+        "interval_days": interval_days,
+        "plan_items": plan_items,
+    }
+
+
+def _normalize_posting_plan_items_for_save(raw_items):
+    normalized = []
+    for item in raw_items or []:
+        if not isinstance(item, dict):
+            continue
+
+        publish_date = str(item.get("publish_date") or "").strip()
+        publish_time = str(item.get("publish_time") or "").strip()
+        topic = str(item.get("topic") or "").strip()
+        if not publish_date or not publish_time or not topic:
+            continue
+
+        try:
+            datetime.fromisoformat(f"{publish_date}T{publish_time}")
+        except Exception:
+            continue
+
+        normalized.append(
+            {
+                "publish_date": publish_date,
+                "publish_time": publish_time,
+                "topic": topic,
+            }
+        )
+        if len(normalized) >= 120:
+            break
+    return normalized
+
+
+def _extract_saved_posting_plan_draft(channel):
+    extra = _channel_extra_config(channel)
+    draft = extra.get("posting_plan_draft") if isinstance(extra.get("posting_plan_draft"), dict) else {}
+    settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
+
+    publish_frequency = _normalize_frequency(
+        draft.get("publish_frequency")
+        or (settings.publish_frequency if settings else None)
+        or extra.get("publish_frequency")
+        or "daily"
+    ) or "daily"
+    try:
+        publish_hour = int(
+            draft.get("publish_hour")
+            if draft.get("publish_hour") is not None
+            else (settings.publish_hour if settings and settings.publish_hour is not None else extra.get("publish_hour", 10))
+        )
+    except (TypeError, ValueError):
+        publish_hour = 10
+    publish_hour = min(max(publish_hour, 0), 23)
+
+    plan_items = _normalize_posting_plan_items_for_save(draft.get("plan_items") or [])
+    if plan_items:
+        start_date = plan_items[0]["publish_date"]
+    else:
+        start_date = datetime.utcnow().date().isoformat()
+
+    return {
+        "channel_id": channel.id,
+        "channel_name": channel.channel_name,
+        "publish_frequency": publish_frequency,
+        "publish_frequency_label": _frequency_to_human(publish_frequency),
+        "publish_hour": publish_hour,
+        "start_date": start_date,
+        "plan_items": plan_items,
+        "updated_at": draft.get("updated_at"),
+    }
+
+
+def _compact_text_for_limit(text, max_len):
+    source = re.sub(r"\n{3,}", "\n\n", (text or "").strip())
+    if len(source) <= max_len:
+        return source
+
+    for separator in ("\n\n", "\n", ". ", "! ", "? ", " "):
+        cut_pos = source.rfind(separator, 0, max_len)
+        if cut_pos >= int(max_len * 0.6):
+            return source[:cut_pos].rstrip() + "..."
+    return source[: max_len - 3].rstrip() + "..."
+
+
+def _strip_markdown_emphasis(text_value):
+    """Убирает markdown-выделение, чтобы текст выглядел как нативный пост."""
+    normalized = str(text_value or "")
+    # Преобразуем markdown-список со звездочкой в обычный тире-список.
+    normalized = re.sub(r"(?m)^\s*\*\s+", "- ", normalized)
+    # Убираем markdown-заголовки.
+    normalized = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", normalized)
+    # Снимаем жирное/курсивное выделение через markdown-символы.
+    normalized = re.sub(r"\*\*(.+?)\*\*", r"\1", normalized, flags=re.DOTALL)
+    normalized = re.sub(r"__(.+?)__", r"\1", normalized, flags=re.DOTALL)
+    normalized = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"\1", normalized)
+    normalized = re.sub(r"(?<!_)_([^_\n]+)_(?!_)", r"\1", normalized)
+    # Удаляем остаточные двойные звезды.
+    normalized = normalized.replace("**", "")
+    return normalized
+
+
+def _strip_emojis(text_value):
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F1E6-\U0001F1FF"  # flags
+        "\U0001F300-\U0001FAFF"  # symbols & pictographs
+        "\U00002600-\U000027BF"  # misc symbols
+        "]",
+        flags=re.UNICODE,
+    )
+    cleaned = emoji_pattern.sub("", str(text_value or ""))
+    # Удаляем технические unicode-символы, которые могут остаться после emoji.
+    cleaned = cleaned.replace("\u200d", "").replace("\ufe0f", "")
+    return cleaned
+
+
+def _de_ai_style_cleanup(text_value):
+    cleaned = str(text_value or "")
+    replacements = [
+        (r"(?i)\bне секрет,\s*что\s*", ""),
+        (r"(?i)\bдавайте разбер[её]мся\b[:,]?\s*", "Разберем по шагам: "),
+        (r"(?i)\bважно помнить,\s*что\s*", "Важно: "),
+        (r"(?i)\bэто не просто\b", "это"),
+        (r"(?i)\bинвестиция в ваше здоровье\b", "практичный вклад в качество сна"),
+        (r"(?i)\bпродажи любой ценой\b", "агрессивные продажи"),
+    ]
+    for pattern, replacement in replacements:
+        cleaned = re.sub(pattern, replacement, cleaned)
+
+    cleaned = re.sub(r"[!]{2,}", "!", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _platform_content_principles(platform):
+    if platform == "vk":
+        return (
+            "Платформа VK. Формат: сильный крючок в первых 1-2 строках, далее короткие абзацы "
+            "и списки, одна понятная CTA в конце. Добавь вопрос для вовлечения и 2-5 релевантных "
+            "хэштегов по теме. Не перегружай внешними ссылками, ориентируйся на пользу читателю. "
+            "Не используй markdown-разметку для выделений (например, **текст**, __текст__, *текст*). "
+            "Пиши живым человеческим языком: без канцелярита, без штампов вроде 'не секрет, что' и без "
+            "искусственно-торжественных формулировок."
+        )
+    if platform == "telegram":
+        return (
+            "Платформа Telegram. Формат: первое предложение самое сильное, короткие строки и абзацы, "
+            "умеренный эмфазис, мягкая CTA в конце. Текст должен быть целостным и поместиться в один "
+            "пост вместе с картинкой: максимум ~900 символов, без продолжений. "
+            "Не используй markdown-разметку для выделений (например, **текст**, __текст__, *текст*). "
+            "Пиши живым человеческим языком: конкретно, без воды и без шаблонных оборотов."
+        )
+    return (
+        "Платформа соцсетей. Текст должен быть практичным, структурированным, с ясной пользой и "
+        "одним целевым действием в конце."
+    )
+
+
+def _channel_publication_context(channel):
+    extra = _channel_extra_config(channel)
+    style_profile = extra.get("style_profile") if isinstance(extra.get("style_profile"), dict) else {}
+    topic_plan = extra.get("topic_plan") if isinstance(extra.get("topic_plan"), dict) else {}
+
+    client_description = (extra.get("channel_description") or "").strip()
+    channel_external_description = (extra.get("channel_external_description") or "").strip()
+    style_summary = (
+        (topic_plan.get("style_summary") or "").strip()
+        or (style_profile.get("summary") or "").strip()
+    )
+    semantic_core = _normalize_phrase_list(topic_plan.get("semantic_core") or [], limit=6)
+    top_questions = _question_text_list(topic_plan.get("actual_questions") or [], limit=3)
+    reference_channels = _normalize_reference_channels(extra.get("reference_channels") or [], limit=6)
+
+    context_lines = [f"Канал: {channel.channel_name}", f"Платформа: {channel.platform}"]
+    if client_description:
+        context_lines.append(f"Описание от клиента: {client_description}")
+    if channel_external_description:
+        context_lines.append(f"Публичное описание канала: {channel_external_description}")
+    if style_summary:
+        context_lines.append(f"Ориентир по стилю: {style_summary}")
+    if semantic_core:
+        context_lines.append(f"Семантическое ядро: {', '.join(semantic_core)}")
+    if top_questions:
+        context_lines.append(f"Вопросы аудитории: {', '.join(top_questions)}")
+    if reference_channels:
+        context_lines.append(f"Референс-каналы: {', '.join(reference_channels)}")
+
+    return "\n".join(context_lines)
+
+
+def _build_manual_generation_prompt(channel, topic_text):
+    platform = (channel.platform or "").strip().lower()
+    principles = _platform_content_principles(platform)
+    channel_context = _channel_publication_context(channel)
+    return (
+        f"Тема публикации: {topic_text}\n\n"
+        f"{channel_context}\n\n"
+        f"{principles}\n\n"
+        "Важно: не писать про внутренние задачи бизнеса ('продвижение магазина', 'продажи любой ценой'). "
+        "Пиши как эксперт для конечной аудитории канала: проблемы, решения, практические шаги. "
+        "Текст должен быть готов к немедленной публикации без технических пояснений. "
+        "Не выделяй слова markdown-символами со звездочками/подчеркиваниями. "
+        "Не начинай текст с штампов ('не секрет, что', 'давайте разберемся'), не перегружай восклицаниями и эмодзи. "
+        f"Сделай формулировки уникальными именно для канала «{channel.channel_name}», чтобы не было дословных дублей."
+    )
+
+
+def _platform_text_limit(platform):
+    if platform == "telegram":
+        return 900
+    if platform == "vk":
+        return 1800
+    return 1400
+
+
+def _normalize_publication_text(raw_text, topic_text, platform):
+    normalized = re.sub(r"<[^>]+>", "", str(raw_text or "")).strip()
+    normalized = _strip_markdown_emphasis(normalized)
+    normalized = _strip_emojis(normalized)
+    normalized = _de_ai_style_cleanup(normalized)
+    normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = re.sub(r"[ \t]+\n", "\n", normalized)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
+
+    if _count_words(normalized) < 15:
+        normalized = (
+            f"{topic_text}\n\n"
+            "Короткий практический разбор по теме с акцентом на пользу для читателя. "
+            "Сохраните пост и примените рекомендации на практике."
+        )
+
+    return _compact_text_for_limit(normalized, _platform_text_limit(platform))
+
+
+def _generate_manual_publication_text(channel, topic_text):
+    topic_text = (topic_text or "").strip() or f"Публикация для канала {channel.channel_name}"
+    platform = (channel.platform or "").strip().lower()
+    generation_prompt = _build_manual_generation_prompt(channel, topic_text)
+    keywords = _extract_keywords(f"{topic_text} {channel.channel_name}", limit=10)
+
+    generated_text = ""
+    try:
+        if hasattr(text_gen, "create_article_with_research"):
+            generated_text = text_gen.create_article_with_research(generation_prompt, keywords=keywords)
+        elif hasattr(text_gen, "generate_for_topic"):
+            generated_text = text_gen.generate_for_topic(generation_prompt)
+    except Exception as e:
+        system_logger.warning(
+            "manual_publish_generation_failed channel_id=%s topic=%s error=%s",
+            channel.id,
+            topic_text,
+            e,
+        )
+
+    return _normalize_publication_text(generated_text, topic_text, platform)
+
+
+def _resolve_manual_publish_topic(channel, explicit_topic=""):
+    explicit_topic = (explicit_topic or "").strip()
+    if explicit_topic:
+        return explicit_topic
+
+    extra = _channel_extra_config(channel)
+    draft = extra.get("posting_plan_draft") if isinstance(extra.get("posting_plan_draft"), dict) else {}
+    draft_items = _normalize_posting_plan_items_for_save(draft.get("plan_items") or [])
+    today_iso = datetime.utcnow().date().isoformat()
+    for item in draft_items:
+        topic_text = (item.get("topic") or "").strip()
+        if not topic_text:
+            continue
+        if (item.get("publish_date") or "") >= today_iso:
+            return topic_text
+    if draft_items:
+        fallback_topic = (draft_items[0].get("topic") or "").strip()
+        if fallback_topic:
+            return fallback_topic
+
+    topics = _extract_channel_topics_for_plan(channel)
+    if topics:
+        return topics[0]
+
+    return f"Актуальный пост для канала «{channel.channel_name}»"
+
+
+def _channel_uses_ai_images(channel):
+    settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
+    return bool(settings.use_ai_images) if settings else True
+
+
+def _normalize_generated_image_path(raw_path):
+    path_value = str(raw_path or "").strip()
+    if not path_value:
+        return None
+
+    direct_path = Path(path_value)
+    if direct_path.exists():
+        return str(direct_path)
+    if not direct_path.is_absolute():
+        project_relative = PROJECT_ROOT / path_value
+        if project_relative.exists():
+            return str(project_relative)
+
+    if path_value.startswith("/static/"):
+        static_relative = path_value.replace("/static/", "", 1)
+        candidate = PROJECT_ROOT / "web" / "static" / static_relative
+        if candidate.exists():
+            return str(candidate)
+
+    return None
+
+
+def _build_image_generation_prompt(topic_text, article_text="", channel=None):
+    topic_text = str(topic_text or "").strip()
+    article_text = str(article_text or "").strip()
+    platform = (getattr(channel, "platform", "") or "").strip().lower()
+
+    extra = _channel_extra_config(channel) if channel is not None else {}
+    channel_description = str(extra.get("channel_description") or "").strip()
+    semantic_core = _normalize_phrase_list(
+        ((extra.get("topic_plan") or {}).get("semantic_core") if isinstance(extra.get("topic_plan"), dict) else []) or [],
+        limit=5,
+    )
+
+    platform_hint = ""
+    if platform == "telegram":
+        platform_hint = (
+            "Визуальный формат Telegram: чистая композиция, один главный объект, мягкий свет, "
+            "без перегруза деталями."
+        )
+    elif platform == "vk":
+        platform_hint = (
+            "Визуальный формат VK: более насыщенный lifestyle-кадр, теплая атмосфера и эмоциональная вовлеченность."
+        )
+
+    article_keywords = _extract_keywords(article_text, limit=8)
+    prompt_parts = [
+        topic_text,
+        platform_hint,
+        f"Контекст канала: {channel_description[:220]}" if channel_description else "",
+        f"Семантические акценты: {', '.join(semantic_core)}" if semantic_core else "",
+        f"Ключевые образы из текста: {', '.join(article_keywords[:6])}" if article_keywords else "",
+        "Без текста, логотипов, водяных знаков и коллажей.",
+    ]
+    return " ".join(part for part in prompt_parts if part).strip()
+
+
+def _generate_manual_publication_image(topic_text, article_text="", channel=None):
+    generation_prompt = _build_image_generation_prompt(topic_text, article_text, channel=channel)
+    try:
+        image_path = None
+        if hasattr(img_gen, "create_image_for_article"):
+            image_path = img_gen.create_image_for_article(article_text or "", generation_prompt)
+            normalized = _normalize_generated_image_path(image_path)
+            if normalized:
+                return normalized
+    except Exception as e:
+        system_logger.warning("manual_publish_image_generation_failed topic=%s error=%s", topic_text, e)
+
+    try:
+        from ai.yandex_art_final import create_simple_image
+
+        simple_image = create_simple_image(generation_prompt or topic_text)
+        normalized = _normalize_generated_image_path(simple_image)
+        if normalized:
+            return normalized
+    except Exception as e:
+        system_logger.warning("manual_publish_fallback_image_failed topic=%s error=%s", topic_text, e)
+
+    return None
+
+
+def _cleanup_temp_generated_image(image_path):
+    resolved = _normalize_generated_image_path(image_path)
+    if not resolved:
+        return
+    file_name = Path(resolved).name
+    if not (
+        file_name.startswith("yandex_art_")
+        or file_name.startswith("simple_")
+        or "_compressed_" in file_name
+    ):
+        return
+    try:
+        Path(resolved).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _channel_hashtags(channel):
+    settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
+    if not settings or not settings.hashtags:
+        return []
+    try:
+        parsed = json.loads(settings.hashtags)
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()][:12]
+    except Exception:
+        pass
+    return []
+
+
+def _question_text_list(raw_questions, limit=5):
+    normalized_questions = _normalize_actual_questions(raw_questions or [], limit=limit)
+    return [item.get("question") for item in normalized_questions if item.get("question")]
+
+
+def _normalize_selected_channel_ids(raw_ids):
+    selected_ids = []
+    for value in raw_ids or []:
+        try:
+            channel_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if channel_id not in selected_ids:
+            selected_ids.append(channel_id)
+    return selected_ids
+
+
+def _resolve_publish_target_channels(selected_channel_ids, admin_client_id=None):
+    channels_query = ClientChannel.query.filter_by(is_active=True)
+
+    if is_admin_user(current_user):
+        if selected_channel_ids:
+            channels_query = channels_query.filter(ClientChannel.id.in_(selected_channel_ids))
+        if admin_client_id is not None:
+            try:
+                admin_client_id = int(admin_client_id)
+            except (TypeError, ValueError):
+                return None, (jsonify({"success": False, "error": "Некорректный client_id"}), 400)
+            channels_query = channels_query.filter_by(client_id=admin_client_id)
+        elif current_user.client_id:
+            channels_query = channels_query.filter_by(client_id=current_user.client_id)
+        elif not selected_channel_ids:
+            return (
+                None,
+                (
+                    jsonify(
+                        {
+                            "success": False,
+                            "error": "Выберите хотя бы один канал для ручной публикации в админ-режиме.",
+                        }
+                    ),
+                    400,
+                ),
+            )
+    else:
+        if not current_user.client_id:
+            return None, (jsonify({"success": False, "error": "Ваш аккаунт не привязан к клиенту"}), 400)
+        channels_query = channels_query.filter_by(client_id=current_user.client_id)
+        if selected_channel_ids:
+            channels_query = channels_query.filter(ClientChannel.id.in_(selected_channel_ids))
+
+    channels = channels_query.order_by(ClientChannel.created_at.asc()).all()
+    if not channels:
+        return None, (jsonify({"success": False, "error": "Нет активных каналов для публикации"}), 400)
+    return channels, None
+
+
+def _resolve_single_client_from_channels(channels):
+    client_ids = {channel.client_id for channel in (channels or []) if getattr(channel, "client_id", None)}
+    if len(client_ids) != 1:
+        return None
+    channel = channels[0] if channels else None
+    if not channel:
+        return None
+    if channel.client:
+        return channel.client
+    return Client.query.get(channel.client_id)
+
+
+def _trial_manual_publish_guard(client, requested_posts=1):
+    if not client or client.plan != "trial":
+        return None
+    if not _is_trial_active(client):
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": "Тестовый период завершен. Запросите тариф в личном кабинете для продолжения публикаций.",
+                }
+            ),
+            403,
+        )
+
+    usage = _trial_usage_payload(client)
+    remaining = _safe_nonnegative_int(usage.get("manual_posts_remaining"), 0)
+    if remaining <= 0:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        f"Лимит ручных публикаций на trial исчерпан "
+                        f"({usage.get('manual_posts_limit', TRIAL_MANUAL_POSTS_LIMIT)}). "
+                        "Запросите тариф в личном кабинете."
+                    ),
+                }
+            ),
+            403,
+        )
+
+    if requested_posts and _safe_nonnegative_int(requested_posts, 0) > remaining:
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        f"На trial осталось ручных публикаций: {remaining}. "
+                        f"Уменьшите количество запусков или запросите тариф."
+                    ),
+                    "manual_posts_remaining": remaining,
+                }
+            ),
+            400,
+        )
+
+    return None
+
+
+def _planned_topics_for_test_batch(channel, limit=3):
+    limit = max(1, min(int(limit or 3), 10))
+    topics = []
+    seen = set()
+
+    extra = _channel_extra_config(channel)
+    draft = extra.get("posting_plan_draft") if isinstance(extra.get("posting_plan_draft"), dict) else {}
+    plan_items = _normalize_posting_plan_items_for_save(draft.get("plan_items") or [])
+    plan_items = sorted(plan_items, key=lambda item: f"{item.get('publish_date','')} {item.get('publish_time','')}")
+
+    for item in plan_items:
+        topic_text = str(item.get("topic") or "").strip()
+        if not topic_text:
+            continue
+        key = topic_text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        topics.append(topic_text)
+        if len(topics) >= limit:
+            return topics
+
+    for topic_text in _extract_channel_topics_for_plan(channel):
+        key = topic_text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        topics.append(topic_text)
+        if len(topics) >= limit:
+            return topics
+
+    if not topics:
+        topics = [f"Тестовый пост для канала «{channel.channel_name}»"]
+
+    while len(topics) < limit:
+        topics.append(topics[len(topics) % len(topics)])
+    return topics[:limit]
+
+
+def _publish_generated_post_for_channel(channel, publisher, topic_text, publish_mode="manual"):
+    content_text = _generate_manual_publication_text(channel, topic_text)
+    image_path = None
+    if _channel_uses_ai_images(channel):
+        image_path = _generate_manual_publication_image(topic_text, content_text, channel=channel)
+
+    channel_info = {
+        "platform": channel.platform,
+        "platform_channel_id": channel.channel_id,
+        "channel_name": channel.channel_name,
+        "access_token": channel.access_token,
+        "hashtags": _channel_hashtags(channel),
+    }
+
+    publish_result = publisher.publish_to_channel(channel_info, content_text, image_path=image_path)
+    success = bool(publish_result.get("success"))
+    error_text = str(publish_result.get("error") or "").strip() or None
+
+    post_record = ChannelPost(
+        channel_id=channel.id,
+        topic=topic_text,
+        content=content_text,
+        success=success,
+        views=0,
+        likes=0,
+        shares=0,
+        comments=0,
+        publish_mode=(publish_mode or "manual")[:30],
+        published_at=datetime.utcnow(),
+        error_message=error_text,
+    )
+
+    payload = {
+        "channel_id": channel.id,
+        "channel_name": channel.channel_name,
+        "platform": channel.platform,
+        "success": success,
+        "post_id": publish_result.get("post_id"),
+        "error": error_text,
+        "topic": topic_text,
+        "image_used": bool(image_path),
+        "post_record": post_record,
+    }
+
+    if image_path:
+        _cleanup_temp_generated_image(image_path)
+
+    return payload
+
+
+def _get_accessible_channel(channel_id):
+    channel = ClientChannel.query.get_or_404(channel_id)
+    if is_admin_user(current_user):
+        return channel
+    if not current_user.client_id or channel.client_id != current_user.client_id:
+        abort(403)
+    return channel
+
+
+def _agent_feature_guard():
+    if AGENT_FEATURE_ENABLED:
+        return None
+    return (
+        jsonify(
+            {
+                "success": False,
+                "error": "Контур Expert Agent отключен. Установите ENABLE_EXPERT_AGENT=1 и перезапустите веб-сервис.",
+            }
+        ),
+        404,
+    )
+
+
+def _agent_runs_query_for_current_user():
+    query = GenerationRun.query.join(ClientChannel, GenerationRun.channel_id == ClientChannel.id)
+    if is_admin_user(current_user):
+        return query
+    if not current_user.client_id:
+        return query.filter(text("1=0"))
+    return query.filter(ClientChannel.client_id == current_user.client_id)
+
+
+def _get_accessible_generation_run(run_id):
+    return _agent_runs_query_for_current_user().filter(GenerationRun.id == int(run_id)).first_or_404()
+
+
+def _agent_decision_to_status(decision):
+    return {
+        "approve": "approved",
+        "revise": "needs_revision",
+        "reject": "rejected",
+    }.get((decision or "").strip().lower(), "needs_revision")
+
+
+def _agent_latest_quality_report(run_id):
+    return (
+        QualityReport.query.filter_by(run_id=run_id)
+        .order_by(QualityReport.created_at.desc(), QualityReport.id.desc())
+        .first()
+    )
+
+
+def _agent_latest_feedback(run_id):
+    return (
+        EditorFeedback.query.filter_by(run_id=run_id)
+        .order_by(EditorFeedback.created_at.desc(), EditorFeedback.id.desc())
+        .first()
+    )
+
+
+def _agent_feedback_payload(feedback):
+    if not feedback:
+        return None
+    return {
+        "id": feedback.id,
+        "feedback_type": feedback.feedback_type,
+        "comment": feedback.comment or "",
+        "accepted": bool(feedback.accepted),
+        "created_at": feedback.created_at.isoformat() if feedback.created_at else None,
+    }
+
+
+def _agent_quality_report_payload(report):
+    if not report:
+        return None
+    try:
+        risk_flags = json.loads(report.risk_flags) if report.risk_flags else []
+    except Exception:
+        risk_flags = []
+    if not isinstance(risk_flags, list):
+        risk_flags = []
+    return {
+        "relevance_score": round(float(report.relevance_score or 0), 4),
+        "fact_score": round(float(report.fact_score or 0), 4),
+        "style_score": round(float(report.style_score or 0), 4),
+        "format_score": round(float(report.format_score or 0), 4),
+        "readability_score": round(float(report.readability_score or 0), 4),
+        "risk_flags": risk_flags,
+        "decision": report.decision,
+        "created_at": report.created_at.isoformat() if report.created_at else None,
+    }
+
+
+def _agent_channel_semantic_hints(channel, limit=12):
+    clusters = (
+        SemanticCluster.query.filter_by(channel_id=channel.id)
+        .order_by(SemanticCluster.priority.desc(), SemanticCluster.updated_at.desc())
+        .limit(limit)
+        .all()
+    )
+    hints = [str(item.cluster_name or "").strip() for item in clusters if str(item.cluster_name or "").strip()]
+    if hints:
+        return _normalize_phrase_list(hints, limit=limit)
+
+    extra = _channel_extra_config(channel)
+    topic_plan = extra.get("topic_plan") if isinstance(extra.get("topic_plan"), dict) else {}
+    reference_hints = _reference_channel_query_hints(
+        _normalize_reference_channels(extra.get("reference_channels") or [], limit=10),
+        limit=6,
+    )
+    fallback = _normalize_phrase_list(topic_plan.get("semantic_core") or [], limit=limit)
+    if fallback:
+        return _normalize_phrase_list([*fallback, *reference_hints], limit=limit)
+    return _normalize_phrase_list([*_extract_channel_topics_for_plan(channel), *reference_hints], limit=limit)
+
+
+def _agent_channel_question_hints(channel, limit=10):
+    questions = (
+        AudienceQuestion.query.filter_by(channel_id=channel.id)
+        .order_by(AudienceQuestion.trend_score.desc(), AudienceQuestion.last_seen_at.desc())
+        .limit(limit)
+        .all()
+    )
+    hints = [str(item.question_text or "").strip() for item in questions if str(item.question_text or "").strip()]
+    if hints:
+        return _normalize_phrase_list(hints, limit=limit)
+
+    extra = _channel_extra_config(channel)
+    topic_plan = extra.get("topic_plan") if isinstance(extra.get("topic_plan"), dict) else {}
+    fallback = _question_text_list(topic_plan.get("actual_questions") or [], limit=limit)
+    return _normalize_phrase_list(fallback, limit=limit)
+
+
+def _agent_channel_knowledge_documents(channel, limit=20):
+    return (
+        db.session.query(KnowledgeDocument)
+        .join(KnowledgeSource, KnowledgeDocument.source_id == KnowledgeSource.id)
+        .filter(KnowledgeSource.channel_id == channel.id)
+        .order_by(KnowledgeSource.fetched_at.desc(), KnowledgeDocument.chunk_index.asc())
+        .limit(limit)
+        .all()
+    )
+
+
+def _agent_build_generation_prompt(channel, topic_text, platform, retrieved_context=""):
+    channel_context = _channel_publication_context(channel)
+    principles = _platform_content_principles(platform)
+    blocks = [
+        f"Тема публикации: {topic_text}",
+        channel_context,
+        principles,
+        (
+            "Пиши как профильный эксперт для конечной аудитории канала. "
+            "Убирай технические детали о работе ИИ и не уходи в внутренние бизнес-цели. "
+            "Не используй markdown-разметку выделения со звездочками/подчеркиваниями. "
+            "Не используй шаблонные фразы ('не секрет, что', 'давайте разберемся'), "
+            "пиши кратко и по делу человеческим языком."
+        ),
+    ]
+    if retrieved_context:
+        blocks.append(f"Исследовательский контекст (используй по делу):\n{retrieved_context}")
+    return "\n\n".join(block for block in blocks if block).strip()
+
+
+def _agent_generate_draft_text(channel, topic_text, platform, retrieved_context=""):
+    topic_text = (topic_text or "").strip() or f"Публикация для канала {channel.channel_name}"
+    platform = (platform or channel.platform or "").strip().lower() or "telegram"
+    generation_prompt = _agent_build_generation_prompt(channel, topic_text, platform, retrieved_context)
+    keywords = _extract_keywords(f"{topic_text} {channel.channel_name} {retrieved_context}", limit=12)
+
+    generated_text = ""
+    try:
+        if hasattr(text_gen, "create_article_with_research"):
+            generated_text = text_gen.create_article_with_research(generation_prompt, keywords=keywords)
+        elif hasattr(text_gen, "generate_for_topic"):
+            generated_text = text_gen.generate_for_topic(generation_prompt)
+    except Exception as e:
+        system_logger.warning(
+            "agent_draft_generation_failed channel_id=%s topic=%s error=%s",
+            channel.id,
+            topic_text,
+            e,
+        )
+
+    return _normalize_publication_text(generated_text, topic_text, platform)
+
+
+def _agent_store_quality_report(run, quality_payload):
+    report = QualityReport(
+        run_id=run.id,
+        relevance_score=float(quality_payload.get("relevance_score") or 0),
+        fact_score=float(quality_payload.get("fact_consistency_score") or 0),
+        style_score=float(quality_payload.get("style_match_score") or 0),
+        format_score=float(quality_payload.get("platform_fit_score") or 0),
+        readability_score=float(quality_payload.get("readability_score") or 0),
+        risk_flags=json.dumps(quality_payload.get("risk_flags") or [], ensure_ascii=False),
+        decision=str(quality_payload.get("decision") or "revise"),
+    )
+    db.session.add(report)
+    run.quality_score = float(quality_payload.get("quality_score") or 0)
+    run.status = _agent_decision_to_status(quality_payload.get("decision"))
+    return report
+
+
+def _agent_run_payload(run, quality_report=None):
+    report_payload = _agent_quality_report_payload(quality_report)
+    latest_feedback = _agent_latest_feedback(run.id)
+    feedback_count = EditorFeedback.query.filter_by(run_id=run.id).count()
+    return {
+        "id": run.id,
+        "client_id": run.client_id,
+        "channel_id": run.channel_id,
+        "channel_name": run.channel.channel_name if run.channel else None,
+        "platform": run.platform,
+        "topic": run.topic,
+        "run_mode": run.run_mode,
+        "status": run.status,
+        "quality_score": round(float(run.quality_score), 4) if run.quality_score is not None else None,
+        "error": run.error,
+        "output_text": run.output_text,
+        "output_image_ref": run.output_image_ref,
+        "quality_report": report_payload,
+        "feedback_count": feedback_count,
+        "latest_feedback": _agent_feedback_payload(latest_feedback),
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+        "published_at": run.published_at.isoformat() if run.published_at else None,
+    }
+
 
 @login_manager.user_loader
 def load_user(user_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT id, username, email, role FROM users WHERE id = ?', (user_id,))
-    user_data = cursor.fetchone()
-    conn.close()
-    
-    if user_data:
-        return User(user_data[0], user_data[1], user_data[2], user_data[3])
-    return None
+    return db.session.get(User, int(user_id))
 
-def get_db_connection(db_name='snoomi_channels.db'):
-    """Создает соединение с базой данных"""
-    db_path = os.path.join(project_root, db_name)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    return conn
 
-def init_database():
-    """Инициализирует базу данных для веб-панели"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Таблица пользователей веб-панели
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        email TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        role TEXT DEFAULT 'client',  -- client, admin
-        telegram_id INTEGER,
-        client_id INTEGER,  -- ссылка на clients.id
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        last_login TIMESTAMP
-    )
-    ''')
-    
-    # Добавляем администратора по умолчанию если нет
-    cursor.execute('SELECT COUNT(*) FROM users WHERE role = "admin"')
-    if cursor.fetchone()[0] == 0:
-        admin_hash = generate_password_hash('admin123')
-        cursor.execute('''
-        INSERT INTO users (username, email, password_hash, role)
-        VALUES (?, ?, ?, ?)
-        ''', ('admin', 'admin@snoomi.ru', admin_hash, 'admin'))
-        print("✅ Создан администратор: admin / admin123")
-    
-    conn.commit()
-    conn.close()
+# Импорт модулей Snoomi (fallback на заглушки если модулей нет/не настроены ключи)
+try:
+    from ai.text_generator import TextGenerator
+    from ai.image_generator import ImageGenerator
 
-# Инициализируем БД при запуске
-with app.app_context():
-    init_database()
+    text_gen = TextGenerator()
+    img_gen = ImageGenerator()
+    logger.info("✅ AI-модули загружены")
+except Exception as e:
+    logger.warning(f"⚠️ AI-модули недоступны, используется fallback: {e}")
 
-# ===================== РОУТЫ =====================
+    class TextGenerator:
+        def generate_for_topic(self, topic):
+            return f"Текст о теме: {topic}"
 
-@app.route('/')
-def index():
-    """Главная страница"""
-    return render_template('index.html')
+    class ImageGenerator:
+        def create_image_for_article(self, text, topic):
+            return "/static/placeholder.jpg"
 
-@app.route('/login', methods=['GET', 'POST'])
+    text_gen = TextGenerator()
+    img_gen = ImageGenerator()
+
+
+# -------------------- АУТЕНТИФИКАЦИЯ --------------------
+@app.route("/login", methods=["GET", "POST"])
 def login():
-    """Страница входа"""
-    if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM users WHERE username = ?', (username,))
-        user_data = cursor.fetchone()
-        conn.close()
-        
-        if user_data and check_password_hash(user_data['password_hash'], password):
-            user = User(user_data['id'], user_data['username'], user_data['email'], user_data['role'])
+    if current_user.is_authenticated:
+        return redirect(url_for("dashboard"))
+
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        user = User.query.filter_by(username=username).first()
+
+        if user and user.check_password(password) and user.is_active:
             login_user(user)
-            
-            # Обновляем время последнего входа
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute('UPDATE users SET last_login = ? WHERE id = ?', 
-                         (datetime.now(), user.id))
-            conn.commit()
-            conn.close()
-            
-            return redirect(url_for('dashboard'))
-        
-        flash('Неверное имя пользователя или пароль', 'danger')
-    
-    return render_template('login.html')
+            return redirect(url_for("dashboard"))
 
-@app.route('/register', methods=['GET', 'POST'])
+        flash("Неверный логин или пароль", "danger")
+
+    return render_template("login.html")
+
+
+@app.route("/register", methods=["GET", "POST"])
 def register():
-    """Регистрация нового пользователя"""
-    if request.method == 'POST':
-        username = request.form.get('username')
-        email = request.form.get('email')
-        password = request.form.get('password')
-        confirm_password = request.form.get('confirm_password')
-        
-        # Валидация
-        if password != confirm_password:
-            flash('Пароли не совпадают', 'danger')
-            return render_template('register.html')
-        
-        if len(password) < 6:
-            flash('Пароль должен быть не менее 6 символов', 'danger')
-            return render_template('register.html')
-        
-        # Проверяем, есть ли такой пользователь
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT id FROM users WHERE username = ? OR email = ?', (username, email))
-        if cursor.fetchone():
-            flash('Пользователь с таким именем или email уже существует', 'danger')
-            conn.close()
-            return render_template('register.html')
-        
-        # Создаем пользователя
-        password_hash = generate_password_hash(password)
-        cursor.execute('''
-        INSERT INTO users (username, email, password_hash, role)
-        VALUES (?, ?, ?, 'client')
-        ''', (username, email, password_hash))
-        conn.commit()
-        conn.close()
-        
-        flash('Регистрация успешна! Теперь войдите в систему.', 'success')
-        return redirect(url_for('login'))
-    
-    return render_template('register.html')
+    if current_user.is_authenticated:
+        return redirect(url_for("dashboard"))
 
-@app.route('/logout')
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        client_name = request.form.get("client_name", "").strip() or username
+        email = request.form.get("email", "").strip() or None
+        password = request.form.get("password", "")
+        confirm_password = request.form.get("confirm_password", "")
+        notification_telegram = request.form.get("notification_telegram", "").strip() or None
+
+        if not username:
+            flash("Введите имя пользователя", "danger")
+            return render_template("register.html")
+        if not client_name:
+            flash("Введите имя клиента/компании", "danger")
+            return render_template("register.html")
+        if password != confirm_password:
+            flash("Пароли не совпадают", "danger")
+            return render_template("register.html")
+        if len(password) < 6:
+            flash("Пароль должен быть не менее 6 символов", "danger")
+            return render_template("register.html")
+        if User.query.filter_by(username=username).first():
+            flash("Имя пользователя уже занято", "danger")
+            return render_template("register.html")
+        if email and User.query.filter_by(email=email).first():
+            flash("Пользователь с таким email уже существует", "danger")
+            return render_template("register.html")
+
+        trial_days = TRIAL_MAX_DAYS
+
+        now = datetime.utcnow()
+        trial_ends_at = now + timedelta(days=trial_days)
+
+        new_client = Client(
+            name=client_name,
+            email=email,
+            notification_telegram=notification_telegram,
+            plan="trial",
+            status="active",
+            trial_days=trial_days,
+            trial_started_at=now,
+            trial_ends_at=trial_ends_at,
+            trial_auto_posts_limit=TRIAL_AUTO_POSTS_LIMIT,
+            trial_auto_posts_used=0,
+            trial_manual_posts_limit=TRIAL_MANUAL_POSTS_LIMIT,
+            trial_manual_posts_used=0,
+            trial_completed_at=None,
+        )
+        db.session.add(new_client)
+        db.session.flush()
+
+        new_user = User(
+            username=username,
+            email=email,
+            role="client",
+            client_id=new_client.id,
+            is_active=True,
+        )
+        new_user.set_password(password)
+        db.session.add(new_user)
+        db.session.commit()
+
+        email_sent = False
+        email_status = "not_requested"
+        if email:
+            email_sent, email_status = _send_registration_email(
+                email_to=email,
+                username=username,
+                password=password,
+                client_name=client_name,
+                trial_days=trial_days,
+            )
+
+        login_user(new_user)
+        flash(
+            (
+                "Регистрация успешна! Вам активирован бесплатный период на 30 дней: "
+                "до 15 авто-публикаций и до 5 ручных публикаций без привязки карты."
+            ),
+            "success",
+        )
+        if email and email_sent and str(email_status).startswith("stub_saved:"):
+            stub_path = str(email_status).split(":", 1)[1].strip()
+            stub_filename = Path(stub_path).name if stub_path else "registration_email.eml"
+            flash(
+                f"Письмо сохранено в локальную заглушку: logs/dev_outbox/{stub_filename}",
+                "info",
+            )
+        elif email and email_sent:
+            flash("Данные для входа отправлены на указанную почту.", "success")
+        elif email and email_status == "smtp_not_configured":
+            flash(
+                "Регистрация выполнена, но почта не отправлена: SMTP пока не настроен в окружении.",
+                "warning",
+            )
+        elif email and str(email_status).startswith("stub_error:"):
+            flash(
+                "Регистрация выполнена, но письмо не удалось сохранить в локальный outbox.",
+                "warning",
+            )
+        elif email and not email_sent:
+            flash(
+                "Регистрация выполнена, но письмо не отправлено. Проверьте настройки SMTP.",
+                "warning",
+            )
+        return redirect(url_for("channels"))
+
+    return render_template("register.html")
+
+
+@app.route("/logout")
 @login_required
 def logout():
-    """Выход из системы"""
     logout_user()
-    return redirect(url_for('index'))
+    return redirect(url_for("index"))
 
-@app.route('/dashboard')
+
+def _safe_internal_return_path(raw_value, default="/channels"):
+    value = (raw_value or "").strip()
+    if not value.startswith("/"):
+        return default
+    if value.startswith("//"):
+        return default
+    return value
+
+
+@app.route("/auth/vk/start")
+@login_required
+def auth_vk_start():
+    if not current_user.client_id:
+        flash("VK-подключение доступно только для клиентского аккаунта.", "warning")
+        return redirect(url_for("channels"))
+    if not _vk_oauth_enabled():
+        flash("VK OAuth еще не настроен на сервере. Добавьте VK_OAUTH_CLIENT_ID и VK_OAUTH_CLIENT_SECRET.", "warning")
+        return redirect(url_for("channels"))
+
+    state = secrets.token_urlsafe(24)
+    return_to = _safe_internal_return_path(request.args.get("return_to"), default="/channels")
+    session["vk_oauth_state"] = state
+    session["vk_oauth_return_to"] = return_to
+
+    query_params = {
+        "client_id": _vk_oauth_client_id(),
+        "redirect_uri": _vk_oauth_redirect_uri(),
+        "response_type": "code",
+        "scope": _vk_oauth_scope(),
+        "state": state,
+        "v": "5.199",
+    }
+    authorize_url = f"https://oauth.vk.com/authorize?{urlencode(query_params)}"
+    return redirect(authorize_url)
+
+
+@app.route("/auth/vk/callback")
+@login_required
+def auth_vk_callback():
+    if not current_user.client_id:
+        flash("Ваш аккаунт не привязан к клиенту для VK-подключения.", "danger")
+        return redirect(url_for("channels"))
+
+    return_to = _safe_internal_return_path(session.pop("vk_oauth_return_to", "/channels"), default="/channels")
+    state_expected = session.pop("vk_oauth_state", "")
+    state_actual = (request.args.get("state") or "").strip()
+    if not state_expected or state_expected != state_actual:
+        system_logger.warning(
+            "vk_oauth_state_mismatch user_id=%s expected=%s actual=%s",
+            current_user.id if current_user.is_authenticated else None,
+            bool(state_expected),
+            bool(state_actual),
+        )
+        flash("VK OAuth: некорректный state. Повторите подключение.", "danger")
+        return redirect(return_to)
+
+    if request.args.get("error"):
+        error_text = request.args.get("error_description") or request.args.get("error") or "unknown_error"
+        system_logger.warning(
+            "vk_oauth_rejected user_id=%s error=%s",
+            current_user.id if current_user.is_authenticated else None,
+            error_text,
+        )
+        flash(f"VK OAuth отклонен: {error_text}", "danger")
+        return redirect(return_to)
+
+    auth_code = (request.args.get("code") or "").strip()
+    if not auth_code:
+        flash("VK OAuth: отсутствует code в callback.", "danger")
+        return redirect(return_to)
+
+    try:
+        token_response = requests.get(
+            "https://oauth.vk.com/access_token",
+            params={
+                "client_id": _vk_oauth_client_id(),
+                "client_secret": _vk_oauth_client_secret(),
+                "redirect_uri": _vk_oauth_redirect_uri(),
+                "code": auth_code,
+            },
+            timeout=(8, 20),
+        )
+        token_payload = token_response.json() if token_response.content else {}
+    except Exception as e:
+        system_logger.exception(
+            "vk_oauth_exchange_failed user_id=%s error=%s",
+            current_user.id if current_user.is_authenticated else None,
+            e,
+        )
+        flash(f"VK OAuth: ошибка обмена code на токен: {e}", "danger")
+        return redirect(return_to)
+
+    if token_response.status_code != 200 or not token_payload.get("access_token"):
+        error_hint = token_payload.get("error_description") or token_payload.get("error") or f"HTTP {token_response.status_code}"
+        system_logger.warning(
+            "vk_oauth_no_token user_id=%s status=%s hint=%s",
+            current_user.id if current_user.is_authenticated else None,
+            token_response.status_code,
+            error_hint,
+        )
+        flash(f"VK OAuth: не удалось получить токен ({error_hint}).", "danger")
+        return redirect(return_to)
+
+    access_token = str(token_payload.get("access_token") or "").strip()
+    user_id = str(token_payload.get("user_id") or "").strip() or None
+    scope = str(token_payload.get("scope") or "").strip() or None
+    expires_in = token_payload.get("expires_in")
+    expires_at = None
+    try:
+        expires_in_value = int(expires_in)
+        if expires_in_value > 0:
+            expires_at = datetime.utcnow() + timedelta(seconds=expires_in_value)
+    except Exception:
+        expires_at = None
+
+    groups = _fetch_vk_oauth_groups(access_token)
+
+    client = Client.query.get(current_user.client_id)
+    if not client:
+        flash("VK OAuth: клиент не найден.", "danger")
+        return redirect(return_to)
+
+    client.vk_access_token = access_token
+    client.vk_user_id = user_id
+    client.vk_scope = scope
+    client.vk_token_expires_at = expires_at
+    client.vk_groups_cache = json.dumps(groups, ensure_ascii=False)
+    client.vk_groups_updated_at = datetime.utcnow()
+    db.session.commit()
+    system_logger.info(
+        "vk_oauth_connected user_id=%s client_id=%s groups=%s",
+        current_user.id if current_user.is_authenticated else None,
+        client.id,
+        len(groups),
+    )
+
+    if groups:
+        flash(
+            f"VK подключен. Найдено сообществ с доступом: {len(groups)}. "
+            "Выберите сообщество в шаге подключения канала.",
+            "success",
+        )
+    else:
+        flash(
+            "VK подключен, но сообщества с правами публикации не найдены. "
+            "Проверьте роли в группе и повторите авторизацию.",
+            "warning",
+        )
+    return redirect(return_to)
+
+
+# -------------------- ОСНОВНЫЕ СТРАНИЦЫ --------------------
+@app.route("/")
+def index():
+    try:
+        total_posts = ChannelPost.query.count()
+        active_clients = Client.query.filter_by(status="active").count()
+        active_channels = ClientChannel.query.filter_by(is_active=True).count()
+    except Exception as exc:
+        system_logger.warning("index_metrics_fallback error=%s", exc)
+        total_posts = 0
+        active_clients = 0
+        active_channels = 0
+
+    supported_networks = []
+    if "telegram" in SUPPORTED_PLATFORMS:
+        supported_networks.append("Telegram")
+    if "vk" in SUPPORTED_PLATFORMS:
+        supported_networks.append("ВКонтакте")
+
+    return render_template(
+        "index.html",
+        total_posts=total_posts,
+        active_clients=active_clients,
+        active_channels=active_channels,
+        supported_networks=supported_networks,
+        trial_days_default=TRIAL_MAX_DAYS,
+        trial_auto_posts_limit=TRIAL_AUTO_POSTS_LIMIT,
+        trial_manual_posts_limit=TRIAL_MANUAL_POSTS_LIMIT,
+        trial_topics_limit=TRIAL_AUTO_TOPICS_LIMIT,
+        landing_pages=SEO_LANDING_PAGES[:15],
+    )
+
+
+@app.route("/landings/<slug>")
+def seo_landing_page(slug):
+    page = SEO_LANDING_MAP.get((slug or "").strip().lower())
+    if not page:
+        abort(404)
+    return render_template(
+        "seo_landing.html",
+        page=page,
+        related_pages=[item for item in SEO_LANDING_PAGES if item["slug"] != page["slug"]][:6],
+    )
+
+
+@app.route("/robots.txt")
+def robots_txt():
+    base_url = _resolved_public_base_url()
+    lines = [
+        "User-agent: *",
+        "Allow: /",
+        "",
+        "Disallow: /admin/",
+        "Disallow: /api/",
+        "Disallow: /agent",
+        "",
+        f"Sitemap: {base_url}/sitemap.xml",
+    ]
+    return Response("\n".join(lines), mimetype="text/plain; charset=utf-8")
+
+
+@app.route("/sitemap.xml")
+def sitemap_xml():
+    base_url = _resolved_public_base_url().rstrip("/")
+    static_entries = [
+        {"loc": f"{base_url}{url_for('index')}", "changefreq": "daily", "priority": "1.0"},
+        {"loc": f"{base_url}{url_for('register')}", "changefreq": "weekly", "priority": "0.8"},
+        {"loc": f"{base_url}{url_for('login')}", "changefreq": "weekly", "priority": "0.6"},
+    ]
+    landing_entries = [
+        {
+            "loc": f"{base_url}{url_for('seo_landing_page', slug=item['slug'])}",
+            "changefreq": "weekly",
+            "priority": "0.8",
+        }
+        for item in SEO_LANDING_PAGES
+    ]
+    entries = [*static_entries, *landing_entries]
+    lastmod = datetime.utcnow().date().isoformat()
+
+    xml_lines = ['<?xml version="1.0" encoding="UTF-8"?>', '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
+    for entry in entries:
+        xml_lines.extend(
+            [
+                "  <url>",
+                f"    <loc>{escape(entry['loc'])}</loc>",
+                f"    <lastmod>{lastmod}</lastmod>",
+                f"    <changefreq>{entry['changefreq']}</changefreq>",
+                f"    <priority>{entry['priority']}</priority>",
+                "  </url>",
+            ]
+        )
+    xml_lines.append("</urlset>")
+    return Response("\n".join(xml_lines), mimetype="application/xml; charset=utf-8")
+
+
+@app.route("/dashboard")
 @login_required
 def dashboard():
-    """Панель управления"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Получаем статистику в зависимости от роли
-    if current_user.role == 'admin':
-        # Статистика для администратора
-        cursor.execute('SELECT COUNT(*) FROM clients')
-        total_clients = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(*) FROM client_channels WHERE is_active = 1')
-        active_channels = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(*) FROM channel_posts WHERE DATE(published_at) = DATE("now")')
-        posts_today = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT COUNT(*) FROM users WHERE role = "client"')
-        total_users = cursor.fetchone()[0]
-        
-        stats = {
-            'total_clients': total_clients,
-            'active_channels': active_channels,
-            'posts_today': posts_today,
-            'total_users': total_users
-        }
-    else:
-        # Статистика для клиента
-        # Ищем client_id для этого пользователя
-        cursor.execute('SELECT client_id FROM users WHERE id = ?', (current_user.id,))
-        user_data = cursor.fetchone()
-        
-        if user_data and user_data['client_id']:
-            client_id = user_data['client_id']
-            
-            # Получаем статистику клиента
-            from database.channels_db import channels_db
-            client_stats = channels_db.get_client_statistics(client_id)
-            
-            if client_stats and client_stats['overall_stats']:
-                total_channels, active_channels, total_posts, total_views, total_likes, _ = client_stats['overall_stats']
-                stats = {
-                    'total_channels': total_channels or 0,
-                    'active_channels': active_channels or 0,
-                    'total_posts': total_posts or 0,
-                    'total_views': total_views or 0,
-                    'total_likes': total_likes or 0
-                }
-            else:
-                stats = {
-                    'total_channels': 0,
-                    'active_channels': 0,
-                    'total_posts': 0,
-                    'total_views': 0,
-                    'total_likes': 0
-                }
-        else:
-            stats = {}
-    
-    conn.close()
-    
-    return render_template('dashboard.html', stats=stats, user=current_user)
+    publish_channels_payload = []
+    client_info = None
 
-@app.route('/channels')
+    if is_admin_user(current_user):
+        stats = {
+            "total_clients": Client.query.count(),
+            "active_channels": ClientChannel.query.filter_by(is_active=True).count(),
+            "posts_today": ChannelPost.query.filter(
+                ChannelPost.published_at >= datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            ).count(),
+            "total_users": User.query.filter(User.role != "admin").count(),
+        }
+
+        publish_channels_data = (
+            ClientChannel.query.filter_by(is_active=True)
+            .order_by(ClientChannel.created_at.desc())
+            .all()
+        )
+        for channel in publish_channels_data:
+            publish_channels_payload.append(
+                {
+                    "id": channel.id,
+                    "name": channel.channel_name,
+                    "platform": channel.platform,
+                    "client_name": channel.client.name if channel.client else "",
+                }
+            )
+    else:
+        if current_user.client_id:
+            client = Client.query.get(current_user.client_id)
+            client_info = _serialize_client(client) if client else None
+            total_channels = ClientChannel.query.filter_by(client_id=current_user.client_id).count()
+            active_channels = ClientChannel.query.filter_by(
+                client_id=current_user.client_id, is_active=True
+            ).count()
+            total_posts = (
+                db.session.query(ChannelPost)
+                .join(ClientChannel, ChannelPost.channel_id == ClientChannel.id)
+                .filter(ClientChannel.client_id == current_user.client_id)
+                .count()
+            )
+            totals = (
+                db.session.query(
+                    db.func.coalesce(db.func.sum(ChannelPost.views), 0),
+                    db.func.coalesce(db.func.sum(ChannelPost.likes), 0),
+                )
+                .join(ClientChannel, ChannelPost.channel_id == ClientChannel.id)
+                .filter(ClientChannel.client_id == current_user.client_id)
+                .first()
+            )
+            total_views, total_likes = totals
+
+            publish_channels_data = (
+                ClientChannel.query.filter_by(client_id=current_user.client_id, is_active=True)
+                .order_by(ClientChannel.created_at.desc())
+                .all()
+            )
+            for channel in publish_channels_data:
+                publish_channels_payload.append(
+                    {
+                        "id": channel.id,
+                        "name": channel.channel_name,
+                        "platform": channel.platform,
+                    }
+                )
+        else:
+            total_channels = active_channels = total_posts = total_views = total_likes = 0
+
+        stats = {
+            "total_channels": total_channels,
+            "active_channels": active_channels,
+            "total_posts": total_posts,
+            "total_views": total_views or 0,
+            "total_likes": total_likes or 0,
+        }
+
+    return render_template(
+        "dashboard.html",
+        stats=stats,
+        user=current_user,
+        publish_channels=publish_channels_payload,
+        client_info=client_info,
+    )
+
+
+@app.route("/channels")
 @login_required
 def channels():
-    """Управление каналами"""
-    if current_user.role == 'admin':
-        # Администратор видит все каналы
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-        SELECT cc.*, c.name as client_name 
-        FROM client_channels cc
-        JOIN clients c ON cc.client_id = c.id
-        ORDER BY cc.created_at DESC
-        ''')
-        channels_data = cursor.fetchall()
-        conn.close()
+    if is_admin_user(current_user):
+        channels_data = (
+            ClientChannel.query.order_by(ClientChannel.created_at.desc()).all()
+        )
+    elif current_user.client_id:
+        channels_data = (
+            ClientChannel.query.filter_by(client_id=current_user.client_id)
+            .order_by(ClientChannel.created_at.desc())
+            .all()
+        )
     else:
-        # Клиент видит только свои каналы
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT client_id FROM users WHERE id = ?', (current_user.id,))
-        user_data = cursor.fetchone()
-        
-        if user_data and user_data['client_id']:
-            client_id = user_data['client_id']
-            cursor.execute('''
-            SELECT * FROM client_channels 
-            WHERE client_id = ?
-            ORDER BY created_at DESC
-            ''', (client_id,))
-            channels_data = cursor.fetchall()
-        else:
-            channels_data = []
-        
-        conn.close()
-    
-    return render_template('channels.html', channels=channels_data)
+        channels_data = []
 
-@app.route('/api/channels', methods=['POST'])
+    # channels.html использует legacy-поля name/category, но расширяем payload новыми полями.
+    channels_payload = []
+    for ch in channels_data:
+        serialized = _serialize_channel(ch, include_client_name=True)
+        serialized["name"] = ch.channel_name
+        serialized["category"] = ch.platform
+        channels_payload.append(serialized)
+
+    client_info = None
+    if current_user.client_id:
+        client = Client.query.get(current_user.client_id)
+        client_info = _serialize_client(client) if client else None
+
+    return render_template(
+        "channels.html",
+        channels=channels_payload,
+        scheduled_posts=[],
+        content_list=[],
+        client_info=client_info,
+    )
+
+
+@app.route("/posting-setup")
 @login_required
-def add_channel():
-    """API: Добавление канала"""
-    data = request.json
-    
-    required_fields = ['platform', 'channel_id', 'channel_name']
-    if not all(field in data for field in required_fields):
-        return jsonify({'success': False, 'error': 'Не все обязательные поля заполнены'}), 400
-    
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Определяем client_id
-        if current_user.role == 'admin':
-            client_id = data.get('client_id')
-            if not client_id:
-                return jsonify({'success': False, 'error': 'Для администратора необходимо указать client_id'}), 400
-        else:
-            cursor.execute('SELECT client_id FROM users WHERE id = ?', (current_user.id,))
-            user_data = cursor.fetchone()
-            if not user_data or not user_data['client_id']:
-                return jsonify({'success': False, 'error': 'Клиент не найден'}), 400
-            client_id = user_data['client_id']
-        
-        # Добавляем канал
-        cursor.execute('''
-        INSERT INTO client_channels (client_id, platform, channel_id, channel_name, access_token, is_active)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ''', (
-            client_id,
-            data['platform'],
-            data['channel_id'],
-            data['channel_name'],
-            data.get('access_token'),
-            data.get('is_active', True)
-        ))
-        
-        channel_id = cursor.lastrowid
-        
-        # Добавляем настройки по умолчанию
-        cursor.execute('''
-        INSERT INTO channel_settings (channel_id) VALUES (?)
-        ''', (channel_id,))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'success': True, 'channel_id': channel_id})
-        
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+def posting_setup():
+    if is_admin_user(current_user):
+        channels_data = (
+            ClientChannel.query.filter_by(is_active=True)
+            .order_by(ClientChannel.created_at.desc())
+            .all()
+        )
+    elif current_user.client_id:
+        channels_data = (
+            ClientChannel.query.filter_by(client_id=current_user.client_id, is_active=True)
+            .order_by(ClientChannel.created_at.desc())
+            .all()
+        )
+    else:
+        channels_data = []
 
-@app.route('/api/channels/<int:channel_id>', methods=['PUT'])
+    channels_payload = [_serialize_channel(ch, include_client_name=True) for ch in channels_data]
+    client_info = None
+    if current_user.client_id:
+        client = Client.query.get(current_user.client_id)
+        client_info = _serialize_client(client) if client else None
+    return render_template("posting_setup.html", channels=channels_payload, user=current_user, client_info=client_info)
+
+
+@app.route("/posting-plan")
 @login_required
-def update_channel(channel_id):
-    """API: Обновление канала"""
-    data = request.json
-    
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Проверяем права доступа
-        if current_user.role != 'admin':
-            cursor.execute('''
-            SELECT cc.client_id 
-            FROM client_channels cc
-            JOIN users u ON cc.client_id = u.client_id
-            WHERE cc.id = ? AND u.id = ?
-            ''', (channel_id, current_user.id))
-            
-            if not cursor.fetchone():
-                conn.close()
-                return jsonify({'success': False, 'error': 'Доступ запрещен'}), 403
-        
-        # Обновляем канал
-        update_fields = []
-        params = []
-        
-        for field in ['channel_name', 'access_token', 'is_active']:
-            if field in data:
-                update_fields.append(f"{field} = ?")
-                params.append(data[field])
-        
-        if update_fields:
-            params.append(channel_id)
-            query = f"UPDATE client_channels SET {', '.join(update_fields)} WHERE id = ?"
-            cursor.execute(query, params)
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'success': True})
-        
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+def posting_plan():
+    if is_admin_user(current_user):
+        channels_data = (
+            ClientChannel.query.filter_by(is_active=True)
+            .order_by(ClientChannel.created_at.desc())
+            .all()
+        )
+    elif current_user.client_id:
+        channels_data = (
+            ClientChannel.query.filter_by(client_id=current_user.client_id, is_active=True)
+            .order_by(ClientChannel.created_at.desc())
+            .all()
+        )
+    else:
+        channels_data = []
 
-@app.route('/api/channels/<int:channel_id>/settings', methods=['PUT'])
+    channels_payload = [_serialize_channel(ch, include_client_name=True) for ch in channels_data]
+    client_info = None
+    if current_user.client_id:
+        client = Client.query.get(current_user.client_id)
+        client_info = _serialize_client(client) if client else None
+    return render_template("posting_plan.html", channels=channels_payload, user=current_user, client_info=client_info)
+
+
+@app.route("/agent")
 @login_required
-def update_channel_settings(channel_id):
-    """API: Обновление настроек канала"""
-    data = request.json
-    
-    try:
-        # Используем нашу базу данных каналов
-        from database.channels_db import channels_db
-        
-        # Проверяем права доступа
-        if current_user.role != 'admin':
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute('''
-            SELECT cc.client_id 
-            FROM client_channels cc
-            JOIN users u ON cc.client_id = u.client_id
-            WHERE cc.id = ? AND u.id = ?
-            ''', (channel_id, current_user.id))
-            
-            if not cursor.fetchone():
-                conn.close()
-                return jsonify({'success': False, 'error': 'Доступ запрещен'}), 403
-            conn.close()
-        
-        # Обновляем настройки
-        success = channels_db.update_channel_settings(channel_id, **data)
-        
-        return jsonify({'success': success})
-        
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+def agent_console():
+    if is_admin_user(current_user):
+        channels_data = (
+            ClientChannel.query.filter_by(is_active=True)
+            .order_by(ClientChannel.created_at.desc())
+            .all()
+        )
+    elif current_user.client_id:
+        channels_data = (
+            ClientChannel.query.filter_by(client_id=current_user.client_id, is_active=True)
+            .order_by(ClientChannel.created_at.desc())
+            .all()
+        )
+    else:
+        channels_data = []
 
-@app.route('/statistics')
+    channels_payload = [_serialize_channel(ch, include_client_name=True) for ch in channels_data]
+    return render_template(
+        "agent_runs.html",
+        channels=channels_payload,
+        user=current_user,
+        agent_enabled=AGENT_FEATURE_ENABLED,
+    )
+
+
+@app.route("/content")
+@login_required
+def content():
+    # Legacy URL старой веб-структуры
+    return redirect(url_for("channels"))
+
+
+@app.route("/analytics")
+@login_required
+def analytics():
+    # Legacy URL старой веб-структуры
+    return redirect(url_for("statistics"))
+
+
+@app.route("/admin/clients")
+@admin_required
+def admin_clients():
+    return render_template("admin_clients.html")
+
+
+@app.route("/statistics")
 @login_required
 def statistics():
-    """Страница статистики"""
-    time_range = request.args.get('range', '7days')
-    
-    # Определяем диапазон дат
-    end_date = datetime.now()
-    if time_range == '7days':
-        start_date = end_date - timedelta(days=7)
-    elif time_range == '30days':
-        start_date = end_date - timedelta(days=30)
-    else:
-        start_date = end_date - timedelta(days=7)
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    if current_user.role == 'admin':
-        # Статистика для администратора
-        cursor.execute('''
-        SELECT 
-            DATE(published_at) as date,
-            COUNT(*) as posts,
-            SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successful,
-            SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failed
-        FROM channel_posts
-        WHERE published_at BETWEEN ? AND ?
-        GROUP BY DATE(published_at)
-        ORDER BY date
-        ''', (start_date, end_date))
-        
-        daily_stats = cursor.fetchall()
-        
-        # Топ клиентов
-        cursor.execute('''
-        SELECT 
-            c.name as client_name,
-            COUNT(DISTINCT cc.id) as channels,
-            COUNT(cp.id) as posts,
-            SUM(cp.views) as views
-        FROM clients c
-        LEFT JOIN client_channels cc ON c.id = cc.client_id
-        LEFT JOIN channel_posts cp ON cc.id = cp.channel_id
-        WHERE cp.published_at BETWEEN ? AND ?
-        GROUP BY c.id
-        ORDER BY posts DESC
-        LIMIT 10
-        ''', (start_date, end_date))
-        
-        top_clients = cursor.fetchall()
-        
-        stats = {
-            'daily_stats': daily_stats,
-            'top_clients': top_clients,
-            'total_posts': sum(day['posts'] for day in daily_stats),
-            'success_rate': 0
-        }
-        
-        if stats['total_posts'] > 0:
-            total_successful = sum(day['successful'] for day in daily_stats)
-            stats['success_rate'] = round((total_successful / stats['total_posts']) * 100, 1)
-        
-    else:
-        # Статистика для клиента
-        cursor.execute('SELECT client_id FROM users WHERE id = ?', (current_user.id,))
-        user_data = cursor.fetchone()
-        
-        if user_data and user_data['client_id']:
-            client_id = user_data['client_id']
-            
-            # Получаем статистику через channels_db
-            from database.channels_db import channels_db
-            channel_stats = []
-            channels = channels_db.get_client_channels(client_id)
-            
-            for channel in channels:
-                channel_id = channel[0]
-                stats_data = channels_db.get_channel_stats(channel_id, days=int(time_range.replace('days', '')))
-                for day_stats in stats_data:
-                    date, posts, views, likes, shares, comments = day_stats
-                    channel_stats.append({
-                        'date': date,
-                        'channel_name': channel[4],
-                        'posts': posts,
-                        'views': views,
-                        'likes': likes,
-                        'shares': shares,
-                        'comments': comments
-                    })
-            
-            stats = {
-                'channel_stats': channel_stats,
-                'time_range': time_range
-            }
-        else:
-            stats = {}
-    
-    conn.close()
-    
-    return render_template('statistics.html', stats=stats, time_range=time_range)
+    stats = {"top_clients": []}
+    if is_admin_user(current_user):
+        top_clients = (
+            db.session.query(
+                Client.name.label("client_name"),
+                db.func.count(db.distinct(ClientChannel.id)).label("channels"),
+                db.func.count(ChannelPost.id).label("posts"),
+                db.func.coalesce(db.func.sum(ChannelPost.views), 0).label("views"),
+            )
+            .outerjoin(ClientChannel, Client.id == ClientChannel.client_id)
+            .outerjoin(ChannelPost, ClientChannel.id == ChannelPost.channel_id)
+            .group_by(Client.id)
+            .order_by(db.desc("posts"))
+            .limit(10)
+            .all()
+        )
+        stats["top_clients"] = top_clients
 
-@app.route('/api/statistics/daily')
-@login_required
-def api_daily_stats():
-    """API: Ежедневная статистика"""
-    days = request.args.get('days', 7, type=int)
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    if current_user.role == 'admin':
-        cursor.execute('''
-        SELECT 
-            DATE(published_at) as date,
-            COUNT(*) as posts,
-            SUM(views) as views,
-            SUM(likes) as likes,
-            SUM(shares) as shares
-        FROM channel_posts
-        WHERE published_at >= date('now', ?)
-        GROUP BY DATE(published_at)
-        ORDER BY date
-        ''', (f'-{days} days',))
-    else:
-        cursor.execute('SELECT client_id FROM users WHERE id = ?', (current_user.id,))
-        user_data = cursor.fetchone()
-        
-        if user_data and user_data['client_id']:
-            client_id = user_data['client_id']
-            cursor.execute('''
-            SELECT 
-                DATE(cp.published_at) as date,
-                COUNT(*) as posts,
-                SUM(cp.views) as views,
-                SUM(cp.likes) as likes,
-                SUM(cp.shares) as shares
-            FROM channel_posts cp
-            JOIN client_channels cc ON cp.channel_id = cc.id
-            WHERE cc.client_id = ? AND cp.published_at >= date('now', ?)
-            GROUP BY DATE(cp.published_at)
-            ORDER BY date
-            ''', (client_id, f'-{days} days',))
-        else:
-            cursor.execute('SELECT NULL LIMIT 0')
-    
-    stats = cursor.fetchall()
-    conn.close()
-    
-    # Форматируем для Chart.js
-    dates = [stat['date'] for stat in stats]
-    posts = [stat['posts'] for stat in stats]
-    views = [stat['views'] or 0 for stat in stats]
-    likes = [stat['likes'] or 0 for stat in stats]
-    
-    return jsonify({
-        'dates': dates,
-        'posts': posts,
-        'views': views,
-        'likes': likes
-    })
+    return render_template("statistics.html", user=current_user, time_range="30days", stats=stats)
 
-@app.route('/billing')
+
+@app.route("/billing")
 @login_required
 def billing():
-    """Страница биллинга"""
-    if current_user.role == 'admin':
-        # Администратор видит все платежи
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-        SELECT 
-            p.*,
-            c.name as client_name,
-            u.email as client_email
-        FROM payments p
-        JOIN clients c ON p.client_id = c.id
-        JOIN users u ON c.id = u.client_id
-        ORDER BY p.created_at DESC
-        LIMIT 100
-        ''')
-        payments = cursor.fetchall()
-        conn.close()
-        
-        return render_template('billing.html', payments=payments, is_admin=True)
-    else:
-        # Клиент видит свои платежи
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT client_id FROM users WHERE id = ?', (current_user.id,))
-        user_data = cursor.fetchone()
-        
-        if user_data and user_data['client_id']:
-            client_id = user_data['client_id']
-            cursor.execute('''
-            SELECT * FROM payments 
-            WHERE client_id = ?
-            ORDER BY created_at DESC
-            ''', (client_id,))
-            payments = cursor.fetchall()
-        else:
-            payments = []
-        
-        conn.close()
-        
-        return render_template('billing.html', payments=payments, is_admin=False)
+    if not is_admin_user(current_user):
+        flash("Тарифы временно доступны только по запросу через кабинет.", "info")
+        return redirect(url_for("request_tariff"))
+    return render_template("billing.html", user=current_user)
 
-@app.route('/api/publish_now', methods=['POST'])
+
+@app.route("/request-tariff", methods=["GET", "POST"])
 @login_required
-def api_publish_now():
-    """API: Немедленная публикация"""
-    try:
-        from posting.multi_publisher import publish_to_client_channels
-        
-        if current_user.role == 'admin':
-            client_id = request.json.get('client_id')
-            if not client_id:
-                return jsonify({'success': False, 'error': 'Укажите client_id'}), 400
-        else:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute('SELECT client_id FROM users WHERE id = ?', (current_user.id,))
-            user_data = cursor.fetchone()
-            conn.close()
-            
-            if not user_data or not user_data['client_id']:
-                return jsonify({'success': False, 'error': 'Клиент не найден'}), 400
-            
-            client_id = user_data['client_id']
-        
-        # Получаем тему для публикации
-        from database.channels_db import channels_db
-        channels = channels_db.get_client_channels(client_id, active_only=True)
-        
-        if not channels:
-            return jsonify({'success': False, 'error': 'Нет активных каналов'}), 400
-        
-        channel_id = channels[0][0]
-        topics = channels_db.get_channel_topics(channel_id)
-        
-        if not topics:
-            return jsonify({'success': False, 'error': 'Нет тем для публикации'}), 400
-        
-        topic = topics[0]['topic']
-        keywords = topics[0].get('keywords', [])
-        
-        # Запускаем публикацию
-        result = publish_to_client_channels(client_id, topic, keywords)
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+def request_tariff():
+    if request.method == "POST":
+        comment = str(request.form.get("comment") or "").strip()
+        if len(comment) > 1000:
+            comment = comment[:1000]
 
-@app.route('/api/system/health')
+        system_logger.info(
+            "tariff_request user_id=%s client_id=%s username=%s comment=%s",
+            current_user.id if current_user.is_authenticated else None,
+            current_user.client_id,
+            current_user.username if current_user.is_authenticated else None,
+            comment,
+        )
+        flash(
+            "Запрос на тариф отправлен. Мы свяжемся с вами и предложим подходящий вариант.",
+            "success",
+        )
+        return redirect(url_for("dashboard"))
+
+    client_info = None
+    if current_user.client_id:
+        client = Client.query.get(current_user.client_id)
+        client_info = _serialize_client(client) if client else None
+    return render_template("request_tariff.html", user=current_user, client_info=client_info)
+
+
+@app.route("/profile")
+@login_required
+def profile():
+    return "Страница профиля (в разработке)"
+
+
+@app.route("/help")
+@login_required
+def help_page():
+    return "Страница помощи (в разработке)"
+
+
+# -------------------- API: БАЗОВЫЕ --------------------
+@app.route("/api/generate", methods=["POST"])
+@login_required
+def generate_text():
+    data = request.get_json(silent=True) or {}
+    topic = data.get("topic", "").strip()
+    if not topic:
+        return jsonify({"error": "Укажите тему"}), 400
+    return jsonify({"text": text_gen.generate_for_topic(topic)})
+
+
+@app.route("/api/generate_text", methods=["POST"])
+@login_required
+def generate_text_legacy():
+    data = request.get_json(silent=True) or {}
+    topic = data.get("topic", "").strip()
+    if not topic:
+        return jsonify({"success": False, "error": "Укажите тему"}), 400
+    generated = text_gen.generate_for_topic(topic)
+    return jsonify({"success": True, "text": generated, "content_id": None})
+
+
+@app.route("/api/generate_image", methods=["POST"])
+@login_required
+def generate_image():
+    data = request.get_json(silent=True) or {}
+    topic = data.get("topic", "").strip()
+    if not topic:
+        return jsonify({"success": False, "error": "Укажите тему"}), 400
+    image_path = img_gen.create_image_for_article("", topic)
+    return jsonify({"success": True, "image_path": image_path})
+
+
+@app.route("/api/schedule_post", methods=["POST"])
+@login_required
+def schedule_post_legacy():
+    data = request.get_json(silent=True) or {}
+    required = ["text", "channel_id", "publish_time"]
+    if not all(data.get(field) for field in required):
+        return jsonify({"success": False, "error": "Не все обязательные поля заполнены"}), 400
+
+    task_id = f"task-{int(datetime.utcnow().timestamp())}"
+    scheduled_item = {
+        "id": task_id,
+        "topic": (data.get("text") or "Без темы")[:70],
+        "channel": data.get("channel_id"),
+        "scheduled_time": data.get("publish_time"),
+        "status": "scheduled",
+    }
+    SCHEDULED_POSTS.append(scheduled_item)
+    return jsonify(
+        {
+            "success": True,
+            "task_id": task_id,
+            "content_id": data.get("content_id"),
+            "message": f"Публикация запланирована на {data.get('publish_time')}",
+        }
+    )
+
+
+@app.route("/api/scheduled_posts", methods=["GET"])
+@login_required
+def scheduled_posts_legacy():
+    return jsonify({"scheduled_posts": SCHEDULED_POSTS})
+
+
+@app.route("/api/system/health")
 @login_required
 def api_system_health():
-    """API: Проверка здоровья системы"""
-    if current_user.role != 'admin':
-        return jsonify({'success': False, 'error': 'Доступ запрещен'}), 403
-    
-    health = {
-        'database': False,
-        'ai_writer': False,
-        'ai_artist': False,
-        'publishers': {}
+    if not is_admin_user(current_user):
+        return jsonify({"success": False, "error": "Доступ запрещен"}), 403
+    return jsonify(
+        {
+            "success": True,
+            "database": True,
+            "clients": Client.query.count(),
+            "channels": ClientChannel.query.count(),
+            "users": User.query.count(),
+        }
+    )
+
+
+def _sanitize_behavior_payload(payload):
+    if not isinstance(payload, dict):
+        payload = {"value": str(payload)}
+
+    sensitive_markers = ("token", "password", "secret", "key", "authorization")
+    sanitized = {}
+    for raw_key, raw_value in payload.items():
+        key = str(raw_key)[:80]
+        lower_key = key.lower()
+        if any(marker in lower_key for marker in sensitive_markers):
+            sanitized[key] = "***"
+            continue
+
+        if isinstance(raw_value, (dict, list)):
+            value = json.dumps(raw_value, ensure_ascii=False)[:500]
+        else:
+            value = str(raw_value)[:500]
+        sanitized[key] = value
+    return sanitized
+
+
+@app.route("/api/client-events", methods=["POST"])
+def api_client_events():
+    data = request.get_json(silent=True) or {}
+    event_type = (data.get("event_type") or "").strip().lower()
+    if not event_type:
+        return jsonify({"success": False, "error": "event_type is required"}), 400
+
+    payload = _sanitize_behavior_payload(data.get("payload") or {})
+    user_ctx = _request_user_context()
+    event_record = {
+        "event_type": event_type[:80],
+        "path": (data.get("path") or request.path)[:200],
+        "user_id": user_ctx.get("user_id"),
+        "username": user_ctx.get("username"),
+        "client_id": user_ctx.get("client_id"),
+        "ip": request.remote_addr,
+        "user_agent": (request.headers.get("User-Agent") or "")[:300],
+        "payload": payload,
+        "timestamp": datetime.utcnow().isoformat(),
     }
-    
-    try:
-        # Проверка базы данных
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT 1')
-        health['database'] = True
-        conn.close()
-    except:
-        health['database'] = False
-    
-    try:
-        # Проверка AI Writer
-        from ai.yandex_research_writer import YandexResearchWriter
-        health['ai_writer'] = True
-    except:
-        health['ai_writer'] = False
-    
-    try:
-        # Проверка AI Artist
-        from ai.yandex_art_final import YandexArtGenerator
-        health['ai_artist'] = True
-    except:
-        health['ai_artist'] = False
-    
-    # Проверка публикаторов
-    try:
-        import vk_api
-        health['publishers']['vk'] = True
-    except:
-        health['publishers']['vk'] = False
-    
-    try:
-        import requests
-        health['publishers']['telegram'] = True
-    except:
-        health['publishers']['telegram'] = False
-    
-    return jsonify(health)
+    behavior_logger.info(json.dumps(event_record, ensure_ascii=False))
+    return jsonify({"success": True})
 
-# ===================== ЗАПУСК СЕРВЕРА =====================
 
-if __name__ == '__main__':
-    print("🚀 Запуск Snoomi Platform Web Panel...")
-    print("=" * 60)
-    print(f"📁 Проект: {project_root}")
-    print("🌐 Ссылки:")
-    print("   • Главная: http://localhost:5000")
-    print("   • Вход: http://localhost:5000/login")
-    print("   • Админ: admin / admin123")
-    print("=" * 60)
-    
-    app.run(debug=True, host='0.0.0.0', port=5000)
+# -------------------- API: ПРОВЕРКА КАНАЛОВ И СТИЛИСТИКА --------------------
+@app.route("/api/public/channel-preview", methods=["POST"])
+def api_public_channel_preview():
+    data = request.get_json(silent=True) or {}
+    platform = (data.get("platform") or "").strip().lower()
+    channel_reference = (data.get("channel_reference") or "").strip()
+    access_token = (data.get("access_token") or "").strip()
+
+    if platform not in SUPPORTED_PLATFORMS:
+        return jsonify({"success": False, "error": "Поддерживаются только Telegram и VK"}), 400
+    if not channel_reference:
+        return jsonify({"success": False, "error": "Укажите ссылку или ник канала"}), 400
+
+    intelligence = _build_channel_intelligence(
+        platform=platform,
+        channel_reference=channel_reference,
+        access_token=access_token,
+        run_ai_analysis=True,
+        client_id=current_user.client_id if current_user.is_authenticated else None,
+    )
+    if not intelligence.get("success"):
+        system_logger.warning(
+            "channel_preview_failed platform=%s reference=%s error=%s",
+            platform,
+            channel_reference,
+            intelligence.get("error"),
+        )
+        return jsonify({"success": False, "error": intelligence.get("error", "Канал не прошел проверку")}), 400
+
+    return jsonify(
+        {
+            "success": True,
+            "verified": True,
+            "platform": intelligence.get("platform"),
+            "channel_name": intelligence.get("channel_name"),
+            "channel_id": intelligence.get("channel_id"),
+            "source_url": intelligence.get("source_url"),
+            "channel_external_description": intelligence.get("channel_external_description", ""),
+            "recent_posts": intelligence.get("recent_posts", [])[:10],
+            "style_profile": intelligence.get("style_profile", {}),
+            "style_summary": intelligence.get("style_summary", ""),
+            "auto_description": intelligence.get("auto_description", ""),
+            "publish_ready": intelligence.get("publish_ready", True),
+            "publish_hint": intelligence.get("publish_hint", ""),
+            "service_bot_username": intelligence.get("service_bot_username", ""),
+        }
+    )
+
+
+@app.route("/api/channels/verify", methods=["POST"])
+@login_required
+def api_verify_channel():
+    data = request.get_json(silent=True) or {}
+    platform = (data.get("platform") or "").strip().lower()
+    channel_reference = (data.get("channel_reference") or "").strip()
+    access_token = (data.get("access_token") or "").strip()
+
+    if platform not in SUPPORTED_PLATFORMS:
+        return jsonify({"success": False, "error": "Поддерживаются только Telegram и VK"}), 400
+    if not channel_reference:
+        return jsonify({"success": False, "error": "Укажите ссылку или ник канала"}), 400
+
+    intelligence = _build_channel_intelligence(
+        platform=platform,
+        channel_reference=channel_reference,
+        access_token=access_token,
+        run_ai_analysis=True,
+        client_id=current_user.client_id if current_user.is_authenticated else None,
+    )
+    if not intelligence.get("success"):
+        system_logger.warning(
+            "channel_verify_failed user_id=%s platform=%s reference=%s error=%s",
+            current_user.id if current_user.is_authenticated else None,
+            platform,
+            channel_reference,
+            intelligence.get("error"),
+        )
+        return jsonify({"success": False, "error": intelligence.get("error", "Канал не прошел проверку")}), 400
+
+    return jsonify(
+        {
+            "success": True,
+            "verified": True,
+            "platform": intelligence.get("platform"),
+            "channel_name": intelligence.get("channel_name"),
+            "channel_id": intelligence.get("channel_id"),
+            "source_url": intelligence.get("source_url"),
+            "channel_external_description": intelligence.get("channel_external_description", ""),
+            "recent_posts": intelligence.get("recent_posts", [])[:10],
+            "style_profile": intelligence.get("style_profile", {}),
+            "style_summary": intelligence.get("style_summary", ""),
+            "auto_description": intelligence.get("auto_description", ""),
+            "publish_ready": intelligence.get("publish_ready", True),
+            "publish_hint": intelligence.get("publish_hint", ""),
+            "service_bot_username": intelligence.get("service_bot_username", ""),
+        }
+    )
+
+
+@app.route("/api/posting-setup/plan", methods=["POST"])
+@login_required
+def api_posting_setup_plan():
+    data = request.get_json(silent=True) or {}
+    channel_id = data.get("channel_id")
+    focus_text = (data.get("focus_text") or "").strip()
+    desired_count = data.get("desired_count", 8)
+
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный channel_id"}), 400
+
+    try:
+        desired_count = int(desired_count)
+    except (TypeError, ValueError):
+        desired_count = 8
+    desired_count = min(max(desired_count, 3), 20)
+
+    channel = _get_accessible_channel(channel_id)
+    if not channel.is_active:
+        return jsonify({"success": False, "error": "Канал отключен. Включите его перед настройкой постинга."}), 400
+    client = channel.client
+
+    if not is_admin_user(current_user) and client and client.plan == "trial":
+        if not _is_trial_active(client):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Тестовый период завершен. Запросите тариф в личном кабинете для продолжения работы.",
+                }
+            ), 403
+        desired_count = min(desired_count, TRIAL_AUTO_TOPICS_LIMIT)
+
+    planner_payload = _build_topic_planner_payload(
+        channel=channel,
+        focus_text=focus_text,
+        desired_count=desired_count,
+    )
+    return jsonify(
+        {
+            "success": True,
+            "channel_id": planner_payload.get("channel_id"),
+            "channel_name": planner_payload.get("channel_name"),
+            "platform": planner_payload.get("platform"),
+            "style_summary": planner_payload.get("style_summary", ""),
+            "semantic_core": planner_payload.get("semantic_core", [])[:8],
+            "actual_questions": _question_text_list(planner_payload.get("actual_questions", []), limit=5),
+            "topics": planner_payload.get("topics", []),
+            "topics_limit": TRIAL_AUTO_TOPICS_LIMIT if client and client.plan == "trial" else 30,
+        }
+    )
+
+
+@app.route("/api/posting-setup/topics", methods=["GET"])
+@login_required
+def api_posting_setup_get_topics():
+    channel_id = request.args.get("channel_id")
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный channel_id"}), 400
+
+    channel = _get_accessible_channel(channel_id)
+    if not channel.is_active:
+        return jsonify({"success": False, "error": "Канал отключен. Включите его перед работой с темами."}), 400
+
+    state_payload = _extract_saved_topic_state(channel)
+    return jsonify({"success": True, **state_payload})
+
+
+@app.route("/api/posting-setup/topics", methods=["POST"])
+@login_required
+def api_posting_setup_save_topics():
+    data = request.get_json(silent=True) or {}
+    channel_id = data.get("channel_id")
+    raw_topics = data.get("topics") or []
+    style_summary = str(data.get("style_summary") or "").strip()
+    semantic_core = _normalize_phrase_list(data.get("semantic_core") or [], limit=8)
+    actual_questions = _normalize_actual_questions(data.get("actual_questions") or [], limit=5)
+
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный channel_id"}), 400
+
+    normalized_topics = _normalize_topic_items(raw_topics)
+    if not normalized_topics:
+        return jsonify({"success": False, "error": "Добавьте хотя бы одну тему для сохранения"}), 400
+
+    channel = _get_accessible_channel(channel_id)
+    if not channel.is_active:
+        return jsonify({"success": False, "error": "Канал отключен. Включите его перед сохранением тем."}), 400
+    client = channel.client
+    if not is_admin_user(current_user) and client and client.plan == "trial":
+        if not _is_trial_active(client):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Тестовый период завершен. Запросите тариф в личном кабинете для продолжения работы.",
+                }
+            ), 403
+        if len(normalized_topics) > TRIAL_AUTO_TOPICS_LIMIT:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": f"В бесплатном периоде можно сохранить максимум {TRIAL_AUTO_TOPICS_LIMIT} автоматически сформированных тем.",
+                }
+            ), 400
+
+    ChannelTopic.query.filter_by(channel_id=channel.id, is_active=True).update({"is_active": False})
+    for idx, topic_title in enumerate(normalized_topics, start=1):
+        topic_item = ChannelTopic(
+            channel_id=channel.id,
+            topic=topic_title,
+            keywords=json.dumps(_extract_keywords(topic_title), ensure_ascii=False),
+            priority=max(1, 10 - idx),
+            is_active=True,
+        )
+        db.session.add(topic_item)
+
+    settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
+    if not settings:
+        default_frequency = _normalize_frequency((_channel_extra_config(channel).get("publish_frequency") or "daily"))
+        settings = ChannelSetting(
+            channel_id=channel.id,
+            publish_hour=10,
+            publish_frequency=default_frequency or "daily",
+            topics=json.dumps(normalized_topics, ensure_ascii=False),
+            hashtags=json.dumps([], ensure_ascii=False),
+            max_posts_per_day=1,
+            is_auto_generate=True,
+            use_ai_images=True,
+        )
+        db.session.add(settings)
+    else:
+        settings.topics = json.dumps(normalized_topics, ensure_ascii=False)
+
+    extra = _channel_extra_config(channel)
+    extra["topic_plan"] = {
+        "updated_at": datetime.utcnow().isoformat(),
+        "topics": normalized_topics,
+        "style_summary": style_summary,
+        "semantic_core": semantic_core,
+        "actual_questions": actual_questions,
+    }
+    channel.additional_config = json.dumps(extra, ensure_ascii=False)
+
+    db.session.commit()
+    return jsonify(
+        {
+            "success": True,
+            "saved_topics": len(normalized_topics),
+            "channel_id": channel.id,
+            "channel_name": channel.channel_name,
+        }
+    )
+
+
+@app.route("/api/posting-plan/draft", methods=["GET"])
+@login_required
+def api_posting_plan_get_draft():
+    channel_id = request.args.get("channel_id")
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный channel_id"}), 400
+
+    channel = _get_accessible_channel(channel_id)
+    if not channel.is_active:
+        return jsonify({"success": False, "error": "Канал отключен. Включите его перед работой с календарем."}), 400
+
+    draft_payload = _extract_saved_posting_plan_draft(channel)
+    return jsonify({"success": True, **draft_payload})
+
+
+@app.route("/api/posting-plan/preview", methods=["POST"])
+@login_required
+def api_posting_plan_preview():
+    data = request.get_json(silent=True) or {}
+    channel_id = data.get("channel_id")
+    start_date = (data.get("start_date") or "").strip() or None
+    posts_count = data.get("posts_count", 14)
+    publish_frequency = data.get("publish_frequency")
+    publish_hour = data.get("publish_hour")
+
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный channel_id"}), 400
+
+    try:
+        posts_count = int(posts_count)
+    except (TypeError, ValueError):
+        posts_count = 14
+
+    channel = _get_accessible_channel(channel_id)
+    if not channel.is_active:
+        return jsonify({"success": False, "error": "Канал отключен. Включите его перед шагом 3."}), 400
+    client = channel.client
+    if not is_admin_user(current_user) and client and client.plan == "trial":
+        if not _is_trial_active(client):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Тестовый период завершен. Запросите тариф в личном кабинете для продолжения работы.",
+                }
+            ), 403
+        publish_frequency = _normalize_frequency(publish_frequency) or "daily"
+        trial_capacity = _trial_auto_posts_capacity(client, publish_frequency=publish_frequency, start_date=start_date)
+        if trial_capacity is not None:
+            posts_count = min(posts_count, max(trial_capacity, 0))
+            if posts_count <= 0:
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": "Для текущих условий trial не осталось слотов автопубликаций в пределах 30 дней.",
+                    }
+                ), 400
+
+    preview_payload = _build_posting_plan_preview_payload(
+        channel=channel,
+        start_date=start_date,
+        posts_count=posts_count,
+        publish_frequency=publish_frequency,
+        publish_hour=publish_hour,
+    )
+    return jsonify({"success": True, **preview_payload})
+
+
+@app.route("/api/posting-plan/save", methods=["POST"])
+@login_required
+def api_posting_plan_save():
+    data = request.get_json(silent=True) or {}
+    channel_id = data.get("channel_id")
+    raw_plan_items = data.get("plan_items") or []
+    publish_frequency = data.get("publish_frequency")
+    publish_hour = data.get("publish_hour")
+
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный channel_id"}), 400
+
+    channel = _get_accessible_channel(channel_id)
+    if not channel.is_active:
+        return jsonify({"success": False, "error": "Канал отключен. Включите его перед сохранением плана."}), 400
+
+    normalized_items = _normalize_posting_plan_items_for_save(raw_plan_items)
+    if not normalized_items:
+        return jsonify({"success": False, "error": "Список публикаций пуст или содержит некорректные данные"}), 400
+
+    normalized_frequency = _normalize_frequency(publish_frequency) or "daily"
+    try:
+        normalized_hour = int(publish_hour)
+    except (TypeError, ValueError):
+        normalized_hour = 10
+    normalized_hour = min(max(normalized_hour, 0), 23)
+    client = channel.client
+    if not is_admin_user(current_user) and client and client.plan == "trial":
+        if not _is_trial_active(client):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Тестовый период завершен. Запросите тариф в личном кабинете для продолжения работы.",
+                }
+            ), 403
+        first_date = normalized_items[0]["publish_date"] if normalized_items else None
+        trial_capacity = _trial_auto_posts_capacity(
+            client,
+            publish_frequency=normalized_frequency,
+            start_date=first_date,
+        )
+        if trial_capacity is not None and len(normalized_items) > trial_capacity:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "В бесплатном периоде план ограничен 30 днями и остатком автопубликаций. "
+                        f"Сейчас доступно слотов: {trial_capacity}."
+                    ),
+                    "trial_capacity": trial_capacity,
+                }
+            ), 400
+
+    settings = ChannelSetting.query.filter_by(channel_id=channel.id).first()
+    if not settings:
+        settings = ChannelSetting(
+            channel_id=channel.id,
+            publish_hour=normalized_hour,
+            publish_frequency=normalized_frequency,
+            topics=json.dumps(_extract_channel_topics_for_plan(channel), ensure_ascii=False),
+            hashtags=json.dumps([], ensure_ascii=False),
+            max_posts_per_day=1,
+            is_auto_generate=True,
+            use_ai_images=True,
+        )
+        db.session.add(settings)
+    else:
+        settings.publish_hour = normalized_hour
+        settings.publish_frequency = normalized_frequency
+
+    extra = _channel_extra_config(channel)
+    extra["posting_plan_draft"] = {
+        "updated_at": datetime.utcnow().isoformat(),
+        "publish_frequency": normalized_frequency,
+        "publish_hour": normalized_hour,
+        "plan_items": normalized_items,
+    }
+    channel.additional_config = json.dumps(extra, ensure_ascii=False)
+
+    db.session.commit()
+    return jsonify(
+        {
+            "success": True,
+            "saved_items": len(normalized_items),
+            "channel_id": channel.id,
+            "channel_name": channel.channel_name,
+        }
+    )
+
+
+# -------------------- API: КАНАЛЫ/ПОДКЛЮЧЕНИЯ --------------------
+@app.route("/api/clients", methods=["GET"])
+@login_required
+def api_clients():
+    if is_admin_user(current_user):
+        clients = Client.query.order_by(Client.created_at.desc()).all()
+    elif current_user.client_id:
+        clients = Client.query.filter_by(id=current_user.client_id).all()
+    else:
+        clients = []
+    return jsonify([_serialize_client(c) for c in clients])
+
+
+@app.route("/api/channels", methods=["POST"])
+@login_required
+def api_add_channel():
+    data = request.get_json(silent=True) or {}
+    required_fields = [
+        "platform",
+        "channel_reference",
+        "channel_description",
+        "publish_frequency",
+    ]
+    if not all(data.get(field) for field in required_fields):
+        return jsonify({"success": False, "error": "Не все обязательные поля заполнены"}), 400
+
+    platform = (data.get("platform") or "").strip().lower()
+    if platform not in SUPPORTED_PLATFORMS:
+        return jsonify({"success": False, "error": "Сейчас поддерживаются только Telegram и VK"}), 400
+
+    channel_reference = (data.get("channel_reference") or "").strip()
+    access_token = (data.get("access_token") or "").strip()
+    if not channel_reference:
+        return jsonify({"success": False, "error": "Укажите ссылку или ник канала"}), 400
+
+    publish_frequency = _normalize_frequency(data.get("publish_frequency"))
+    if not publish_frequency:
+        return jsonify(
+            {"success": False, "error": "Укажите корректную частоту: каждый день / через день / через 2 дня"}
+        ), 400
+
+    channel_description = (data.get("channel_description") or "").strip()
+    if _count_words(channel_description) < 20:
+        return jsonify(
+            {
+                "success": False,
+                "error": "Опишите специфику канала минимум 20 словами для качественной генерации контента",
+            }
+        ), 400
+
+    raw_reference_channels = data.get("reference_channels")
+    if raw_reference_channels is None and data.get("competitor_references") is not None:
+        raw_reference_channels = data.get("competitor_references")
+    reference_channels = _normalize_reference_channels(raw_reference_channels or [], limit=15)
+    if _has_nonempty_reference_input(raw_reference_channels) and not reference_channels:
+        return jsonify(
+            {
+                "success": False,
+                "error": "Не удалось распознать ссылки на референс-каналы. Используйте формат https://... или @username (по одной ссылке в строке).",
+            }
+        ), 400
+
+    try:
+        publish_hour = int(data.get("publish_hour", 10))
+    except (TypeError, ValueError):
+        publish_hour = 10
+    publish_hour = min(max(publish_hour, 0), 23)
+
+    if is_admin_user(current_user):
+        client_id = data.get("client_id")
+        if not client_id:
+            return jsonify({"success": False, "error": "Для администратора укажите client_id"}), 400
+        try:
+            client_id = int(client_id)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "Некорректный client_id"}), 400
+    else:
+        client_id = current_user.client_id
+        if not client_id:
+            return jsonify({"success": False, "error": "Ваш аккаунт не привязан к клиенту"}), 400
+
+    client = Client.query.get(client_id)
+    if not client:
+        return jsonify({"success": False, "error": "Клиент не найден"}), 404
+    if not is_admin_user(current_user) and not _is_trial_active(client):
+        return jsonify(
+            {
+                "success": False,
+                "error": "Тестовый период завершен. Обратитесь к администратору для продления/подключения тарифа.",
+            }
+        ), 403
+
+    notification_telegram = (data.get("notification_telegram") or "").strip() or None
+    if notification_telegram:
+        client.notification_telegram = notification_telegram
+
+    if platform == "telegram":
+        resolved_publish_token = _resolve_telegram_publish_token(access_token)
+        if not resolved_publish_token:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Для Telegram не нужен ключ клиента, но на сервере пока не настроен сервисный бот. "
+                        "Обратитесь к администратору сервиса."
+                    ),
+                }
+            ), 400
+        auth_mode = "custom_token" if access_token else "service_bot_token"
+    else:
+        resolved_publish_token = _resolve_vk_publish_token(access_token, client_id=client.id)
+        if not resolved_publish_token:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Для VK не нужен ключ клиента, но сервисный доступ не настроен. "
+                        "Подключите VK через кнопку «Подключить VK» или обратитесь к администратору."
+                    ),
+                }
+            ), 400
+        if access_token:
+            auth_mode = "custom_token"
+        elif (client.vk_access_token or "").strip() and not _is_vk_token_expired(client.vk_token_expires_at):
+            auth_mode = "vk_oauth_token"
+        else:
+            auth_mode = "service_vk_token"
+
+    # Без успешной проверки ссылки канал не добавляется.
+    intelligence = _build_channel_intelligence(
+        platform=platform,
+        channel_reference=channel_reference,
+        access_token=access_token,
+        run_ai_analysis=False,
+        client_id=client.id,
+    )
+    if not intelligence.get("success"):
+        return jsonify(
+            {
+                "success": False,
+                "error": intelligence.get(
+                    "error",
+                    "Ссылка канала не подтверждена. Нажмите «Проверить канал» и попробуйте снова.",
+                ),
+            }
+        ), 400
+
+    if platform == "telegram" and not intelligence.get("publish_ready", False):
+        return jsonify(
+            {
+                "success": False,
+                "error": intelligence.get(
+                    "publish_hint",
+                    "Добавьте сервисного Telegram-бота в канал как администратора и повторите проверку.",
+                ),
+            }
+        ), 400
+
+    verified_channel_name = intelligence.get("channel_name")
+    verified_channel_id = intelligence.get("channel_id")
+    source_url = intelligence.get("source_url")
+    style_profile = intelligence.get("style_profile") or {}
+    if not verified_channel_name or not verified_channel_id:
+        return jsonify({"success": False, "error": "Не удалось определить имя или ID канала по ссылке"}), 400
+
+    duplicate_channel = ClientChannel.query.filter_by(
+        client_id=client_id,
+        platform=platform,
+        channel_id=verified_channel_id,
+    ).first()
+    if duplicate_channel:
+        return jsonify(
+            {
+                "success": False,
+                "error": "Этот канал уже добавлен в ваш список автопостинга",
+            }
+        ), 400
+
+    additional_config = {
+        "channel_description": channel_description,
+        "reference_channels": reference_channels,
+        "publish_frequency": publish_frequency,
+        "auth_mode": auth_mode,
+        "channel_reference": channel_reference,
+        "source_url": source_url,
+        "channel_external_description": intelligence.get("channel_external_description", ""),
+        "recent_posts_preview": intelligence.get("recent_posts", [])[:10],
+        "style_profile": style_profile,
+        "publish_hint": intelligence.get("publish_hint", ""),
+        "service_bot_username": intelligence.get("service_bot_username", ""),
+        "source": "web_client_onboarding",
+    }
+    channel = ClientChannel(
+        client_id=client_id,
+        platform=platform,
+        channel_id=verified_channel_id,
+        channel_name=verified_channel_name,
+        access_token=access_token or resolved_publish_token,
+        additional_config=json.dumps(additional_config, ensure_ascii=False),
+        is_active=bool(data.get("is_active", True)),
+    )
+    db.session.add(channel)
+    db.session.flush()
+
+    _ensure_channel_runtime_setup(
+        channel_id=channel.id,
+        channel_description=channel_description,
+        publish_frequency=publish_frequency,
+        publish_hour=publish_hour,
+    )
+
+    db.session.commit()
+    return jsonify(
+        {
+            "success": True,
+            "channel_id": channel.id,
+            "platform_channel_id": verified_channel_id,
+            "channel_name": verified_channel_name,
+            "source_url": source_url,
+            "publish_frequency": publish_frequency,
+            "publish_hour": publish_hour,
+            "reference_channels_count": len(reference_channels),
+            "style_summary": style_profile.get("summary", ""),
+            "auth_mode": auth_mode,
+        }
+    )
+
+
+@app.route("/api/channels/<int:channel_id>", methods=["GET"])
+@login_required
+def api_get_channel(channel_id):
+    channel = _get_accessible_channel(channel_id)
+    payload = _serialize_channel(channel, include_client_name=True)
+    if channel.client:
+        payload["notification_telegram"] = channel.client.notification_telegram
+    return jsonify(payload)
+
+
+@app.route("/api/channels/<int:channel_id>", methods=["PUT"])
+@login_required
+def api_update_channel(channel_id):
+    channel = _get_accessible_channel(channel_id)
+    data = request.get_json(silent=True) or {}
+
+    if "publish_frequency" in data:
+        normalized_frequency = _normalize_frequency(data.get("publish_frequency"))
+        if not normalized_frequency:
+            return jsonify({"success": False, "error": "Некорректная частотность автопостинга"}), 400
+    else:
+        normalized_frequency = None
+
+    if "channel_description" in data:
+        channel_description = (data.get("channel_description") or "").strip()
+        if _count_words(channel_description) < 20:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Описание канала должно содержать минимум 20 слов",
+                }
+            ), 400
+    else:
+        channel_description = None
+
+    raw_reference_channels = None
+    if "reference_channels" in data:
+        raw_reference_channels = data.get("reference_channels")
+    elif "competitor_references" in data:
+        raw_reference_channels = data.get("competitor_references")
+
+    if raw_reference_channels is not None:
+        reference_channels = _normalize_reference_channels(raw_reference_channels, limit=15)
+        if _has_nonempty_reference_input(raw_reference_channels) and not reference_channels:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Не удалось распознать ссылки на референс-каналы. Используйте формат https://... или @username.",
+                }
+            ), 400
+    else:
+        reference_channels = None
+
+    for field in ("channel_name", "access_token", "is_active"):
+        if field in data:
+            setattr(channel, field, data[field])
+
+    if "platform" in data:
+        platform = (data.get("platform") or "").strip().lower()
+        if platform not in SUPPORTED_PLATFORMS:
+            return jsonify({"success": False, "error": "Сейчас поддерживаются только Telegram и VK"}), 400
+        channel.platform = platform
+
+    if "channel_id" in data:
+        channel.channel_id = (data.get("channel_id") or "").strip()
+
+    resolved_platform = (channel.platform or "").strip().lower()
+    resolved_channel_token = (channel.access_token or "").strip()
+    access_token_in_payload = "access_token" in data
+    explicit_access_token = ""
+    if "access_token" in data:
+        explicit_access_token = (data.get("access_token") or "").strip()
+        resolved_channel_token = explicit_access_token
+    if resolved_platform == "telegram":
+        resolved_publish_token = _resolve_telegram_publish_token(resolved_channel_token)
+        if not resolved_publish_token:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Для Telegram нужен сервисный или персональный токен публикации.",
+                }
+            ), 400
+    elif resolved_platform == "vk":
+        resolved_publish_token = _resolve_vk_publish_token(resolved_channel_token, client_id=channel.client_id)
+        if not resolved_publish_token:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Для VK нужен сервисный или персональный токен публикации.",
+                }
+            ), 400
+    else:
+        resolved_publish_token = resolved_channel_token
+
+    if access_token_in_payload and not explicit_access_token:
+        channel.access_token = resolved_publish_token
+
+    extra = _channel_extra_config(channel)
+    if channel_description is not None:
+        extra["channel_description"] = channel_description
+    if normalized_frequency is not None:
+        extra["publish_frequency"] = normalized_frequency
+    if reference_channels is not None:
+        extra["reference_channels"] = reference_channels
+    if access_token_in_payload:
+        oauth_token_active = (
+            resolved_platform == "vk"
+            and bool(channel.client)
+            and bool((channel.client.vk_access_token or "").strip())
+            and not _is_vk_token_expired(channel.client.vk_token_expires_at)
+        )
+        extra["auth_mode"] = (
+            "custom_token"
+            if explicit_access_token
+            else (
+                "service_bot_token"
+                if resolved_platform == "telegram"
+                else ("vk_oauth_token" if oauth_token_active else "service_vk_token")
+            )
+        )
+    elif not extra.get("auth_mode"):
+        extra["auth_mode"] = "service_bot_token" if resolved_platform == "telegram" else "service_vk_token"
+    channel.additional_config = json.dumps(extra, ensure_ascii=False)
+
+    if "publish_hour" in data:
+        try:
+            publish_hour = int(data.get("publish_hour", 10))
+        except (TypeError, ValueError):
+            publish_hour = 10
+    else:
+        publish_hour = None
+    if publish_hour is not None:
+        publish_hour = min(max(publish_hour, 0), 23)
+
+    if channel_description is not None or normalized_frequency is not None or publish_hour is not None:
+        current_setting = ChannelSetting.query.filter_by(channel_id=channel.id).first()
+        resolved_publish_hour = (
+            publish_hour
+            if publish_hour is not None
+            else (current_setting.publish_hour if current_setting and current_setting.publish_hour is not None else 10)
+        )
+        _ensure_channel_runtime_setup(
+            channel_id=channel.id,
+            channel_description=channel_description or extra.get("channel_description", ""),
+            publish_frequency=normalized_frequency or extra.get("publish_frequency", "daily"),
+            publish_hour=resolved_publish_hour,
+        )
+
+    if "notification_telegram" in data and channel.client:
+        channel.client.notification_telegram = (data.get("notification_telegram") or "").strip() or None
+
+    db.session.commit()
+    return jsonify({"success": True})
+
+
+@app.route("/api/channels/<int:channel_id>", methods=["DELETE"])
+@login_required
+def api_delete_channel(channel_id):
+    channel = _get_accessible_channel(channel_id)
+    db.session.delete(channel)
+    db.session.commit()
+    return jsonify({"success": True})
+
+
+@app.route("/api/channels/<int:channel_id>/test", methods=["GET"])
+@login_required
+def api_test_channel(channel_id):
+    channel = _get_accessible_channel(channel_id)
+    error = None
+    platform = (channel.platform or "").strip().lower()
+    if platform == "telegram":
+        access_payload = _telegram_publish_access_payload(
+            channel_reference=str(channel.channel_id or "").strip(),
+            access_token=(channel.access_token or "").strip(),
+        )
+        connected = bool(access_payload.get("publish_ready"))
+        if not connected:
+            error = access_payload.get("publish_hint") or "Бот сервиса не подтвержден как администратор канала"
+    elif platform == "vk":
+        connected = bool(_resolve_vk_publish_token((channel.access_token or "").strip(), client_id=channel.client_id))
+        if not connected:
+            error = "Не найден VK-токен публикации (ни персональный, ни сервисный)"
+    else:
+        connected = bool(channel.access_token)
+        if not connected:
+            error = "Не задан access_token для проверки подключения"
+
+    return jsonify(
+        {
+            "connected": connected,
+            "channel_id": channel.channel_id,
+            "channel_name": channel.channel_name,
+            "platform": platform,
+            "error": error,
+        }
+    )
+
+
+# -------------------- API: АДМИН-КОНТУР (АККАУНТЫ + КЛИЕНТЫ + ПОДКЛЮЧЕНИЯ) --------------------
+@app.route("/api/admin/clients", methods=["GET"])
+@admin_required
+def api_admin_get_clients():
+    clients = Client.query.order_by(Client.created_at.desc()).all()
+    return jsonify([_serialize_client(c, include_counts=True) for c in clients])
+
+
+@app.route("/api/admin/clients", methods=["POST"])
+@admin_required
+def api_admin_create_client():
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"success": False, "error": "Укажите имя клиента"}), 400
+
+    trial_days = _safe_nonnegative_int(data.get("trial_days", TRIAL_MAX_DAYS), TRIAL_MAX_DAYS)
+    trial_days = min(max(trial_days, 1), TRIAL_MAX_DAYS)
+    trial_auto_limit = _safe_nonnegative_int(data.get("trial_auto_posts_limit", TRIAL_AUTO_POSTS_LIMIT), TRIAL_AUTO_POSTS_LIMIT)
+    trial_manual_limit = _safe_nonnegative_int(data.get("trial_manual_posts_limit", TRIAL_MANUAL_POSTS_LIMIT), TRIAL_MANUAL_POSTS_LIMIT)
+    client = Client(
+        name=name,
+        email=(data.get("email") or "").strip() or None,
+        telegram_id=(data.get("telegram_id") or "").strip() or None,
+        notification_telegram=(data.get("notification_telegram") or "").strip() or None,
+        phone=(data.get("phone") or "").strip() or None,
+        plan=(data.get("plan") or "basic").strip(),
+        status=(data.get("status") or "active").strip(),
+        trial_days=trial_days,
+        trial_auto_posts_limit=max(1, trial_auto_limit),
+        trial_auto_posts_used=_safe_nonnegative_int(data.get("trial_auto_posts_used", 0), 0),
+        trial_manual_posts_limit=max(1, trial_manual_limit),
+        trial_manual_posts_used=_safe_nonnegative_int(data.get("trial_manual_posts_used", 0), 0),
+    )
+    if client.plan == "trial":
+        client.trial_started_at = datetime.utcnow()
+        client.trial_ends_at = client.trial_started_at + timedelta(days=client.trial_days or TRIAL_MAX_DAYS)
+        if client.trial_auto_posts_used >= client.trial_auto_posts_limit:
+            client.trial_completed_at = datetime.utcnow()
+    db.session.add(client)
+    db.session.commit()
+    return jsonify({"success": True, "client": _serialize_client(client, include_counts=True)})
+
+
+@app.route("/api/admin/clients/<int:client_id>", methods=["PUT"])
+@admin_required
+def api_admin_update_client(client_id):
+    client = Client.query.get_or_404(client_id)
+    data = request.get_json(silent=True) or {}
+
+    for field in ("name", "email", "telegram_id", "notification_telegram", "phone", "plan", "status"):
+        if field in data:
+            value = data[field]
+            if isinstance(value, str):
+                value = value.strip()
+            setattr(client, field, value)
+
+    if "trial_days" in data:
+        try:
+            client.trial_days = int(data.get("trial_days", TRIAL_MAX_DAYS))
+        except (TypeError, ValueError):
+            client.trial_days = TRIAL_MAX_DAYS
+        client.trial_days = min(max(client.trial_days, 1), TRIAL_MAX_DAYS)
+
+    if "trial_auto_posts_limit" in data:
+        client.trial_auto_posts_limit = max(
+            1,
+            _safe_nonnegative_int(data.get("trial_auto_posts_limit"), TRIAL_AUTO_POSTS_LIMIT),
+        )
+    if "trial_auto_posts_used" in data:
+        client.trial_auto_posts_used = _safe_nonnegative_int(data.get("trial_auto_posts_used"), 0)
+    if "trial_manual_posts_limit" in data:
+        client.trial_manual_posts_limit = max(
+            1,
+            _safe_nonnegative_int(data.get("trial_manual_posts_limit"), TRIAL_MANUAL_POSTS_LIMIT),
+        )
+    if "trial_manual_posts_used" in data:
+        client.trial_manual_posts_used = _safe_nonnegative_int(data.get("trial_manual_posts_used"), 0)
+
+    if "trial_ends_at" in data:
+        trial_ends_at = data.get("trial_ends_at")
+        if trial_ends_at:
+            try:
+                client.trial_ends_at = datetime.fromisoformat(str(trial_ends_at))
+            except Exception:
+                pass
+        else:
+            client.trial_ends_at = None
+
+    if "trial_completed_at" in data:
+        completed_at = data.get("trial_completed_at")
+        if completed_at:
+            try:
+                client.trial_completed_at = datetime.fromisoformat(str(completed_at))
+            except Exception:
+                pass
+        else:
+            client.trial_completed_at = None
+
+    if client.plan == "trial":
+        if client.trial_auto_posts_used >= max(1, _safe_nonnegative_int(client.trial_auto_posts_limit, TRIAL_AUTO_POSTS_LIMIT)):
+            if not client.trial_completed_at:
+                client.trial_completed_at = datetime.utcnow()
+
+    db.session.commit()
+    return jsonify({"success": True, "client": _serialize_client(client, include_counts=True)})
+
+
+@app.route("/api/admin/users", methods=["GET"])
+@admin_required
+def api_admin_get_users():
+    users = User.query.order_by(User.created_at.desc()).all()
+    return jsonify([_serialize_user(u) for u in users])
+
+
+@app.route("/api/admin/users", methods=["POST"])
+@admin_required
+def api_admin_create_user():
+    data = request.get_json(silent=True) or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    role = (data.get("role") or "client").strip()
+    email = (data.get("email") or "").strip() or None
+    client_id = data.get("client_id")
+
+    if not username or not password:
+        return jsonify({"success": False, "error": "Укажите username и password"}), 400
+    if User.query.filter_by(username=username).first():
+        return jsonify({"success": False, "error": "Пользователь с таким username уже существует"}), 400
+    if email and User.query.filter_by(email=email).first():
+        return jsonify({"success": False, "error": "Пользователь с таким email уже существует"}), 400
+
+    if role != "admin" and client_id:
+        if not Client.query.get(client_id):
+            return jsonify({"success": False, "error": "Клиент не найден"}), 404
+    elif role == "admin":
+        client_id = None
+
+    user = User(
+        username=username,
+        email=email,
+        role=role,
+        client_id=client_id,
+        is_active=bool(data.get("is_active", True)),
+    )
+    user.set_password(password)
+    db.session.add(user)
+    db.session.commit()
+    return jsonify({"success": True, "user": _serialize_user(user)})
+
+
+@app.route("/api/admin/users/<int:user_id>", methods=["PUT"])
+@admin_required
+def api_admin_update_user(user_id):
+    user = User.query.get_or_404(user_id)
+    data = request.get_json(silent=True) or {}
+
+    if "username" in data:
+        username = (data["username"] or "").strip()
+        if not username:
+            return jsonify({"success": False, "error": "Username не может быть пустым"}), 400
+        duplicate = User.query.filter(User.username == username, User.id != user.id).first()
+        if duplicate:
+            return jsonify({"success": False, "error": "Username уже используется"}), 400
+        user.username = username
+
+    if "email" in data:
+        email = (data["email"] or "").strip() or None
+        if email:
+            duplicate = User.query.filter(User.email == email, User.id != user.id).first()
+            if duplicate:
+                return jsonify({"success": False, "error": "Email уже используется"}), 400
+        user.email = email
+
+    if "role" in data:
+        role = (data["role"] or "client").strip()
+        user.role = role
+        if role == "admin":
+            user.client_id = None
+
+    if "client_id" in data and user.role != "admin":
+        client_id = data["client_id"] or None
+        if client_id and not Client.query.get(client_id):
+            return jsonify({"success": False, "error": "Клиент не найден"}), 404
+        user.client_id = client_id
+
+    if "is_active" in data:
+        user.is_active = bool(data["is_active"])
+
+    new_password = data.get("password")
+    if new_password:
+        user.set_password(new_password)
+
+    db.session.commit()
+    return jsonify({"success": True, "user": _serialize_user(user)})
+
+
+@app.route("/api/admin/connections", methods=["GET"])
+@admin_required
+def api_admin_get_connections():
+    client_id = request.args.get("client_id", type=int)
+    query = ClientChannel.query
+    if client_id:
+        query = query.filter_by(client_id=client_id)
+    channels = query.order_by(ClientChannel.created_at.desc()).all()
+    return jsonify([_serialize_channel(ch, include_client_name=True) for ch in channels])
+
+
+@app.route("/api/admin/connections", methods=["POST"])
+@admin_required
+def api_admin_create_connection():
+    data = request.get_json(silent=True) or {}
+    required_fields = [
+        "client_id",
+        "platform",
+        "channel_id",
+        "channel_name",
+        "channel_description",
+        "publish_frequency",
+    ]
+    if not all(data.get(field) for field in required_fields):
+        return jsonify({"success": False, "error": "Не все обязательные поля заполнены"}), 400
+
+    platform = (data.get("platform") or "").strip().lower()
+    if platform not in SUPPORTED_PLATFORMS:
+        return jsonify({"success": False, "error": "Сейчас поддерживаются только Telegram и VK"}), 400
+
+    admin_access_token = (data.get("access_token") or "").strip()
+    if platform == "telegram":
+        resolved_publish_token = _resolve_telegram_publish_token(admin_access_token)
+        if not resolved_publish_token:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Сервисный Telegram-бот не настроен. Добавьте TELEGRAM_CHANNEL_TOKEN/TELEGRAM_BOT_TOKEN.",
+                }
+            ), 400
+        auth_mode = "custom_token" if admin_access_token else "service_bot_token"
+    else:
+        resolved_publish_token = _resolve_vk_publish_token(admin_access_token, client_id=data.get("client_id"))
+        if not resolved_publish_token:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "VK доступ не настроен. Подключите VK через OAuth или задайте VK_ACCESS_TOKEN.",
+                }
+            ), 400
+        auth_mode = "custom_token" if admin_access_token else "service_vk_token"
+
+    admin_description = (data.get("channel_description") or "").strip()
+    if _count_words(admin_description) < 20:
+        return jsonify(
+            {
+                "success": False,
+                "error": "Описание канала должно быть минимум 20 слов",
+            }
+        ), 400
+
+    admin_frequency = _normalize_frequency(data.get("publish_frequency"))
+    if not admin_frequency:
+        return jsonify({"success": False, "error": "Некорректная частота публикаций"}), 400
+
+    raw_reference_channels = data.get("reference_channels")
+    if raw_reference_channels is None and data.get("competitor_references") is not None:
+        raw_reference_channels = data.get("competitor_references")
+    reference_channels = _normalize_reference_channels(raw_reference_channels or [], limit=15)
+    if _has_nonempty_reference_input(raw_reference_channels) and not reference_channels:
+        return jsonify(
+            {
+                "success": False,
+                "error": "Не удалось распознать ссылки на референс-каналы. Используйте формат https://... или @username.",
+            }
+        ), 400
+
+    client = Client.query.get(data["client_id"])
+    if not client:
+        return jsonify({"success": False, "error": "Клиент не найден"}), 404
+    if (
+        platform == "vk"
+        and not admin_access_token
+        and (client.vk_access_token or "").strip()
+        and not _is_vk_token_expired(client.vk_token_expires_at)
+    ):
+        auth_mode = "vk_oauth_token"
+
+    channel = ClientChannel(
+        client_id=data["client_id"],
+        platform=platform,
+        channel_id=(data["channel_id"] or "").strip(),
+        channel_name=(data["channel_name"] or "").strip(),
+        access_token=admin_access_token or resolved_publish_token,
+        additional_config=json.dumps(
+            {
+                "channel_description": admin_description,
+                "reference_channels": reference_channels,
+                "publish_frequency": admin_frequency,
+                "auth_mode": auth_mode,
+                "source": "admin_connection_form",
+            },
+            ensure_ascii=False,
+        ),
+        is_active=bool(data.get("is_active", True)),
+    )
+    db.session.add(channel)
+    db.session.flush()
+
+    _ensure_channel_runtime_setup(
+        channel_id=channel.id,
+        channel_description=admin_description,
+        publish_frequency=admin_frequency,
+        publish_hour=data.get("publish_hour", 10),
+    )
+
+    db.session.commit()
+    return jsonify({"success": True, "connection": _serialize_channel(channel, include_client_name=True)})
+
+
+@app.route("/api/admin/connections/<int:connection_id>", methods=["PUT"])
+@admin_required
+def api_admin_update_connection(connection_id):
+    channel = ClientChannel.query.get_or_404(connection_id)
+    data = request.get_json(silent=True) or {}
+
+    for field in ("channel_id", "channel_name", "access_token", "is_active"):
+        if field in data:
+            setattr(channel, field, data[field])
+
+    if "platform" in data:
+        platform = (data.get("platform") or "").strip().lower()
+        if platform not in SUPPORTED_PLATFORMS:
+            return jsonify({"success": False, "error": "Сейчас поддерживаются только Telegram и VK"}), 400
+        channel.platform = platform
+
+    if "client_id" in data:
+        client = Client.query.get(data["client_id"])
+        if not client:
+            return jsonify({"success": False, "error": "Клиент не найден"}), 404
+        channel.client_id = client.id
+
+    resolved_platform = (channel.platform or "").strip().lower()
+    resolved_channel_token = (channel.access_token or "").strip()
+    access_token_in_payload = "access_token" in data
+    explicit_access_token = ""
+    if "access_token" in data:
+        explicit_access_token = (data.get("access_token") or "").strip()
+        resolved_channel_token = explicit_access_token
+    if resolved_platform == "telegram":
+        resolved_publish_token = _resolve_telegram_publish_token(resolved_channel_token)
+        if not resolved_publish_token:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Для Telegram нужен сервисный или персональный токен публикации.",
+                }
+            ), 400
+    elif resolved_platform == "vk":
+        resolved_publish_token = _resolve_vk_publish_token(resolved_channel_token, client_id=channel.client_id)
+        if not resolved_publish_token:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Для VK нужен сервисный или персональный токен публикации.",
+                }
+            ), 400
+    else:
+        resolved_publish_token = resolved_channel_token
+
+    if access_token_in_payload and not explicit_access_token:
+        channel.access_token = resolved_publish_token
+
+    if (
+        "channel_description" in data
+        or "publish_frequency" in data
+        or "publish_hour" in data
+        or "reference_channels" in data
+        or "competitor_references" in data
+    ):
+        extra = _channel_extra_config(channel)
+        if "channel_description" in data:
+            desc_value = (data.get("channel_description") or "").strip()
+            if _count_words(desc_value) < 20:
+                return jsonify({"success": False, "error": "Описание канала должно быть минимум 20 слов"}), 400
+            extra["channel_description"] = desc_value
+        if "publish_frequency" in data:
+            normalized = _normalize_frequency(data.get("publish_frequency"))
+            if not normalized:
+                return jsonify({"success": False, "error": "Некорректная частота публикаций"}), 400
+            extra["publish_frequency"] = normalized
+        if "reference_channels" in data or "competitor_references" in data:
+            raw_reference_channels = (
+                data.get("reference_channels")
+                if "reference_channels" in data
+                else data.get("competitor_references")
+            )
+            reference_channels = _normalize_reference_channels(raw_reference_channels or [], limit=15)
+            if _has_nonempty_reference_input(raw_reference_channels) and not reference_channels:
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": "Не удалось распознать ссылки на референс-каналы. Используйте формат https://... или @username.",
+                    }
+                ), 400
+            extra["reference_channels"] = reference_channels
+        if access_token_in_payload:
+            oauth_token_active = (
+                resolved_platform == "vk"
+                and bool(channel.client)
+                and bool((channel.client.vk_access_token or "").strip())
+                and not _is_vk_token_expired(channel.client.vk_token_expires_at)
+            )
+            extra["auth_mode"] = (
+                "custom_token"
+                if explicit_access_token
+                else (
+                    "service_bot_token"
+                    if resolved_platform == "telegram"
+                    else ("vk_oauth_token" if oauth_token_active else "service_vk_token")
+                )
+            )
+        elif not extra.get("auth_mode"):
+            extra["auth_mode"] = "service_bot_token" if resolved_platform == "telegram" else "service_vk_token"
+        channel.additional_config = json.dumps(extra, ensure_ascii=False)
+
+        publish_hour = data.get("publish_hour", 10)
+        try:
+            publish_hour = int(publish_hour)
+        except (TypeError, ValueError):
+            publish_hour = 10
+        publish_hour = min(max(publish_hour, 0), 23)
+
+        _ensure_channel_runtime_setup(
+            channel_id=channel.id,
+            channel_description=extra.get("channel_description", ""),
+            publish_frequency=extra.get("publish_frequency", "daily"),
+            publish_hour=publish_hour,
+        )
+
+    db.session.commit()
+    return jsonify({"success": True, "connection": _serialize_channel(channel, include_client_name=True)})
+
+
+@app.route("/api/admin/connections/<int:connection_id>", methods=["DELETE"])
+@admin_required
+def api_admin_delete_connection(connection_id):
+    channel = ClientChannel.query.get_or_404(connection_id)
+    db.session.delete(channel)
+    db.session.commit()
+    return jsonify({"success": True})
+
+
+# -------------------- API: ДАШБОРД --------------------
+@app.route("/api/statistics/daily")
+@login_required
+def api_daily_stats():
+    days = request.args.get("days", 30, type=int)
+    since_dt = datetime.utcnow() - timedelta(days=days - 1)
+
+    posts_query = ChannelPost.query.join(ClientChannel, ChannelPost.channel_id == ClientChannel.id)
+    if not is_admin_user(current_user):
+        if not current_user.client_id:
+            return jsonify({"dates": [], "posts": [], "views": [], "likes": []})
+        posts_query = posts_query.filter(ClientChannel.client_id == current_user.client_id)
+
+    rows = (
+        posts_query.filter(ChannelPost.published_at >= since_dt)
+        .with_entities(
+            db.func.date(ChannelPost.published_at).label("day"),
+            db.func.count(ChannelPost.id),
+            db.func.coalesce(db.func.sum(ChannelPost.views), 0),
+            db.func.coalesce(db.func.sum(ChannelPost.likes), 0),
+        )
+        .group_by("day")
+        .all()
+    )
+    day_map = {str(r[0]): r for r in rows}
+
+    dates, posts, views, likes = [], [], [], []
+    for i in range(days):
+        day = (since_dt + timedelta(days=i)).date().isoformat()
+        dates.append(day)
+        if day in day_map:
+            _, cnt, vws, lks = day_map[day]
+            posts.append(int(cnt or 0))
+            views.append(int(vws or 0))
+            likes.append(int(lks or 0))
+        else:
+            posts.append(0)
+            views.append(0)
+            likes.append(0)
+
+    return jsonify({"dates": dates, "posts": posts, "views": views, "likes": likes})
+
+
+@app.route("/api/publications/recent")
+@login_required
+def api_recent_publications():
+    query = ChannelPost.query.join(ClientChannel, ChannelPost.channel_id == ClientChannel.id)
+    if not is_admin_user(current_user):
+        if not current_user.client_id:
+            return jsonify([])
+        query = query.filter(ClientChannel.client_id == current_user.client_id)
+
+    posts = query.order_by(ChannelPost.published_at.desc()).limit(20).all()
+    payload = []
+    for post in posts:
+        payload.append(
+            {
+                "id": post.id,
+                "published_at": post.published_at.isoformat() if post.published_at else None,
+                "channel_name": post.channel.channel_name if post.channel else "—",
+                "topic": post.topic or "Без темы",
+                "platform": post.channel.platform if post.channel else "unknown",
+                "success": bool(post.success),
+            }
+        )
+    return jsonify(payload)
+
+
+@app.route("/api/topics", methods=["POST"])
+@login_required
+def api_topics_stub():
+    # Заглушка для текущего UI: сохранение тем будет вынесено в отдельную сущность.
+    return jsonify({"success": True})
+
+
+@app.route("/api/publish_now", methods=["POST"])
+@login_required
+def api_publish_now():
+    data = request.get_json(silent=True) or {}
+    admin_client_id = data.get("client_id")
+    explicit_topic = (data.get("topic") or "").strip()
+    shared_article = bool(data.get("shared_article", True))
+    selected_channel_ids = _normalize_selected_channel_ids(data.get("channel_ids") or [])
+
+    channels, error_response = _resolve_publish_target_channels(
+        selected_channel_ids=selected_channel_ids,
+        admin_client_id=admin_client_id,
+    )
+    if error_response:
+        return error_response
+    target_client = _resolve_single_client_from_channels(channels)
+    if not is_admin_user(current_user) and target_client:
+        trial_guard = _trial_manual_publish_guard(target_client, requested_posts=len(channels))
+        if trial_guard:
+            return trial_guard
+
+    try:
+        from posting.multi_publisher import MultiPlatformPublisher
+
+        publisher = MultiPlatformPublisher()
+    except Exception as e:
+        error_logger.error("manual_publish_init_failed user_id=%s error=%s", current_user.id, e)
+        return jsonify({"success": False, "error": f"Не удалось инициализировать публикатор: {e}"}), 500
+
+    results = []
+    successful_count = 0
+    failed_count = 0
+    generated_images = 0
+    shared_topic = _resolve_manual_publish_topic(channels[0], explicit_topic) if shared_article else None
+
+    for channel in channels:
+        topic_text = shared_topic if shared_article else _resolve_manual_publish_topic(channel, explicit_topic)
+        publish_payload = _publish_generated_post_for_channel(
+            channel,
+            publisher,
+            topic_text,
+            publish_mode="manual",
+        )
+        db.session.add(publish_payload["post_record"])
+
+        if publish_payload["success"]:
+            successful_count += 1
+        else:
+            failed_count += 1
+        if publish_payload["image_used"]:
+            generated_images += 1
+
+        result_item = {k: v for k, v in publish_payload.items() if k != "post_record"}
+        results.append(result_item)
+
+    if not is_admin_user(current_user) and target_client:
+        _consume_trial_manual_posts(target_client, successful_count)
+    db.session.commit()
+
+    if successful_count == 0:
+        return jsonify(
+            {
+                "success": False,
+                "error": "Не удалось выполнить публикацию ни в один канал. Проверьте токены и доступы.",
+                "published": successful_count,
+                "successful_posts": successful_count,
+                "failed": failed_count,
+                "generated_images": generated_images,
+                "results": results,
+            }
+        ), 400
+
+    return jsonify(
+        {
+            "success": True,
+            "published": successful_count,
+            "successful_posts": successful_count,
+            "failed": failed_count,
+            "generated_images": generated_images,
+            "topic": shared_topic if shared_article else None,
+            "results": results,
+            "manual_posts_remaining": _trial_usage_payload(target_client).get("manual_posts_remaining")
+            if target_client and target_client.plan == "trial"
+            else None,
+        }
+    )
+
+
+@app.route("/api/publish_test_triplet", methods=["POST"])
+@login_required
+def api_publish_test_triplet():
+    data = request.get_json(silent=True) or {}
+    admin_client_id = data.get("client_id")
+    selected_channel_ids = _normalize_selected_channel_ids(data.get("channel_ids") or [])
+    requested_count = data.get("posts_per_channel", 3)
+    try:
+        posts_per_channel = int(requested_count)
+    except (TypeError, ValueError):
+        posts_per_channel = 3
+    posts_per_channel = min(max(posts_per_channel, 1), 5)
+
+    channels, error_response = _resolve_publish_target_channels(
+        selected_channel_ids=selected_channel_ids,
+        admin_client_id=admin_client_id,
+    )
+    if error_response:
+        return error_response
+    target_client = _resolve_single_client_from_channels(channels)
+    manual_remaining = None
+    if not is_admin_user(current_user) and target_client and target_client.plan == "trial":
+        trial_guard = _trial_manual_publish_guard(target_client, requested_posts=1)
+        if trial_guard:
+            return trial_guard
+        manual_remaining = _safe_nonnegative_int(_trial_usage_payload(target_client).get("manual_posts_remaining"), 0)
+
+    try:
+        from posting.multi_publisher import MultiPlatformPublisher
+
+        publisher = MultiPlatformPublisher()
+    except Exception as e:
+        error_logger.error("test_triplet_publish_init_failed user_id=%s error=%s", current_user.id, e)
+        return jsonify({"success": False, "error": f"Не удалось инициализировать публикатор: {e}"}), 500
+
+    results = []
+    successful_count = 0
+    failed_count = 0
+    generated_images = 0
+    attempted_posts = 0
+    stopped_by_manual_limit = False
+
+    for channel in channels:
+        topics_for_channel = _planned_topics_for_test_batch(channel, limit=posts_per_channel)
+        for batch_index, topic_text in enumerate(topics_for_channel, start=1):
+            if manual_remaining is not None and manual_remaining <= 0:
+                stopped_by_manual_limit = True
+                break
+            attempted_posts += 1
+            publish_payload = _publish_generated_post_for_channel(
+                channel,
+                publisher,
+                topic_text,
+                publish_mode="manual_test",
+            )
+            db.session.add(publish_payload["post_record"])
+
+            if publish_payload["success"]:
+                successful_count += 1
+                if manual_remaining is not None:
+                    manual_remaining -= 1
+            else:
+                failed_count += 1
+            if publish_payload["image_used"]:
+                generated_images += 1
+
+            result_item = {k: v for k, v in publish_payload.items() if k != "post_record"}
+            result_item["batch_index"] = batch_index
+            result_item["batch_total"] = len(topics_for_channel)
+            results.append(result_item)
+        if stopped_by_manual_limit:
+            break
+
+    if not is_admin_user(current_user) and target_client:
+        _consume_trial_manual_posts(target_client, successful_count)
+    db.session.commit()
+
+    if successful_count == 0:
+        failure_error = "Тестовый прогон не опубликовал ни одного поста. Проверьте токены и доступы каналов."
+        if stopped_by_manual_limit:
+            failure_error = "Лимит ручных публикаций trial достигнут. Запросите тариф для продолжения тестовых запусков."
+        return jsonify(
+            {
+                "success": False,
+                "error": failure_error,
+                "attempted_posts": attempted_posts,
+                "published": successful_count,
+                "failed": failed_count,
+                "generated_images": generated_images,
+                "channels_count": len(channels),
+                "posts_per_channel": posts_per_channel,
+                "results": results,
+                "manual_limit_reached": stopped_by_manual_limit,
+            }
+        ), 400
+
+    return jsonify(
+        {
+            "success": True,
+            "attempted_posts": attempted_posts,
+            "published": successful_count,
+            "failed": failed_count,
+            "generated_images": generated_images,
+            "channels_count": len(channels),
+            "posts_per_channel": posts_per_channel,
+            "results": results,
+            "manual_limit_reached": stopped_by_manual_limit,
+            "manual_posts_remaining": _trial_usage_payload(target_client).get("manual_posts_remaining")
+            if target_client and target_client.plan == "trial"
+            else None,
+        }
+    )
+
+
+@app.route("/api/agent/semantic-core/rebuild", methods=["POST"])
+@login_required
+def api_agent_semantic_core_rebuild():
+    guard_response = _agent_feature_guard()
+    if guard_response:
+        return guard_response
+
+    data = request.get_json(silent=True) or {}
+    channel_id = data.get("channel_id")
+    focus_text = str(data.get("focus_text") or "").strip()
+    question_limit = data.get("question_limit", 10)
+
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный channel_id"}), 400
+
+    try:
+        question_limit = int(question_limit)
+    except (TypeError, ValueError):
+        question_limit = 10
+    question_limit = min(max(question_limit, 3), 25)
+
+    channel = _get_accessible_channel(channel_id)
+    if not channel.is_active:
+        return jsonify({"success": False, "error": "Канал отключен. Включите его перед сборкой семантики."}), 400
+
+    try:
+        extra = _channel_extra_config(channel)
+        topic_plan = extra.get("topic_plan") if isinstance(extra.get("topic_plan"), dict) else {}
+        recent_posts_preview = extra.get("recent_posts_preview") if isinstance(extra.get("recent_posts_preview"), list) else []
+        reference_channels = _normalize_reference_channels(extra.get("reference_channels") or [], limit=15)
+        reference_hints = _reference_channel_query_hints(reference_channels, limit=10)
+
+        recent_posts_preview = [
+            str(item).strip()
+            for item in recent_posts_preview
+            if str(item).strip()
+        ][:20]
+
+        stored_posts = (
+            ChannelPost.query.filter_by(channel_id=channel.id)
+            .order_by(ChannelPost.published_at.desc())
+            .limit(50)
+            .all()
+        )
+        stored_post_texts = [str(post.content or "").strip() for post in stored_posts if str(post.content or "").strip()]
+
+        channel_description = str(extra.get("channel_description") or "").strip()
+        external_description = str(extra.get("channel_external_description") or "").strip()
+        topic_titles = _normalize_topic_items(topic_plan.get("topics") or [])
+        topic_semantic_core = _normalize_phrase_list(topic_plan.get("semantic_core") or [], limit=16)
+
+        base_texts = [
+            channel.channel_name,
+            focus_text,
+            channel_description,
+            external_description,
+            " ".join(reference_channels),
+            " ".join(reference_hints),
+            *topic_titles,
+            *recent_posts_preview,
+            *stored_post_texts,
+        ]
+        base_texts = [item for item in base_texts if str(item or "").strip()]
+        if not base_texts:
+            base_texts = [f"Контент канала {channel.channel_name}"]
+
+        source = KnowledgeSource(
+            client_id=channel.client_id,
+            channel_id=channel.id,
+            source_type="channel_post",
+            title=f"Semantic rebuild snapshot for channel {channel.channel_name}",
+            authority_score=0.82,
+            lang="ru",
+            raw_payload=json.dumps(
+                {
+                    "focus_text": focus_text,
+                    "captured_posts": len(stored_post_texts),
+                    "captured_preview_posts": len(recent_posts_preview),
+                    "reference_channels_count": len(reference_channels),
+                    "captured_at": datetime.utcnow().isoformat(),
+                },
+                ensure_ascii=False,
+            ),
+        )
+        db.session.add(source)
+        db.session.flush()
+
+        knowledge_documents = prepare_knowledge_documents(
+            channel_name=channel.channel_name,
+            base_texts=base_texts,
+            max_documents=40,
+        )
+        for doc_item in knowledge_documents:
+            db.session.add(
+                KnowledgeDocument(
+                    source_id=source.id,
+                    chunk_index=int(doc_item.get("chunk_index") or 0),
+                    text=str(doc_item.get("text") or "").strip(),
+                    keywords=json.dumps(doc_item.get("keywords") or [], ensure_ascii=False),
+                    entities=json.dumps(doc_item.get("entities") or [], ensure_ascii=False),
+                    summary=str(doc_item.get("summary") or "").strip(),
+                )
+            )
+
+        semantic_seed = [
+            focus_text,
+            *reference_hints,
+            *topic_semantic_core,
+            *topic_titles[:12],
+            *[item.get("summary") for item in knowledge_documents[:14]],
+        ]
+        semantic_seed = [str(item).strip() for item in semantic_seed if str(item or "").strip()]
+        corpus_text = " ".join(base_texts[:120])
+
+        clusters_payload = build_semantic_clusters(
+            channel_name=channel.channel_name,
+            base_phrases=semantic_seed,
+            corpus_text=corpus_text,
+            limit=12,
+        )
+
+        SemanticCluster.query.filter_by(channel_id=channel.id).delete(synchronize_session=False)
+        for cluster_item in clusters_payload:
+            db.session.add(
+                SemanticCluster(
+                    client_id=channel.client_id,
+                    channel_id=channel.id,
+                    cluster_name=str(cluster_item.get("cluster_name") or "").strip(),
+                    intent_type=str(cluster_item.get("intent_type") or "informational").strip(),
+                    priority=int(cluster_item.get("priority") or 5),
+                    seasonality=str(cluster_item.get("seasonality") or "all_year").strip(),
+                    updated_at=datetime.utcnow(),
+                )
+            )
+
+        cluster_names = [str(item.get("cluster_name") or "").strip() for item in clusters_payload if str(item.get("cluster_name") or "").strip()]
+        research_queries = build_research_queries(
+            channel_name=channel.channel_name,
+            semantic_clusters=[*cluster_names, *reference_hints],
+            focus_text=" ".join([focus_text, *reference_channels[:4]]).strip(),
+            limit=8,
+        )
+        questions_payload = _collect_top_web_questions(research_queries, limit=question_limit)
+
+        AudienceQuestion.query.filter_by(channel_id=channel.id).delete(synchronize_session=False)
+        for idx, question_item in enumerate(questions_payload, start=1):
+            question_text = (
+                str(question_item.get("question") or "").strip()
+                if isinstance(question_item, dict)
+                else str(question_item or "").strip()
+            )
+            if not question_text:
+                continue
+            source_ref = (
+                str(question_item.get("source_hint") or "").strip()
+                if isinstance(question_item, dict)
+                else ""
+            )
+            trend_score = round(max(0.1, 1.0 - idx * 0.08), 4)
+            db.session.add(
+                AudienceQuestion(
+                    client_id=channel.client_id,
+                    channel_id=channel.id,
+                    question_text=question_text,
+                    source_ref=source_ref or "web_search",
+                    trend_score=trend_score,
+                    last_seen_at=datetime.utcnow(),
+                )
+            )
+
+        agent_meta = extra.get("expert_agent") if isinstance(extra.get("expert_agent"), dict) else {}
+        agent_meta["semantic_core_updated_at"] = datetime.utcnow().isoformat()
+        agent_meta["semantic_clusters"] = cluster_names[:12]
+        agent_meta["research_queries"] = research_queries[:8]
+        agent_meta["last_focus_text"] = focus_text
+        extra["expert_agent"] = agent_meta
+        channel.additional_config = json.dumps(extra, ensure_ascii=False)
+
+        db.session.commit()
+        return jsonify(
+            {
+                "success": True,
+                "channel_id": channel.id,
+                "channel_name": channel.channel_name,
+                "semantic_clusters": cluster_names[:12],
+                "audience_questions": [
+                    (
+                        str(item.get("question") or "").strip()
+                        if isinstance(item, dict)
+                        else str(item or "").strip()
+                    )
+                    for item in questions_payload
+                    if (
+                        str(item.get("question") or "").strip()
+                        if isinstance(item, dict)
+                        else str(item or "").strip()
+                    )
+                ][:question_limit],
+                "knowledge_documents_added": len(knowledge_documents),
+                "research_queries": research_queries[:8],
+            }
+        )
+    except Exception as e:
+        db.session.rollback()
+        error_logger.error(
+            "agent_semantic_rebuild_failed user_id=%s channel_id=%s error=%s",
+            current_user.id if current_user.is_authenticated else None,
+            channel_id,
+            e,
+        )
+        return jsonify({"success": False, "error": f"Не удалось перестроить семантику: {e}"}), 500
+
+
+@app.route("/api/agent/research/update", methods=["POST"])
+@login_required
+def api_agent_research_update():
+    guard_response = _agent_feature_guard()
+    if guard_response:
+        return guard_response
+
+    data = request.get_json(silent=True) or {}
+    channel_id = data.get("channel_id")
+    focus_text = str(data.get("focus_text") or "").strip()
+    question_limit = data.get("question_limit", 10)
+
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный channel_id"}), 400
+
+    try:
+        question_limit = int(question_limit)
+    except (TypeError, ValueError):
+        question_limit = 10
+    question_limit = min(max(question_limit, 3), 25)
+
+    channel = _get_accessible_channel(channel_id)
+    if not channel.is_active:
+        return jsonify({"success": False, "error": "Канал отключен. Включите его перед обновлением research."}), 400
+
+    try:
+        semantic_hints = _agent_channel_semantic_hints(channel, limit=10)
+        extra = _channel_extra_config(channel)
+        reference_channels = _normalize_reference_channels(extra.get("reference_channels") or [], limit=12)
+        reference_hints = _reference_channel_query_hints(reference_channels, limit=8)
+        research_queries = build_research_queries(
+            channel_name=channel.channel_name,
+            semantic_clusters=[*semantic_hints, *reference_hints],
+            focus_text=" ".join([focus_text, *reference_channels[:4]]).strip(),
+            limit=8,
+        )
+        questions_payload = _collect_top_web_questions(research_queries, limit=question_limit)
+
+        existing_rows = AudienceQuestion.query.filter_by(channel_id=channel.id).all()
+        existing_map = {str(row.question_text or "").strip().lower(): row for row in existing_rows}
+        added_count = 0
+        updated_count = 0
+        normalized_questions = []
+
+        for idx, question_item in enumerate(questions_payload, start=1):
+            question_text = (
+                str(question_item.get("question") or "").strip()
+                if isinstance(question_item, dict)
+                else str(question_item or "").strip()
+            )
+            if not question_text:
+                continue
+            source_ref = (
+                str(question_item.get("source_hint") or "").strip()
+                if isinstance(question_item, dict)
+                else ""
+            )
+            trend_score = round(max(0.1, 1.0 - idx * 0.08), 4)
+            normalized_questions.append(question_text)
+            key = question_text.lower()
+            if key in existing_map:
+                row = existing_map[key]
+                row.last_seen_at = datetime.utcnow()
+                row.trend_score = max(float(row.trend_score or 0), trend_score)
+                if source_ref:
+                    row.source_ref = source_ref
+                updated_count += 1
+            else:
+                db.session.add(
+                    AudienceQuestion(
+                        client_id=channel.client_id,
+                        channel_id=channel.id,
+                        question_text=question_text,
+                        source_ref=source_ref or "web_search",
+                        trend_score=trend_score,
+                        last_seen_at=datetime.utcnow(),
+                    )
+                )
+                added_count += 1
+
+        source = KnowledgeSource(
+            client_id=channel.client_id,
+            channel_id=channel.id,
+            source_type="web",
+            title=f"Research update for channel {channel.channel_name}",
+            authority_score=0.68,
+            lang="ru",
+            raw_payload=json.dumps(
+                {
+                    "focus_text": focus_text,
+                    "queries": research_queries,
+                    "questions": normalized_questions,
+                    "captured_at": datetime.utcnow().isoformat(),
+                },
+                ensure_ascii=False,
+            ),
+        )
+        db.session.add(source)
+        db.session.flush()
+
+        for idx, question_text in enumerate(normalized_questions):
+            db.session.add(
+                KnowledgeDocument(
+                    source_id=source.id,
+                    chunk_index=idx,
+                    text=question_text,
+                    summary=question_text,
+                    keywords=json.dumps(_extract_keywords(question_text, limit=6), ensure_ascii=False),
+                    entities=json.dumps([], ensure_ascii=False),
+                )
+            )
+
+        db.session.commit()
+        return jsonify(
+            {
+                "success": True,
+                "channel_id": channel.id,
+                "channel_name": channel.channel_name,
+                "research_queries": research_queries,
+                "questions_total": len(normalized_questions),
+                "questions_added": added_count,
+                "questions_updated": updated_count,
+                "audience_questions": normalized_questions,
+            }
+        )
+    except Exception as e:
+        db.session.rollback()
+        error_logger.error(
+            "agent_research_update_failed user_id=%s channel_id=%s error=%s",
+            current_user.id if current_user.is_authenticated else None,
+            channel_id,
+            e,
+        )
+        return jsonify({"success": False, "error": f"Не удалось обновить research: {e}"}), 500
+
+
+@app.route("/api/agent/draft", methods=["POST"])
+@login_required
+def api_agent_draft():
+    guard_response = _agent_feature_guard()
+    if guard_response:
+        return guard_response
+
+    data = request.get_json(silent=True) or {}
+    channel_id = data.get("channel_id")
+    topic_text = str(data.get("topic") or "").strip()
+    requested_platform = str(data.get("platform") or "").strip().lower()
+    run_mode = str(data.get("run_mode") or "manual").strip().lower()[:30]
+    include_image = bool(data.get("include_image", False))
+
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный channel_id"}), 400
+
+    channel = _get_accessible_channel(channel_id)
+    if not channel.is_active:
+        return jsonify({"success": False, "error": "Канал отключен. Включите его перед генерацией черновика."}), 400
+
+    platform = requested_platform or (channel.platform or "").strip().lower()
+    if platform not in SUPPORTED_PLATFORMS:
+        return jsonify({"success": False, "error": "Поддерживаются только Telegram и VK"}), 400
+
+    if not topic_text:
+        topic_text = _resolve_manual_publish_topic(channel)
+
+    try:
+        semantic_hints = _agent_channel_semantic_hints(channel, limit=10)
+        question_hints = _agent_channel_question_hints(channel, limit=8)
+        knowledge_docs = _agent_channel_knowledge_documents(channel, limit=20)
+        retrieved_payload = build_retrieved_context(
+            semantic_clusters=semantic_hints,
+            audience_questions=question_hints,
+            knowledge_documents=knowledge_docs,
+            max_clusters=6,
+            max_questions=5,
+            max_docs=4,
+        )
+        retrieved_context_block = str(retrieved_payload.get("context_block") or "").strip()
+
+        content_text = _agent_generate_draft_text(
+            channel=channel,
+            topic_text=topic_text,
+            platform=platform,
+            retrieved_context=retrieved_context_block,
+        )
+
+        image_path = None
+        if include_image and _channel_uses_ai_images(channel):
+            image_path = _generate_manual_publication_image(topic_text, content_text, channel=channel)
+
+        generation_run = GenerationRun(
+            client_id=channel.client_id,
+            channel_id=channel.id,
+            topic=topic_text,
+            platform=platform,
+            run_mode=run_mode or "manual",
+            input_context_ref=json.dumps(
+                {
+                    "semantic_hints": semantic_hints,
+                    "question_hints": question_hints,
+                    "references": retrieved_payload.get("references") or [],
+                },
+                ensure_ascii=False,
+            ),
+            output_text=content_text,
+            output_image_ref=image_path,
+            status="draft",
+            error=None,
+            created_at=datetime.utcnow(),
+        )
+        db.session.add(generation_run)
+        db.session.flush()
+
+        quality_payload = evaluate_draft_quality(
+            text_value=content_text,
+            topic=topic_text,
+            platform=platform,
+            semantic_hints=semantic_hints,
+            audience_questions=question_hints,
+        )
+        quality_report = _agent_store_quality_report(generation_run, quality_payload)
+
+        db.session.commit()
+        return jsonify(
+            {
+                "success": True,
+                "run": _agent_run_payload(generation_run, quality_report=quality_report),
+                "retrieved_context": {
+                    "semantic_hints": semantic_hints[:6],
+                    "question_hints": question_hints[:5],
+                    "references_count": len(retrieved_payload.get("references") or []),
+                },
+            }
+        )
+    except Exception as e:
+        db.session.rollback()
+        error_logger.error(
+            "agent_draft_failed user_id=%s channel_id=%s topic=%s error=%s",
+            current_user.id if current_user.is_authenticated else None,
+            channel_id,
+            topic_text,
+            e,
+        )
+        return jsonify({"success": False, "error": f"Не удалось собрать черновик: {e}"}), 500
+
+
+@app.route("/api/agent/quality/evaluate", methods=["POST"])
+@login_required
+def api_agent_quality_evaluate():
+    guard_response = _agent_feature_guard()
+    if guard_response:
+        return guard_response
+
+    data = request.get_json(silent=True) or {}
+    run_id = data.get("run_id")
+
+    if run_id is not None:
+        try:
+            run_id = int(run_id)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "Укажите корректный run_id"}), 400
+
+        run = _get_accessible_generation_run(run_id)
+        channel = _get_accessible_channel(run.channel_id)
+        text_value = str(run.output_text or "").strip()
+        topic = str(run.topic or "").strip()
+        platform = str(run.platform or channel.platform or "").strip().lower()
+        if not text_value:
+            return jsonify({"success": False, "error": "В выбранном run отсутствует текст для оценки"}), 400
+
+        semantic_hints = _agent_channel_semantic_hints(channel, limit=10)
+        question_hints = _agent_channel_question_hints(channel, limit=8)
+        quality_payload = evaluate_draft_quality(
+            text_value=text_value,
+            topic=topic,
+            platform=platform,
+            semantic_hints=semantic_hints,
+            audience_questions=question_hints,
+        )
+
+        quality_report = _agent_store_quality_report(run, quality_payload)
+        db.session.commit()
+        return jsonify(
+            {
+                "success": True,
+                "run": _agent_run_payload(run, quality_report=quality_report),
+            }
+        )
+
+    text_value = str(data.get("text") or "").strip()
+    topic = str(data.get("topic") or "").strip()
+    platform = str(data.get("platform") or "").strip().lower()
+    channel_id = data.get("channel_id")
+    semantic_hints = _normalize_phrase_list(data.get("semantic_hints") or [], limit=12)
+    question_hints = _normalize_phrase_list(data.get("audience_questions") or [], limit=10)
+
+    if not text_value:
+        return jsonify({"success": False, "error": "Передайте текст для оценки качества"}), 400
+    if platform and platform not in SUPPORTED_PLATFORMS:
+        return jsonify({"success": False, "error": "Поддерживаются только Telegram и VK"}), 400
+
+    if channel_id is not None:
+        try:
+            channel_id = int(channel_id)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "Некорректный channel_id"}), 400
+        channel = _get_accessible_channel(channel_id)
+        semantic_hints = _normalize_phrase_list(
+            [*semantic_hints, *_agent_channel_semantic_hints(channel, limit=10)],
+            limit=12,
+        )
+        question_hints = _normalize_phrase_list(
+            [*question_hints, *_agent_channel_question_hints(channel, limit=8)],
+            limit=10,
+        )
+        if not platform:
+            platform = channel.platform
+
+    if not platform:
+        platform = "telegram"
+
+    quality_payload = evaluate_draft_quality(
+        text_value=text_value,
+        topic=topic,
+        platform=platform,
+        semantic_hints=semantic_hints,
+        audience_questions=question_hints,
+    )
+    return jsonify({"success": True, "quality": quality_payload})
+
+
+@app.route("/api/agent/run/update", methods=["POST"])
+@login_required
+def api_agent_run_update():
+    guard_response = _agent_feature_guard()
+    if guard_response:
+        return guard_response
+
+    data = request.get_json(silent=True) or {}
+    run_id = data.get("run_id")
+    evaluate_quality = bool(data.get("evaluate_quality", True))
+
+    try:
+        run_id = int(run_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный run_id"}), 400
+
+    run = _get_accessible_generation_run(run_id)
+    channel = _get_accessible_channel(run.channel_id)
+    if run.status == "published":
+        return jsonify({"success": False, "error": "Published run нельзя редактировать. Создайте новый draft."}), 400
+
+    topic_text = str(data.get("topic") or run.topic or "").strip()
+    if not topic_text:
+        topic_text = _resolve_manual_publish_topic(channel)
+
+    platform = str(data.get("platform") or run.platform or channel.platform or "").strip().lower()
+    if platform not in SUPPORTED_PLATFORMS:
+        return jsonify({"success": False, "error": "Поддерживаются только Telegram и VK"}), 400
+
+    raw_text = data.get("output_text")
+    if raw_text is None:
+        output_text = str(run.output_text or "").strip()
+    else:
+        output_text = _normalize_publication_text(str(raw_text or "").strip(), topic_text, platform)
+
+    if not output_text:
+        return jsonify({"success": False, "error": "Текст черновика не должен быть пустым"}), 400
+
+    run.topic = topic_text
+    run.platform = platform
+    run.output_text = output_text
+    if run.status in {"publish_failed", "rejected"}:
+        run.status = "draft"
+
+    quality_report = _agent_latest_quality_report(run.id)
+    if evaluate_quality:
+        semantic_hints = _agent_channel_semantic_hints(channel, limit=10)
+        question_hints = _agent_channel_question_hints(channel, limit=8)
+        quality_payload = evaluate_draft_quality(
+            text_value=output_text,
+            topic=topic_text,
+            platform=platform,
+            semantic_hints=semantic_hints,
+            audience_questions=question_hints,
+        )
+        quality_report = _agent_store_quality_report(run, quality_payload)
+
+    db.session.commit()
+    return jsonify({"success": True, "run": _agent_run_payload(run, quality_report=quality_report)})
+
+
+@app.route("/api/agent/feedback", methods=["POST"])
+@login_required
+def api_agent_feedback():
+    guard_response = _agent_feature_guard()
+    if guard_response:
+        return guard_response
+
+    data = request.get_json(silent=True) or {}
+    run_id = data.get("run_id")
+    feedback_type = str(data.get("feedback_type") or "").strip().lower()
+    comment = str(data.get("comment") or "").strip()
+    accepted = bool(data.get("accepted", False))
+
+    try:
+        run_id = int(run_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный run_id"}), 400
+
+    if not feedback_type:
+        return jsonify({"success": False, "error": "Укажите feedback_type"}), 400
+    if len(comment) > 5000:
+        comment = comment[:5000]
+
+    run = _get_accessible_generation_run(run_id)
+    feedback_item = EditorFeedback(
+        run_id=run.id,
+        feedback_type=feedback_type,
+        comment=comment or None,
+        accepted=accepted,
+        created_at=datetime.utcnow(),
+    )
+    db.session.add(feedback_item)
+
+    # Мягкая синхронизация статуса run по ручной обратной связи.
+    if run.status != "published":
+        if accepted or feedback_type in {"approve", "approved", "manual_approve"}:
+            run.status = "approved_manual"
+        elif feedback_type in {"reject", "rejected"}:
+            run.status = "rejected"
+        elif feedback_type in {"revise", "needs_revision"}:
+            run.status = "needs_revision"
+
+    db.session.commit()
+    return jsonify(
+        {
+            "success": True,
+            "run": _agent_run_payload(run, quality_report=_agent_latest_quality_report(run.id)),
+            "feedback": _agent_feedback_payload(feedback_item),
+        }
+    )
+
+
+@app.route("/api/agent/publish", methods=["POST"])
+@login_required
+def api_agent_publish():
+    guard_response = _agent_feature_guard()
+    if guard_response:
+        return guard_response
+
+    data = request.get_json(silent=True) or {}
+    run_id = data.get("run_id")
+    force_publish = bool(data.get("force", False))
+    include_image = bool(data.get("include_image", False))
+
+    try:
+        run_id = int(run_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Укажите корректный run_id"}), 400
+
+    run = _get_accessible_generation_run(run_id)
+    channel = _get_accessible_channel(run.channel_id)
+    if not channel.is_active:
+        return jsonify({"success": False, "error": "Канал отключен. Включите его перед публикацией."}), 400
+    target_client = channel.client
+    if not is_admin_user(current_user) and target_client:
+        trial_guard = _trial_manual_publish_guard(target_client, requested_posts=1)
+        if trial_guard:
+            return trial_guard
+
+    if run.status == "published" and not force_publish:
+        return jsonify({"success": False, "error": "Этот run уже опубликован. Для повторной отправки используйте force=true."}), 400
+
+    latest_report = _agent_latest_quality_report(run.id)
+    if not force_publish:
+        if not latest_report:
+            return jsonify({"success": False, "error": "Сначала выполните quality evaluate для этого run"}), 400
+        if latest_report.decision != "approve":
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Quality Gate не пройден: публикация разрешена только для approve (или force=true).",
+                    "decision": latest_report.decision,
+                }
+            ), 400
+
+    content_text = str(run.output_text or "").strip()
+    topic_text = str(run.topic or "").strip() or _resolve_manual_publish_topic(channel)
+    platform = str(run.platform or channel.platform or "").strip().lower() or "telegram"
+
+    if not content_text:
+        semantic_hints = _agent_channel_semantic_hints(channel, limit=10)
+        question_hints = _agent_channel_question_hints(channel, limit=8)
+        retrieved_payload = build_retrieved_context(
+            semantic_clusters=semantic_hints,
+            audience_questions=question_hints,
+            knowledge_documents=_agent_channel_knowledge_documents(channel, limit=20),
+            max_clusters=6,
+            max_questions=5,
+            max_docs=4,
+        )
+        content_text = _agent_generate_draft_text(
+            channel=channel,
+            topic_text=topic_text,
+            platform=platform,
+            retrieved_context=str(retrieved_payload.get("context_block") or "").strip(),
+        )
+        run.output_text = content_text
+
+    image_path = _normalize_generated_image_path(run.output_image_ref)
+    if include_image and not image_path and _channel_uses_ai_images(channel):
+        image_path = _generate_manual_publication_image(topic_text, content_text, channel=channel)
+        if image_path:
+            run.output_image_ref = image_path
+
+    try:
+        from posting.multi_publisher import MultiPlatformPublisher
+
+        publisher = MultiPlatformPublisher()
+    except Exception as e:
+        error_logger.error("agent_publish_init_failed user_id=%s run_id=%s error=%s", current_user.id, run.id, e)
+        return jsonify({"success": False, "error": f"Не удалось инициализировать публикатор: {e}"}), 500
+
+    channel_info = {
+        "platform": platform,
+        "platform_channel_id": channel.channel_id,
+        "channel_name": channel.channel_name,
+        "access_token": channel.access_token,
+        "hashtags": _channel_hashtags(channel),
+    }
+
+    publish_result = publisher.publish_to_channel(channel_info, content_text, image_path=image_path)
+    success = bool(publish_result.get("success"))
+    error_text = str(publish_result.get("error") or "").strip() or None
+
+    post_record = ChannelPost(
+        channel_id=channel.id,
+        topic=topic_text,
+        content=content_text,
+        success=success,
+        views=0,
+        likes=0,
+        shares=0,
+        comments=0,
+        publish_mode="manual_agent",
+        published_at=datetime.utcnow(),
+        error_message=error_text,
+    )
+    db.session.add(post_record)
+
+    run.topic = topic_text
+    run.platform = platform
+    run.error = error_text
+    if success:
+        run.status = "published"
+        run.published_at = datetime.utcnow()
+    else:
+        run.status = "publish_failed"
+
+    if success and not is_admin_user(current_user) and target_client:
+        _consume_trial_manual_posts(target_client, 1)
+
+    db.session.commit()
+    status_code = 200 if success else 400
+    return jsonify(
+        {
+            "success": success,
+            "run": _agent_run_payload(run, quality_report=_agent_latest_quality_report(run.id)),
+            "publication": {
+                "channel_id": channel.id,
+                "channel_name": channel.channel_name,
+                "platform": platform,
+                "post_id": publish_result.get("post_id"),
+                "error": error_text,
+                "image_used": bool(image_path),
+                "manual_posts_remaining": _trial_usage_payload(target_client).get("manual_posts_remaining")
+                if target_client and target_client.plan == "trial"
+                else None,
+            },
+        }
+    ), status_code
+
+
+@app.route("/api/agent/runs")
+@login_required
+def api_agent_runs():
+    guard_response = _agent_feature_guard()
+    if guard_response:
+        return guard_response
+
+    page = request.args.get("page", 1, type=int)
+    per_page = request.args.get("per_page", 20, type=int)
+    per_page = min(max(per_page, 1), 100)
+    channel_id = request.args.get("channel_id")
+    status_filter = str(request.args.get("status") or "").strip().lower()
+
+    query = _agent_runs_query_for_current_user()
+    if channel_id:
+        try:
+            channel_id = int(channel_id)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "Некорректный channel_id"}), 400
+        if not is_admin_user(current_user):
+            channel = _get_accessible_channel(channel_id)
+            query = query.filter(GenerationRun.channel_id == channel.id)
+        else:
+            query = query.filter(GenerationRun.channel_id == channel_id)
+
+    if status_filter:
+        query = query.filter(GenerationRun.status == status_filter)
+
+    total = query.count()
+    total_pages = max(1, math.ceil(total / per_page)) if per_page else 1
+    runs = (
+        query.order_by(GenerationRun.created_at.desc(), GenerationRun.id.desc())
+        .offset((max(page, 1) - 1) * per_page)
+        .limit(per_page)
+        .all()
+    )
+
+    payload = []
+    for run in runs:
+        payload.append(_agent_run_payload(run, quality_report=_agent_latest_quality_report(run.id)))
+
+    return jsonify(
+        {
+            "success": True,
+            "runs": payload,
+            "total": total,
+            "page": max(page, 1),
+            "per_page": per_page,
+            "total_pages": total_pages,
+        }
+    )
+
+
+@app.route("/api/billing/cancel", methods=["POST"])
+@login_required
+def api_billing_cancel_stub():
+    return jsonify({"success": True})
+
+
+def _range_to_days(range_value):
+    mapping = {"7days": 7, "30days": 30, "90days": 90}
+    return mapping.get(range_value, 30)
+
+
+def _posts_query_for_current_user():
+    query = ChannelPost.query.join(ClientChannel, ChannelPost.channel_id == ClientChannel.id)
+    if is_admin_user(current_user):
+        return query
+    if not current_user.client_id:
+        return query.filter(text("1=0"))
+    return query.filter(ClientChannel.client_id == current_user.client_id)
+
+
+@app.route("/api/statistics/overview")
+@login_required
+def api_statistics_overview():
+    days = _range_to_days(request.args.get("range", "30days"))
+    since_dt = datetime.utcnow() - timedelta(days=days - 1)
+
+    query = _posts_query_for_current_user().filter(ChannelPost.published_at >= since_dt)
+    posts = query.all()
+    total_posts = len(posts)
+    successful = sum(1 for p in posts if p.success)
+    total_views = sum((p.views or 0) for p in posts)
+    total_reactions = sum((p.likes or 0) + (p.shares or 0) + (p.comments or 0) for p in posts)
+    success_rate = round((successful / total_posts) * 100, 1) if total_posts else 0
+    avg_views = round(total_views / total_posts, 1) if total_posts else 0
+    engagement_rate = round((total_reactions / total_views) * 100, 1) if total_views else 0
+
+    daily = (
+        query.with_entities(
+            db.func.date(ChannelPost.published_at).label("day"),
+            db.func.count(ChannelPost.id),
+            db.func.coalesce(db.func.sum(ChannelPost.views), 0),
+        )
+        .group_by("day")
+        .all()
+    )
+    chart_dates = [str(row[0]) for row in daily]
+    chart_posts = [int(row[1] or 0) for row in daily]
+    chart_views = [int(row[2] or 0) for row in daily]
+
+    platforms = (
+        query.with_entities(ClientChannel.platform, db.func.count(ChannelPost.id))
+        .group_by(ClientChannel.platform)
+        .all()
+    )
+    platforms_data = [{"platform": row[0] or "unknown", "count": int(row[1] or 0)} for row in platforms]
+
+    return jsonify(
+        {
+            "total_posts": total_posts,
+            "success_rate": success_rate,
+            "avg_views": avg_views,
+            "engagement_rate": engagement_rate,
+            "chart_data": {"dates": chart_dates, "posts": chart_posts, "views": chart_views},
+            "platforms_data": platforms_data,
+        }
+    )
+
+
+@app.route("/api/statistics/top-publications")
+@login_required
+def api_statistics_top_publications():
+    limit = request.args.get("limit", 10, type=int)
+    posts = (
+        _posts_query_for_current_user()
+        .order_by(ChannelPost.views.desc(), ChannelPost.published_at.desc())
+        .limit(limit)
+        .all()
+    )
+    payload = []
+    for post in posts:
+        payload.append(
+            {
+                "id": post.id,
+                "topic": post.topic or "Без темы",
+                "channel_name": post.channel.channel_name if post.channel else "—",
+                "views": int(post.views or 0),
+                "likes": int(post.likes or 0),
+                "shares": int(post.shares or 0),
+                "comments": int(post.comments or 0),
+            }
+        )
+    return jsonify(payload)
+
+
+@app.route("/api/statistics/publications")
+@login_required
+def api_statistics_publications():
+    page = request.args.get("page", 1, type=int)
+    per_page = request.args.get("per_page", 25, type=int)
+    platform = request.args.get("platform")
+    status = request.args.get("status")
+    search = request.args.get("search", "").strip().lower()
+
+    query = _posts_query_for_current_user()
+    if platform:
+        query = query.filter(ClientChannel.platform == platform)
+    if status == "success":
+        query = query.filter(ChannelPost.success.is_(True))
+    elif status == "failed":
+        query = query.filter(ChannelPost.success.is_(False))
+    if search:
+        query = query.filter(db.func.lower(db.func.coalesce(ChannelPost.topic, "")).like(f"%{search}%"))
+
+    total = query.count()
+    total_pages = max(1, math.ceil(total / per_page)) if per_page else 1
+    items = (
+        query.order_by(ChannelPost.published_at.desc())
+        .offset((max(page, 1) - 1) * per_page)
+        .limit(per_page)
+        .all()
+    )
+    publications = []
+    for post in items:
+        publications.append(
+            {
+                "id": post.id,
+                "published_at": post.published_at.isoformat() if post.published_at else None,
+                "channel_name": post.channel.channel_name if post.channel else "—",
+                "topic": post.topic or "Без темы",
+                "platform": post.channel.platform if post.channel else "unknown",
+                "success": bool(post.success),
+                "views": int(post.views or 0),
+                "likes": int(post.likes or 0),
+                "shares": int(post.shares or 0),
+                "comments": int(post.comments or 0),
+            }
+        )
+
+    return jsonify(
+        {
+            "publications": publications,
+            "page": max(page, 1),
+            "total_pages": total_pages,
+            "total": total,
+        }
+    )
+
+
+@app.route("/api/publications/<int:publication_id>")
+@login_required
+def api_publication_detail(publication_id):
+    post = _posts_query_for_current_user().filter(ChannelPost.id == publication_id).first_or_404()
+    views = int(post.views or 0)
+    reactions = int(post.likes or 0) + int(post.shares or 0) + int(post.comments or 0)
+    er = round((reactions / views) * 100, 2) if views else 0
+    return jsonify(
+        {
+            "id": post.id,
+            "published_at": post.published_at.isoformat() if post.published_at else None,
+            "channel_name": post.channel.channel_name if post.channel else "—",
+            "platform": post.channel.platform if post.channel else "unknown",
+            "topic": post.topic or "Без темы",
+            "content": post.content or "",
+            "success": bool(post.success),
+            "views": views,
+            "likes": int(post.likes or 0),
+            "shares": int(post.shares or 0),
+            "comments": int(post.comments or 0),
+            "er": er,
+            "error_message": post.error_message,
+        }
+    )
+
+
+@app.route("/api/statistics/engagement")
+@login_required
+def api_statistics_engagement():
+    days = _range_to_days(request.args.get("range", "30days"))
+    since_dt = datetime.utcnow() - timedelta(days=days - 1)
+    posts = _posts_query_for_current_user().filter(ChannelPost.published_at >= since_dt).all()
+
+    total_posts = len(posts) or 1
+    avg_likes = round(sum((p.likes or 0) for p in posts) / total_posts, 1) if posts else 0
+    avg_shares = round(sum((p.shares or 0) for p in posts) / total_posts, 1) if posts else 0
+    avg_comments = round(sum((p.comments or 0) for p in posts) / total_posts, 1) if posts else 0
+
+    total_views = sum((p.views or 0) for p in posts)
+    total_reactions = sum((p.likes or 0) + (p.shares or 0) + (p.comments or 0) for p in posts)
+    avg_ctr = round((total_reactions / total_views) * 100, 1) if total_views else 0
+
+    return jsonify(
+        {
+            "avg_likes": avg_likes,
+            "avg_shares": avg_shares,
+            "avg_comments": avg_comments,
+            "avg_ctr": avg_ctr,
+            "time_data": {
+                "hours": [str(i) for i in range(24)],
+                "likes": [0] * 24,
+                "shares": [0] * 24,
+                "comments": [0] * 24,
+            },
+            "content_data": {"types": ["Статьи"], "er": [avg_ctr]},
+        }
+    )
+
+
+@app.route("/api/statistics/channels")
+@login_required
+def api_statistics_channels():
+    channels = (
+        ClientChannel.query.all()
+        if is_admin_user(current_user)
+        else ClientChannel.query.filter_by(client_id=current_user.client_id).all()
+    )
+    performance = []
+    ranking = []
+    for channel in channels:
+        posts = ChannelPost.query.filter_by(channel_id=channel.id).all()
+        views = sum((p.views or 0) for p in posts)
+        likes = sum((p.likes or 0) for p in posts)
+        shares = sum((p.shares or 0) for p in posts)
+        comments = sum((p.comments or 0) for p in posts)
+        reactions = likes + shares + comments
+        er = round((reactions / views) * 100, 2) if views else 0
+        performance.append({"channel_name": channel.channel_name, "er": er, "views": views})
+        ranking.append(
+            {
+                "channel_name": channel.channel_name,
+                "platform": channel.platform,
+                "posts": len(posts),
+                "views": views,
+                "likes": likes,
+                "shares": shares,
+                "er": er,
+                "growth": 0,
+            }
+        )
+    ranking.sort(key=lambda x: x["views"], reverse=True)
+    return jsonify({"performance": performance, "ranking": ranking})
+
+
+@app.route("/api/statistics/clients")
+@admin_required
+def api_statistics_clients():
+    rows = (
+        db.session.query(Client.plan, db.func.count(Client.id))
+        .group_by(Client.plan)
+        .all()
+    )
+    labels = [row[0] or "unknown" for row in rows]
+    data = [int(row[1] or 0) for row in rows]
+    return jsonify({"distribution": {"labels": labels, "data": data}})
+
+
+@app.route("/api/statistics/export")
+@login_required
+def api_statistics_export():
+    posts = _posts_query_for_current_user().order_by(ChannelPost.published_at.desc()).all()
+    lines = ["id,published_at,channel,platform,topic,success,views,likes,shares,comments"]
+    for post in posts:
+        lines.append(
+            ",".join(
+                [
+                    str(post.id),
+                    (post.published_at.isoformat() if post.published_at else ""),
+                    (post.channel.channel_name if post.channel else "").replace(",", " "),
+                    (post.channel.platform if post.channel else ""),
+                    (post.topic or "").replace(",", " "),
+                    str(bool(post.success)),
+                    str(int(post.views or 0)),
+                    str(int(post.likes or 0)),
+                    str(int(post.shares or 0)),
+                    str(int(post.comments or 0)),
+                ]
+            )
+        )
+    csv_payload = "\n".join(lines)
+    filename = f"snoomi_statistics_{datetime.utcnow().date().isoformat()}.csv"
+    return (
+        csv_payload,
+        200,
+        {
+            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
+
+
+with app.app_context():
+    db.create_all()
+    _ensure_user_schema()
+    _ensure_clients_schema()
+    _ensure_client_channels_schema()
+    _ensure_channel_posts_schema()
+
+    admin = User.query.filter_by(username="admin").first()
+    if not admin:
+        admin = User(username="admin", role="admin", is_active=True)
+        admin.set_password("admin123")
+        db.session.add(admin)
+        db.session.commit()
+        logger.info("✅ Создан администратор: admin/admin123")
+    else:
+        if admin.role != "admin":
+            admin.role = "admin"
+        if not admin.password_hash:
+            admin.set_password("admin123")
+        db.session.commit()
+
+
+if __name__ == "__main__":
+    host = os.environ.get("WEB_HOST", "0.0.0.0")
+    port = int(os.environ.get("WEB_PORT", "5000"))
+    app.run(host=host, port=port, debug=True)

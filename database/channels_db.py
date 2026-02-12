@@ -9,6 +9,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+TRIAL_MAX_DAYS = 30
+TRIAL_AUTO_POSTS_LIMIT = 15
+TRIAL_MANUAL_POSTS_LIMIT = 5
+
 class ChannelsDatabase:
     """База данных для управления клиентскими каналами"""
     
@@ -17,6 +21,169 @@ class ChannelsDatabase:
         self.conn = sqlite3.connect(db_name)
         self.create_tables()
         logger.info(f"✅ Channels Database '{db_name}' подключена")
+
+    @staticmethod
+    def _safe_nonnegative_int(value, default=0):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return int(default)
+        return parsed if parsed >= 0 else int(default)
+
+    @staticmethod
+    def _parse_datetime(raw_value):
+        if not raw_value:
+            return None
+        value = str(raw_value).strip()
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except Exception:
+            pass
+        patterns = (
+            "%Y-%m-%d %H:%M:%S.%f",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S.%f",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d",
+        )
+        for pattern in patterns:
+            try:
+                return datetime.strptime(value, pattern)
+            except Exception:
+                continue
+        return None
+
+    def _ensure_column(self, table_name, column_name, ddl):
+        cursor = self.conn.cursor()
+        cursor.execute(f"PRAGMA table_info('{table_name}')")
+        columns = {row[1] for row in cursor.fetchall()}
+        if column_name not in columns:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl}")
+
+    def _ensure_trial_schema(self):
+        self._ensure_column("clients", "trial_days", f"INTEGER DEFAULT {TRIAL_MAX_DAYS}")
+        self._ensure_column("clients", "trial_started_at", "TIMESTAMP")
+        self._ensure_column("clients", "trial_ends_at", "TIMESTAMP")
+        self._ensure_column("clients", "trial_auto_posts_limit", f"INTEGER DEFAULT {TRIAL_AUTO_POSTS_LIMIT}")
+        self._ensure_column("clients", "trial_auto_posts_used", "INTEGER DEFAULT 0")
+        self._ensure_column("clients", "trial_manual_posts_limit", f"INTEGER DEFAULT {TRIAL_MANUAL_POSTS_LIMIT}")
+        self._ensure_column("clients", "trial_manual_posts_used", "INTEGER DEFAULT 0")
+        self._ensure_column("clients", "trial_completed_at", "TIMESTAMP")
+        self._ensure_column("channel_posts", "publish_mode", "TEXT DEFAULT 'auto'")
+
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"""
+            UPDATE clients
+            SET trial_days = COALESCE(NULLIF(trial_days, 0), {TRIAL_MAX_DAYS})
+            WHERE trial_days IS NULL OR trial_days <= 0
+            """
+        )
+        cursor.execute(
+            f"""
+            UPDATE clients
+            SET trial_auto_posts_limit = COALESCE(NULLIF(trial_auto_posts_limit, 0), {TRIAL_AUTO_POSTS_LIMIT})
+            WHERE trial_auto_posts_limit IS NULL OR trial_auto_posts_limit <= 0
+            """
+        )
+        cursor.execute(
+            """
+            UPDATE clients
+            SET trial_auto_posts_used = COALESCE(trial_auto_posts_used, 0)
+            WHERE trial_auto_posts_used IS NULL
+            """
+        )
+        cursor.execute(
+            f"""
+            UPDATE clients
+            SET trial_manual_posts_limit = COALESCE(NULLIF(trial_manual_posts_limit, 0), {TRIAL_MANUAL_POSTS_LIMIT})
+            WHERE trial_manual_posts_limit IS NULL OR trial_manual_posts_limit <= 0
+            """
+        )
+        cursor.execute(
+            """
+            UPDATE clients
+            SET trial_manual_posts_used = COALESCE(trial_manual_posts_used, 0)
+            WHERE trial_manual_posts_used IS NULL
+            """
+        )
+        cursor.execute(
+            """
+            UPDATE clients
+            SET trial_started_at = COALESCE(trial_started_at, created_at)
+            WHERE plan = 'trial' AND (trial_started_at IS NULL OR trial_started_at = '')
+            """
+        )
+        cursor.execute(
+            """
+            UPDATE clients
+            SET trial_ends_at = datetime(COALESCE(trial_started_at, created_at), '+' || trial_days || ' days')
+            WHERE plan = 'trial' AND (trial_ends_at IS NULL OR trial_ends_at = '')
+            """
+        )
+        self.conn.commit()
+
+    def _is_trial_channel_allowed_for_auto_publish(self, channel_row):
+        if str(channel_row.get("client_plan") or "").strip().lower() != "trial":
+            return True
+
+        trial_completed_at = self._parse_datetime(channel_row.get("trial_completed_at"))
+        if trial_completed_at:
+            return False
+
+        trial_ends_at = self._parse_datetime(channel_row.get("trial_ends_at"))
+        if trial_ends_at and datetime.now() > trial_ends_at:
+            return False
+
+        auto_limit = self._safe_nonnegative_int(
+            channel_row.get("trial_auto_posts_limit"),
+            TRIAL_AUTO_POSTS_LIMIT,
+        )
+        auto_limit = max(1, auto_limit)
+        auto_used = self._safe_nonnegative_int(channel_row.get("trial_auto_posts_used"), 0)
+        return auto_used < auto_limit
+
+    def _increment_trial_auto_usage(self, channel_id):
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT c.id, c.plan, c.trial_auto_posts_used, c.trial_auto_posts_limit, c.trial_completed_at
+            FROM clients c
+            JOIN client_channels cc ON cc.client_id = c.id
+            WHERE cc.id = ?
+            LIMIT 1
+            """,
+            (channel_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return
+
+        client_id, plan_name, used_raw, limit_raw, completed_at = row
+        if str(plan_name or "").strip().lower() != "trial":
+            return
+        if completed_at:
+            return
+
+        auto_used = self._safe_nonnegative_int(used_raw, 0) + 1
+        auto_limit = max(1, self._safe_nonnegative_int(limit_raw, TRIAL_AUTO_POSTS_LIMIT))
+
+        if auto_used >= auto_limit:
+            cursor.execute(
+                """
+                UPDATE clients
+                SET trial_auto_posts_used = ?, trial_completed_at = COALESCE(trial_completed_at, CURRENT_TIMESTAMP)
+                WHERE id = ?
+                """,
+                (auto_used, client_id),
+            )
+        else:
+            cursor.execute(
+                "UPDATE clients SET trial_auto_posts_used = ? WHERE id = ?",
+                (auto_used, client_id),
+            )
     
     def create_tables(self):
         """Создает таблицы для системы каналов"""
@@ -80,6 +247,7 @@ class ChannelsDatabase:
             topic TEXT,
             content TEXT,
             image_path TEXT,
+            publish_mode TEXT DEFAULT 'auto',  -- auto, manual, manual_test, manual_agent
             published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             success BOOLEAN,
             views INTEGER DEFAULT 0,
@@ -120,7 +288,8 @@ class ChannelsDatabase:
             FOREIGN KEY (channel_id) REFERENCES client_channels (id) ON DELETE CASCADE
         )
         ''')
-        
+
+        self._ensure_trial_schema()
         self.conn.commit()
         logger.info("✅ Таблицы системы каналов созданы")
     
@@ -331,20 +500,41 @@ class ChannelsDatabase:
     
     # ===================== МЕТОДЫ ДЛЯ ПУБЛИКАЦИЙ =====================
     
-    def add_channel_post(self, channel_id, post_id, topic, content, 
-                        image_path=None, success=True, error_message=None):
+    def add_channel_post(
+        self,
+        channel_id,
+        post_id,
+        topic,
+        content,
+        image_path=None,
+        success=True,
+        error_message=None,
+        publish_mode="auto",
+    ):
         """Добавляет запись о публикации в канал"""
         try:
             cursor = self.conn.cursor()
             cursor.execute('''
             INSERT INTO channel_posts 
-            (channel_id, post_id, topic, content, image_path, success, error_message)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (channel_id, post_id, topic, content[:2000], image_path, success, error_message))
+            (channel_id, post_id, topic, content, image_path, success, error_message, publish_mode)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                channel_id,
+                post_id,
+                topic,
+                content[:2000],
+                image_path,
+                success,
+                error_message,
+                str(publish_mode or "auto").strip().lower()[:30],
+            ))
             
             # Обновляем статистику за сегодня
             today = datetime.now().date()
             self._update_daily_stats(channel_id, today, 1 if success else 0)
+
+            if success and str(publish_mode or "").strip().lower() == "auto":
+                self._increment_trial_auto_usage(channel_id)
             
             self.conn.commit()
             post_db_id = cursor.lastrowid
@@ -414,6 +604,40 @@ class ChannelsDatabase:
     
     # ===================== УТИЛИТЫ =====================
     
+    def _should_publish_by_frequency(self, publish_frequency, last_published_at):
+        """
+        Проверяет, можно ли публиковать сегодня по частотности.
+
+        Поддерживаемые значения:
+        - daily: каждый день
+        - every_other_day: через день
+        - every_two_days: через 2 дня
+        """
+        if not publish_frequency or publish_frequency == 'daily':
+            return True
+        if publish_frequency == 'manual':
+            return False
+
+        interval_days = {
+            'daily': 1,
+            'every_other_day': 2,
+            'every_two_days': 3,
+            # обратная совместимость
+            'every_2_days': 3,
+            'weekly': 7,
+        }.get(str(publish_frequency).strip().lower(), 1)
+
+        if not last_published_at:
+            return True
+
+        try:
+            last_dt = datetime.fromisoformat(str(last_published_at))
+        except Exception:
+            return True
+
+        elapsed_days = (datetime.now() - last_dt).total_seconds() / 86400
+        return elapsed_days >= interval_days
+
     def get_channels_for_publishing(self, hour=None):
         """Получает каналы, которые нужно опубликовать сейчас"""
         cursor = self.conn.cursor()
@@ -432,11 +656,23 @@ class ChannelsDatabase:
             cs.max_posts_per_day,
             cs.is_auto_generate,
             cs.use_ai_images,
-            c.client_id,
-            cl.name as client_name
+            cc.client_id as client_id,
+            cl.name as client_name,
+            cl.plan as client_plan,
+            cl.trial_ends_at,
+            cl.trial_auto_posts_limit,
+            cl.trial_auto_posts_used,
+            cl.trial_completed_at,
+            lp.last_published_at
         FROM client_channels cc
         JOIN channel_settings cs ON cc.id = cs.channel_id
         JOIN clients cl ON cc.client_id = cl.id
+        LEFT JOIN (
+            SELECT channel_id, MAX(published_at) as last_published_at
+            FROM channel_posts
+            WHERE success = 1
+            GROUP BY channel_id
+        ) lp ON cc.id = lp.channel_id
         WHERE cc.is_active = 1 
         AND cl.status = 'active'
         AND cs.is_auto_generate = 1
@@ -456,6 +692,15 @@ class ChannelsDatabase:
         channels = []
         for row in rows:
             channel = dict(zip([description[0] for description in cursor.description], row))
+
+            if not self._should_publish_by_frequency(
+                channel.get('publish_frequency'),
+                channel.get('last_published_at')
+            ):
+                continue
+
+            if not self._is_trial_channel_allowed_for_auto_publish(channel):
+                continue
             
             # Парсим JSON поля
             if channel.get('topics'):

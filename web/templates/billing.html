@@ -1,15 +1,15 @@
 <!-- web/templates/billing.html -->
 {% extends "layout.html" %}
 
-{% block title %}Snoomi Platform - Биллинг{% endblock %}
+{% block title %}{{ app_brand_name }} - Биллинг{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
+<div class="page-header">
     <div>
-        <h1 class="h3 mb-0 text-gray-800">
+        <h1 class="page-title">
             <i class="fas fa-credit-card me-2"></i>Биллинг и подписка
         </h1>
-        <p class="mb-0">Управление вашей подпиской и платежами</p>
+        <p class="page-subtitle">Управление вашей подпиской и платежами</p>
     </div>
     {% if current_user.role != 'admin' %}
     <div>

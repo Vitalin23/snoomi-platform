@@ -1,0 +1,952 @@
+<!-- web/templates/index.html -->
+{% extends "layout.html" %}
+
+{% block title %}{{ app_brand_name }} - Автопостинг для малого бизнеса и блогов{% endblock %}
+
+{% block meta_tags %}
+<meta name="description" content="{{ app_brand_name }} — понятный автопостинг для небольших блогов и малого бизнеса: подключите каналы, выберите темы, запустите стабильные публикации по расписанию.">
+<meta name="keywords" content="автопостинг, автопостинг telegram, автопостинг вк, постинг по расписанию, контент для малого бизнеса">
+<meta name="robots" content="index,follow">
+<meta property="og:type" content="website">
+<meta property="og:title" content="{{ app_brand_name }} — автопостинг без сложной настройки">
+<meta property="og:description" content="Сервис для блогеров и малого бизнеса: темы, календарь и публикации в Telegram/VK в одном кабинете.">
+<meta property="og:url" content="{{ request.base_url }}">
+<link rel="canonical" href="{{ request.base_url }}">
+{% endblock %}
+
+{% block extra_css %}
+<style>
+    .landing-hero {
+        margin-bottom: var(--space-8);
+    }
+    .landing-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--space-2);
+        padding: 0.45rem 0.85rem;
+        border: 1px solid var(--color-border-strong);
+        border-radius: var(--radius-pill);
+        background: color-mix(in srgb, var(--color-surface-soft) 76%, transparent);
+        color: var(--color-text-muted);
+        font-size: 0.9rem;
+        font-weight: 600;
+    }
+    .hero-title {
+        font-size: clamp(1.7rem, 1.25rem + 1.4vw, 2.55rem);
+        line-height: 1.15;
+        letter-spacing: -0.02em;
+        margin-top: var(--space-3);
+        margin-bottom: var(--space-3);
+    }
+    .hero-subtitle {
+        color: var(--color-text-muted);
+        font-size: 1.05rem;
+        max-width: 62ch;
+        margin-bottom: var(--space-4);
+    }
+    .risk-strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-2);
+        margin-top: var(--space-3);
+    }
+    .risk-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.35rem 0.7rem;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-pill);
+        background: var(--color-surface);
+        color: var(--color-text-muted);
+        font-size: 0.86rem;
+    }
+    .hero-demo {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-lg);
+        background: var(--color-surface);
+        box-shadow: var(--shadow-2);
+        padding: var(--space-4);
+    }
+    .hero-illustration {
+        width: 100%;
+        max-width: 360px;
+        margin: 0 auto var(--space-3);
+        display: block;
+    }
+    .demo-topline {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: var(--space-3);
+    }
+    .demo-dotline {
+        display: inline-flex;
+        gap: 5px;
+        align-items: center;
+    }
+    .demo-dotline span {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--color-border-strong);
+    }
+    .demo-flow {
+        display: grid;
+        gap: var(--space-2);
+    }
+    .demo-step {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-sm);
+        padding: 0.65rem 0.8rem;
+        background: color-mix(in srgb, var(--color-surface-soft) 72%, transparent);
+        font-size: 0.92rem;
+    }
+    .demo-step strong {
+        color: var(--color-text);
+        margin-right: 0.45rem;
+    }
+    .demo-result {
+        margin-top: var(--space-3);
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: var(--space-2);
+    }
+    .demo-result-item {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-sm);
+        padding: 0.55rem 0.6rem;
+        background: var(--color-surface);
+        text-align: center;
+    }
+    .demo-result-item .kpi {
+        display: block;
+        font-weight: 700;
+        color: var(--color-text);
+    }
+    .demo-result-item .kpi-label {
+        color: var(--color-text-subtle);
+        font-size: 0.78rem;
+    }
+    .landing-section {
+        margin-bottom: var(--space-8);
+    }
+    .section-lead {
+        color: var(--color-text-muted);
+        margin-bottom: var(--space-4);
+        max-width: 72ch;
+    }
+    .logo-wall {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+        gap: var(--space-2);
+        margin-bottom: var(--space-4);
+    }
+    .logo-cell {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-sm);
+        padding: 0.65rem 0.75rem;
+        background: var(--color-surface);
+        color: var(--color-text-muted);
+        text-align: center;
+        font-weight: 600;
+        font-size: 0.86rem;
+    }
+    .proof-kpi {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        background: var(--color-surface);
+        padding: var(--space-4);
+        height: 100%;
+    }
+    .proof-kpi .value {
+        font-size: clamp(1.5rem, 1.25rem + 0.9vw, 2rem);
+        font-weight: 800;
+        line-height: 1;
+        margin-bottom: var(--space-2);
+    }
+    .proof-kpi .label {
+        color: var(--color-text-muted);
+        margin-bottom: 0;
+    }
+    .review-card,
+    .feature-card,
+    .step-card,
+    .pricing-card,
+    .integration-card,
+    .segment-card,
+    .trust-card {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        background: var(--color-surface);
+        padding: var(--space-4);
+        height: 100%;
+    }
+    .review-card blockquote {
+        margin: 0;
+        color: var(--color-text-muted);
+        font-size: 0.96rem;
+    }
+    .review-meta {
+        margin-top: var(--space-3);
+        font-size: 0.86rem;
+        color: var(--color-text-subtle);
+    }
+    .mini-case {
+        border: 1px solid color-mix(in srgb, var(--color-success) 25%, var(--color-border));
+        background: var(--color-success-soft);
+        border-radius: var(--radius-md);
+        padding: var(--space-4);
+    }
+    .step-index {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        background: var(--color-primary-soft);
+        color: var(--color-primary);
+        font-weight: 700;
+        margin-bottom: var(--space-2);
+    }
+    .time-to-value {
+        border: 1px dashed var(--color-border-strong);
+        border-radius: var(--radius-sm);
+        padding: 0.75rem 0.9rem;
+        color: var(--color-text-muted);
+        font-weight: 600;
+        margin-top: var(--space-3);
+        background: color-mix(in srgb, var(--color-info-soft) 42%, transparent);
+    }
+    .feature-card h5 {
+        margin-bottom: var(--space-2);
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+    }
+    .soft-icon {
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--color-primary-soft);
+        color: var(--color-primary);
+        flex-shrink: 0;
+    }
+    .feature-list {
+        margin: 0;
+        padding-left: 1.1rem;
+        color: var(--color-text-muted);
+        font-size: 0.94rem;
+    }
+    .feature-list li + li {
+        margin-top: 0.35rem;
+    }
+    .segment-switch {
+        display: inline-flex;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-pill);
+        background: var(--color-surface-soft);
+        padding: 0.2rem;
+        margin-bottom: var(--space-4);
+    }
+    .segment-switch-btn {
+        border: 0;
+        background: transparent;
+        color: var(--color-text-muted);
+        border-radius: var(--radius-pill);
+        padding: 0.45rem 0.95rem;
+        font-weight: 600;
+    }
+    .segment-switch-btn.active {
+        background: var(--color-primary);
+        color: #fff;
+    }
+    .segment-view {
+        display: none;
+    }
+    .segment-view.active {
+        display: block;
+    }
+    .integration-badge {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-pill);
+        padding: 0.3rem 0.7rem;
+        font-size: 0.82rem;
+        font-weight: 600;
+        color: var(--color-text-muted);
+        margin-right: 0.4rem;
+        margin-bottom: 0.4rem;
+        display: inline-block;
+    }
+    .integration-badge.live {
+        border-color: color-mix(in srgb, var(--color-success) 35%, var(--color-border));
+        background: var(--color-success-soft);
+        color: var(--color-success);
+    }
+    .integration-badge.soon {
+        border-color: color-mix(in srgb, var(--color-warning) 35%, var(--color-border));
+        background: var(--color-warning-soft);
+        color: var(--color-warning);
+    }
+    .pricing-highlight {
+        border: 2px solid var(--color-primary);
+        box-shadow: var(--shadow-2);
+    }
+    .pricing-price {
+        font-size: 1.9rem;
+        font-weight: 800;
+        line-height: 1;
+        margin-bottom: var(--space-2);
+    }
+    .pricing-subtext {
+        color: var(--color-text-subtle);
+        font-size: 0.9rem;
+    }
+    .pricing-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        color: var(--color-text-muted);
+        font-size: 0.93rem;
+    }
+    .pricing-list li {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.45rem;
+        margin-bottom: 0.5rem;
+    }
+    .pricing-list li i {
+        margin-top: 0.18rem;
+        color: var(--color-success);
+    }
+    .faq-note {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        background: var(--color-surface-soft);
+        padding: var(--space-4);
+    }
+    .trust-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: var(--space-3);
+    }
+    .trust-card h6 {
+        margin-bottom: var(--space-2);
+    }
+    .trust-card ul {
+        margin: 0;
+        padding-left: 1rem;
+        color: var(--color-text-muted);
+        font-size: 0.9rem;
+    }
+    .hero-cta-group {
+        display: flex;
+        gap: var(--space-2);
+        flex-wrap: wrap;
+        margin-bottom: var(--space-3);
+    }
+    @media (max-width: 767px) {
+        .hero-cta-group .btn {
+            width: 100%;
+        }
+        .demo-result {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<section class="landing-hero">
+    <div class="row g-4 align-items-center">
+        <div class="col-xl-7">
+            <span class="landing-badge">
+                <i class="fas fa-gift"></i>
+                30 дней бесплатно · без привязки карты
+            </span>
+            <h1 class="hero-title">
+                Бесплатный запуск автопостинга на 30 дней для Telegram и VK.
+            </h1>
+            <p class="hero-subtitle">
+                {{ app_brand_name }} создан для людей, которые ведут каналы сами:
+                небольшие блоги, локальный бизнес, эксперты и магазины. Подключили каналы, выбрали темы,
+                поставили в календарь и получили стабильную активность без сложной настройки.
+            </p>
+
+            <div class="hero-cta-group">
+                {% if current_user.is_authenticated %}
+                    <a href="{{ url_for('channels') }}" class="btn btn-primary">
+                        <i class="fas fa-play me-1"></i> Запустить автопостинг
+                    </a>
+                {% else %}
+                    <a href="{{ url_for('register') }}" class="btn btn-primary">
+                        <i class="fas fa-rocket me-1"></i> Попробовать бесплатно
+                    </a>
+                {% endif %}
+                <a href="#howItWorks" class="btn btn-outline-primary">
+                    <i class="fas fa-circle-play me-1"></i> Посмотреть демо / Как это работает
+                </a>
+            </div>
+
+            <div class="risk-strip">
+                <span class="risk-chip"><i class="fas fa-credit-card"></i> Без карты на старте</span>
+                <span class="risk-chip"><i class="fas fa-lightbulb"></i> До {{ trial_topics_limit }} тем в плане</span>
+                <span class="risk-chip"><i class="fas fa-robot"></i> До {{ trial_auto_posts_limit }} авто-публикаций</span>
+                <span class="risk-chip"><i class="fas fa-paper-plane"></i> До {{ trial_manual_posts_limit }} ручных публикаций</span>
+            </div>
+        </div>
+
+        <div class="col-xl-5">
+            <div class="hero-demo">
+                <img
+                    class="hero-illustration"
+                    src="{{ url_for('static', filename='media/hero-trial.svg') }}"
+                    alt="Иллюстрация бесплатного периода {{ app_brand_name }}"
+                    loading="lazy"
+                >
+                <div class="demo-topline">
+                    <strong>Понятный сценарий запуска</strong>
+                    <span class="demo-dotline"><span></span><span></span><span></span></span>
+                </div>
+                <div class="demo-flow">
+                    <div class="demo-step"><strong>Шаг 1</strong>Подключили канал и проверили доступ.</div>
+                    <div class="demo-step"><strong>Шаг 2</strong>Собрали темы для публикаций и отредактировали их.</div>
+                    <div class="demo-step"><strong>Шаг 3</strong>Сохранили календарь постов по удобному графику.</div>
+                    <div class="demo-step"><strong>Шаг 4</strong>Запустили публикацию и посмотрели результат.</div>
+                </div>
+                <div class="demo-result">
+                    <div class="demo-result-item">
+                        <span class="kpi">15 мин</span>
+                        <span class="kpi-label">до полного запуска</span>
+                    </div>
+                    <div class="demo-result-item">
+                        <span class="kpi">{{ supported_networks|length }}</span>
+                        <span class="kpi-label">поддерживаемые сети</span>
+                    </div>
+                    <div class="demo-result-item">
+                        <span class="kpi">CSV</span>
+                        <span class="kpi-label">простой отчет</span>
+                    </div>
+                </div>
+                <div class="mt-3 d-flex flex-wrap gap-2">
+                    <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#demoModal">
+                        <i class="fas fa-video me-1"></i> Демо-сценарий 15-30 сек
+                    </button>
+                    {% if current_user.is_authenticated %}
+                        <a href="{{ url_for('statistics') }}" class="btn btn-sm btn-outline-secondary">
+                            <i class="fas fa-chart-line me-1"></i> Открыть отчеты
+                        </a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="landing-section">
+    <h2 class="page-title mb-2">Кому подходит сервис</h2>
+    <p class="section-lead">
+        Если вам нужна стабильная активность в каналах без найма большой команды — вы в целевой аудитории.
+    </p>
+    <div class="logo-wall">
+        <div class="logo-cell">eCommerce</div>
+        <div class="logo-cell">Локальный бизнес</div>
+        <div class="logo-cell">Эксперты</div>
+        <div class="logo-cell">Образование</div>
+        <div class="logo-cell">Медиа</div>
+        <div class="logo-cell">Самозанятые</div>
+    </div>
+    <div class="row g-3 mb-4">
+        <div class="col-md-4">
+            <div class="proof-kpi">
+                <div class="value">{{ total_posts or 0 }}</div>
+                <p class="label">опубликованных постов через систему</p>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="proof-kpi">
+                <div class="value">{{ active_clients or 0 }}</div>
+                <p class="label">активных клиентов на платформе</p>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="proof-kpi">
+                <div class="value">{{ active_channels or 0 }}</div>
+                <p class="label">подключенных каналов в работе</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-lg-4">
+            <div class="review-card">
+                <blockquote>
+                    “Раньше посты выходили как получится. Теперь публикации идут по графику, даже когда я занят клиентами.”
+                </blockquote>
+                <div class="review-meta">Владелец небольшого магазина</div>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="review-card">
+                <blockquote>
+                    “Для личного блога важна регулярность. Здесь это настраивается без сложных инструкций.”
+                </blockquote>
+                <div class="review-meta">Эксперт, автор канала</div>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="review-card">
+                <blockquote>
+                    “Наконец-то вижу, какие посты вышли и какие сработали лучше.”
+                </blockquote>
+                <div class="review-meta">Автор малого блога</div>
+            </div>
+        </div>
+    </div>
+    <div class="mini-case">
+        <strong>Практический результат:</strong> после запуска расписания ручная рутина по постингу обычно сокращается
+        на несколько часов в неделю.
+    </div>
+</section>
+
+<section class="landing-section" id="howItWorks">
+    <h2 class="page-title mb-2">Как это работает за 4 шага</h2>
+    <p class="section-lead">
+        Без сложных терминов: подключили каналы, выбрали темы, сделали календарь, запустили публикации.
+    </p>
+    <div class="row g-3">
+        <div class="col-md-6 col-xl-3">
+            <div class="step-card">
+                <span class="step-index">1</span>
+                <h5>Подключите аккаунты</h5>
+                <p class="mb-0 text-muted">Добавьте Telegram и/или VK. Система проверит ссылку перед сохранением.</p>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-3">
+            <div class="step-card">
+                <span class="step-index">2</span>
+                <h5>Соберите темы</h5>
+                <p class="mb-0 text-muted">Можно сгенерировать темы, отредактировать их или добавить свои.</p>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-3">
+            <div class="step-card">
+                <span class="step-index">3</span>
+                <h5>Настройте календарь</h5>
+                <p class="mb-0 text-muted">Выберите частоту, время и сохраните план публикаций.</p>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-3">
+            <div class="step-card">
+                <span class="step-index">4</span>
+                <h5>Публикуйте и смотрите результат</h5>
+                <p class="mb-0 text-muted">Запускайте постинг и контролируйте статусы и базовые метрики.</p>
+            </div>
+        </div>
+    </div>
+    <div class="time-to-value">
+        <i class="fas fa-stopwatch me-1"></i> Первый рабочий сценарий обычно запускается за 10-15 минут.
+    </div>
+</section>
+
+<section class="landing-section">
+    <h2 class="page-title mb-2">Что вы получаете</h2>
+    <p class="section-lead">
+        Главное — чтобы посты выходили стабильно, а вам не нужно было вникать в технические детали.
+    </p>
+    <div class="row g-3">
+        <div class="col-md-6 col-xl-4">
+            <div class="feature-card">
+                <h5><span class="soft-icon"><i class="fas fa-calendar-days"></i></span>Календарь и планировщик</h5>
+                <ul class="feature-list">
+                    <li>Таймслоты и автоповтор для серийных публикаций.</li>
+                    <li>Пакетная постановка в расписание.</li>
+                    <li>Быстрый контроль очереди постов.</li>
+                </ul>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-4">
+            <div class="feature-card">
+                <h5><span class="soft-icon"><i class="fas fa-share-nodes"></i></span>Кросспостинг и адаптация</h5>
+                <ul class="feature-list">
+                    <li>Адаптация длины текста под площадку.</li>
+                    <li>Предпросмотр перед публикацией.</li>
+                    <li>Базовые правила по хэштегам и форматам.</li>
+                </ul>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-4">
+            <div class="feature-card">
+                <h5><span class="soft-icon"><i class="fas fa-folder-tree"></i></span>Черновики, шаблоны, медиатека</h5>
+                <ul class="feature-list">
+                    <li>Единая база бренд-материалов и ссылок.</li>
+                    <li>Повторно используемые шаблоны контента.</li>
+                    <li>Поддержка UTM-меток в рабочих сценариях.</li>
+                </ul>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-4">
+            <div class="feature-card">
+                <h5><span class="soft-icon"><i class="fas fa-user-check"></i></span>Простое управление доступами</h5>
+                <ul class="feature-list">
+                    <li>Базовые роли и понятная история действий.</li>
+                    <li>Контроль изменений без лишней бюрократии.</li>
+                    <li>Удобно, когда над каналом работают 2-3 человека.</li>
+                </ul>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-4">
+            <div class="feature-card">
+                <h5><span class="soft-icon"><i class="fas fa-chart-column"></i></span>Аналитика и отчеты</h5>
+                <ul class="feature-list">
+                    <li>Базовые метрики: охват, реакция, динамика.</li>
+                    <li>Экспорт отчетов и быстрый шаринг.</li>
+                    <li>Сравнение каналов и периодов.</li>
+                </ul>
+            </div>
+        </div>
+        <div class="col-md-6 col-xl-4">
+            <div class="feature-card">
+                <h5><span class="soft-icon"><i class="fas fa-shield-halved"></i></span>Безопасность и доступы</h5>
+                <ul class="feature-list">
+                    <li>Подключение по токенам и базовое разграничение прав.</li>
+                    <li>Журнал клиентских и системных событий.</li>
+                    <li>Минимально необходимый доступ к аккаунтам.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="landing-section">
+    <h2 class="page-title mb-2">Сценарии для двух основных аудиторий</h2>
+    <p class="section-lead">
+        Мы ориентируемся на тех, кто не хочет разбираться в сложных настройках: малый бизнес и авторы блогов.
+    </p>
+
+    <div class="segment-switch" role="tablist" aria-label="Сегментация аудитории">
+        <button class="segment-switch-btn active" type="button" data-segment="business">Для малого бизнеса</button>
+        <button class="segment-switch-btn" type="button" data-segment="experts">Для блогеров и экспертов</button>
+    </div>
+
+    <div class="segment-view active" id="segment-business">
+        <div class="row g-3">
+            <div class="col-md-6">
+                <div class="segment-card">
+                    <h5><i class="fas fa-building me-2 text-primary"></i>Частые проблемы</h5>
+                    <ul class="feature-list">
+                        <li>Несколько сотрудников и много каналов без единого контроля.</li>
+                        <li>Трудно согласовывать публикации и отслеживать ошибки.</li>
+                        <li>Нет прозрачной отчетности для руководителя/клиента.</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="segment-card">
+                    <h5><i class="fas fa-chart-line me-2 text-primary"></i>Что получаете на практике</h5>
+                    <ul class="feature-list">
+                        <li>Простой контроль публикаций и истории изменений.</li>
+                        <li>Публикации по графику с понятными статусами.</li>
+                        <li>Базовую статистику и отчеты без перегруза.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="segment-view" id="segment-experts">
+        <div class="row g-3">
+            <div class="col-md-6">
+                <div class="segment-card">
+                    <h5><i class="fas fa-user-pen me-2 text-primary"></i>Частые проблемы</h5>
+                    <ul class="feature-list">
+                        <li>Нужна регулярность публикаций без потери времени.</li>
+                        <li>Сложно каждый раз собирать контент вручную.</li>
+                        <li>Нет структуры, когда каналов становится больше.</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="segment-card">
+                    <h5><i class="fas fa-gauge-high me-2 text-primary"></i>Что получаете на практике</h5>
+                    <ul class="feature-list">
+                        <li>Быстрый запуск: шаблон → расписание → автопубликация.</li>
+                        <li>Стабильный контент-ритм и меньше “ручного режима”.</li>
+                        <li>Понятную статистику, чтобы видеть прогресс канала.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="landing-section">
+    <h2 class="page-title mb-2">Посадочные страницы по задачам клиентов</h2>
+    <p class="section-lead">
+        Ниже собраны отдельные страницы под популярные запросы. Это база для органического трафика и точечных рекламных кампаний.
+    </p>
+    <div class="row g-3">
+        {% for landing in landing_pages %}
+        <div class="col-md-6 col-xl-4">
+            <a href="{{ url_for('seo_landing_page', slug=landing.slug) }}" class="text-decoration-none">
+                <div class="feature-card h-100">
+                    <h5 class="mb-2">{{ landing.h1 }}</h5>
+                    <p class="mb-0 text-muted">{{ landing.description }}</p>
+                </div>
+            </a>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+
+<section class="landing-section">
+    <h2 class="page-title mb-2">Интеграции и поддерживаемые платформы</h2>
+    <p class="section-lead">
+        Начинайте с Telegram и VK, а затем расширяйте контур при необходимости.
+    </p>
+    <div class="integration-card mb-3">
+        <h5 class="mb-3">Соцсети</h5>
+        {% for network in supported_networks %}
+            <span class="integration-badge live">{{ network }}</span>
+        {% endfor %}
+        <span class="integration-badge soon">Дополнительные платформы (в дорожной карте)</span>
+    </div>
+    <div class="integration-card">
+        <h5 class="mb-3">Планируемые интеграции</h5>
+        <span class="integration-badge">Canva</span>
+        <span class="integration-badge">Google Drive</span>
+        <span class="integration-badge">Bitly</span>
+        <span class="integration-badge">Telegram Bot</span>
+        <span class="integration-badge">CRM/Webhook</span>
+    </div>
+</section>
+
+<section class="landing-section" id="pricing">
+    <h2 class="page-title mb-2">30 дней бесплатно: понятный старт без оплаты</h2>
+    <p class="section-lead">
+        На старте вы тестируете сервис без привязки карты: до {{ trial_topics_limit }} тем в плане,
+        до {{ trial_auto_posts_limit }} авто-публикаций и до {{ trial_manual_posts_limit }} ручных запусков.
+        Коммерческие тарифы сейчас выдаются по запросу из личного кабинета.
+    </p>
+    <div class="faq-note">
+        <strong>Нужны тарифы и условия после trial?</strong>
+        {% if current_user.is_authenticated %}
+        Нажмите кнопку ниже — менеджер подберет подходящий пакет под ваш формат каналов.
+        <a href="{{ url_for('request_tariff') }}" class="btn btn-sm btn-primary ms-2 mt-2 mt-md-0">
+            <i class="fas fa-paper-plane me-1"></i>Запросить тарифы
+        </a>
+        {% else %}
+        Зарегистрируйтесь и получите бесплатный период на 30 дней, а затем при необходимости запросите тариф в кабинете.
+        <a href="{{ url_for('register') }}" class="btn btn-sm btn-primary ms-2 mt-2 mt-md-0">
+            <i class="fas fa-rocket me-1"></i>Начать бесплатно
+        </a>
+        {% endif %}
+        <a href="{{ specialist_telegram_link }}" target="_blank" class="btn btn-sm btn-outline-primary ms-2 mt-2 mt-md-0">
+            <i class="fab fa-telegram me-1"></i> Связаться со специалистом
+        </a>
+    </div>
+</section>
+
+<section class="landing-section">
+    <h2 class="page-title mb-2">FAQ и работа с возражениями</h2>
+    <p class="section-lead">
+        Простые ответы на вопросы, которые обычно возникают перед запуском.
+    </p>
+
+    <div class="accordion mb-4" id="faqAccordion">
+        <div class="accordion-item">
+            <h2 class="accordion-header" id="faqOne">
+                <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#faqCollapseOne">
+                    Не заблокируют ли аккаунт за автопостинг?
+                </button>
+            </h2>
+            <div id="faqCollapseOne" class="accordion-collapse collapse show" data-bs-parent="#faqAccordion">
+                <div class="accordion-body">
+                    Публикации идут через официальные механики API/токенов платформ и ваши права доступа.
+                    Важно соблюдать правила самих соцсетей по частоте и типам контента.
+                </div>
+            </div>
+        </div>
+        <div class="accordion-item">
+            <h2 class="accordion-header" id="faqTwo">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faqCollapseTwo">
+                    Как вы храните доступы и токены?
+                </button>
+            </h2>
+            <div id="faqCollapseTwo" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
+                <div class="accordion-body">
+                    Используются ограниченные токены доступа, разграничение прав и журналы системных/клиентских событий.
+                    Критичные поля не логируются в открытом виде.
+                </div>
+            </div>
+        </div>
+        <div class="accordion-item">
+            <h2 class="accordion-header" id="faqThree">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faqCollapseThree">
+                    Какие сети и форматы поддерживаются сейчас?
+                </button>
+            </h2>
+            <div id="faqCollapseThree" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
+                <div class="accordion-body">
+                    Сейчас основной фокус на {{ supported_networks|join(", ") }}. Часть форматов (например stories/reels)
+                    может требовать доработки под конкретную платформу и API-ограничения.
+                </div>
+            </div>
+        </div>
+        <div class="accordion-item">
+            <h2 class="accordion-header" id="faqFour">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faqCollapseFour">
+                    Можно ли редактировать пост после планирования?
+                </button>
+            </h2>
+            <div id="faqCollapseFour" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
+                <div class="accordion-body">
+                    Да, до момента фактической отправки пост можно обновить в плане.
+                    Для команд доступна история правок и контроль изменений.
+                </div>
+            </div>
+        </div>
+        <div class="accordion-item">
+            <h2 class="accordion-header" id="faqFive">
+                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faqCollapseFive">
+                    Есть ли trial, поддержка и возврат?
+                </button>
+            </h2>
+            <div id="faqCollapseFive" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
+                <div class="accordion-body">
+                    Бесплатный период действует {{ trial_days_default }} дней без привязки карты:
+                    до {{ trial_topics_limit }} тем в плане, до {{ trial_auto_posts_limit }} авто-публикаций
+                    и до {{ trial_manual_posts_limit }} ручных публикаций.
+                    После trial тарифы предоставляются по запросу из личного кабинета.
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="faq-note">
+        <strong>Честные ограничения:</strong> набор форматов и глубина автопубликации зависит от API конкретной соцсети.
+        Мы явно показываем, что доступно сейчас, а что в роадмапе.
+    </div>
+</section>
+
+<section class="landing-section">
+    <div class="card border-0 shadow-sm">
+        <div class="card-body p-4 p-lg-5 text-center">
+            <h2 class="page-title mb-2">Запустите стабильные публикации уже сегодня</h2>
+            <p class="section-lead mx-auto mb-3">
+                Подключите канал, сохраните темы и календарь, запустите первую публикацию в этот же день.
+            </p>
+            <div class="d-flex flex-wrap justify-content-center gap-2">
+                {% if current_user.is_authenticated %}
+                    <a href="{{ url_for('channels') }}" class="btn btn-primary">
+                        <i class="fas fa-broadcast-tower me-1"></i> Открыть каналы
+                    </a>
+                {% else %}
+                    <a href="{{ url_for('register') }}" class="btn btn-primary">
+                        <i class="fas fa-rocket me-1"></i> Попробовать бесплатно
+                    </a>
+                    <a href="{{ url_for('login') }}" class="btn btn-outline-primary">
+                        <i class="fas fa-sign-in-alt me-1"></i> Войти в кабинет
+                    </a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="landing-section">
+    <h2 class="page-title mb-2">Контакты и прозрачные условия</h2>
+    <p class="section-lead">Блок доверия для клиентов, которым важны понятные правила и быстрая связь.</p>
+    <div class="trust-grid">
+        <div class="trust-card">
+            <h6><i class="fas fa-address-book me-1"></i> Контакты</h6>
+            <ul>
+                <li>support@snoomi.ru</li>
+                <li>Telegram: @snoomi_support</li>
+                <li>Ответ в рабочие часы</li>
+            </ul>
+        </div>
+        <div class="trust-card">
+            <h6><i class="fas fa-scale-balanced me-1"></i> Юридическая часть</h6>
+            <ul>
+                <li>Политика обработки данных</li>
+                <li>Публичная оферта</li>
+                <li>Условия бесплатного периода</li>
+            </ul>
+        </div>
+        <div class="trust-card">
+            <h6><i class="fas fa-shield me-1"></i> Безопасность</h6>
+            <ul>
+                <li>Роли и разграничение доступов</li>
+                <li>Журналы действий</li>
+                <li>Ограниченные токены доступа</li>
+            </ul>
+        </div>
+        <div class="trust-card">
+            <h6><i class="fas fa-book-open me-1"></i> Поддержка и база знаний</h6>
+            <ul>
+                <li>FAQ по подключению сетей</li>
+                <li>Инструкции по токенам</li>
+                <li>Роадмап “что скоро”</li>
+            </ul>
+        </div>
+    </div>
+</section>
+
+<div class="modal fade" id="demoModal" tabindex="-1" aria-labelledby="demoModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="demoModalLabel">
+                    <i class="fas fa-circle-play me-2"></i>Демо: сценарий автопостинга за 15-30 секунд
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+            </div>
+            <div class="modal-body">
+                <video class="w-100 rounded mb-3" controls preload="none" playsinline>
+                    <source src="{{ url_for('static', filename='media/demo-autopost-22s.mp4') }}" type="video/mp4">
+                    Ваш браузер не поддерживает видео.
+                </video>
+                <div class="faq-note">
+                    <strong>Сценарий демо:</strong> создали пост → поставили в расписание → получили публикацию →
+                    проверили отчет и экспортировали данные.
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    (function () {
+        const switchButtons = document.querySelectorAll('.segment-switch-btn');
+        const views = {
+            business: document.getElementById('segment-business'),
+            experts: document.getElementById('segment-experts')
+        };
+
+        function setSegment(segment) {
+            switchButtons.forEach((btn) => {
+                const isActive = btn.dataset.segment === segment;
+                btn.classList.toggle('active', isActive);
+                btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+            });
+            Object.entries(views).forEach(([key, view]) => {
+                if (!view) return;
+                view.classList.toggle('active', key === segment);
+            });
+        }
+
+        switchButtons.forEach((btn) => {
+            btn.addEventListener('click', () => setSegment(btn.dataset.segment || 'business'));
+        });
+
+        setSegment('business');
+    })();
+</script>
+{% endblock %}

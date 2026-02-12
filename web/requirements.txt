@@ -1,0 +1,14 @@
+Flask==2.3.3
+Flask-SQLAlchemy==3.0.5
+SQLAlchemy==2.0.19
+python-dotenv==1.0.0
+requests==2.31.0
+APScheduler==3.10.4
+python-telegram-bot==20.3
+vk-api==11.9.9
+pillow==10.0.1
+pydantic==2.3.0
+colorama==0.4.6
+Werkzeug==2.3.7
+gunicorn==21.2.0
+psycopg2-binary==2.9.7

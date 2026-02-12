@@ -1,0 +1,384 @@
+<!-- web/templates/layout.html -->
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light dark">
+    <title>{% block title %}{{ app_brand_name }} - Простой автопостинг{% endblock %}</title>
+    {% block meta_tags %}
+    <meta name="description" content="{{ app_brand_name }} — простой автопостинг в Telegram и VK для блогов и малого бизнеса. Подключили канал, выбрали темы, получили стабильные публикации.">
+    <meta name="keywords" content="автопостинг, автопостинг telegram, автопостинг vk, постинг по расписанию, контент план">
+    <meta name="robots" content="index,follow">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="{{ app_brand_name }} — простой автопостинг">
+    <meta property="og:description" content="Сервис для стабильных публикаций без сложной настройки: подключение канала, темы, календарь, публикация и результат.">
+    <meta property="og:url" content="{{ request.base_url }}">
+    <link rel="canonical" href="{{ request.base_url }}">
+    {% endblock %}
+    
+    <!-- Bootstrap 5 -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+
+    <script>
+        (function () {
+            try {
+                const savedTheme = localStorage.getItem("snoomi-theme");
+                if (savedTheme) {
+                    document.documentElement.setAttribute("data-theme", savedTheme);
+                }
+            } catch (e) {}
+        })();
+    </script>
+    
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <a class="skip-link" href="#appMainContent">Перейти к основному контенту</a>
+
+    <!-- Навигация -->
+    <nav class="navbar navbar-expand-lg navbar-light app-navbar">
+        <div class="container">
+            <a class="navbar-brand" href="{{ url_for('dashboard') if current_user.is_authenticated else url_for('index') }}">
+                <i class="fas fa-robot"></i> {{ app_brand_name }}
+            </a>
+            
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
+                    {% if current_user.is_authenticated %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('dashboard') }}">
+                                <i class="fas fa-tachometer-alt"></i> Кабинет
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('channels') }}">
+                                <i class="fas fa-broadcast-tower"></i> 1. Каналы
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('posting_setup') }}">
+                                <i class="fas fa-sliders-h"></i> 2. Темы
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('posting_plan') }}">
+                                <i class="fas fa-calendar-check"></i> 3. Календарь
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('agent_console') }}">
+                                <i class="fas fa-brain"></i> AI-помощник
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('statistics') }}">
+                                <i class="fas fa-chart-line"></i> Результаты
+                            </a>
+                        </li>
+                        {% if current_user.role == 'admin' %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('billing') }}">
+                                <i class="fas fa-credit-card"></i> Тариф
+                            </a>
+                        </li>
+                        {% endif %}
+                        
+                        {% if current_user.role == 'admin' %}
+                        <li class="nav-item dropdown">
+                            <a class="nav-link dropdown-toggle" href="#" id="adminDropdown" role="button" data-bs-toggle="dropdown">
+                                <i class="fas fa-cog"></i> Админка
+                            </a>
+                            <ul class="dropdown-menu">
+                                <li><a class="dropdown-item" href="{{ url_for('admin_clients') }}"><i class="fas fa-users"></i> Клиенты и каналы</a></li>
+                                <li><a class="dropdown-item" href="{{ url_for('channels') }}"><i class="fas fa-plug"></i> Каналы</a></li>
+                                <li><hr class="dropdown-divider"></li>
+                                <li><a class="dropdown-item" href="/api/system/health" target="_blank">
+                                    <i class="fas fa-heartbeat"></i> Здоровье системы
+                                </a></li>
+                            </ul>
+                        </li>
+                        {% endif %}
+                    {% endif %}
+                </ul>
+                
+                <ul class="navbar-nav">
+                    <li class="nav-item dropdown me-2">
+                        <button
+                            class="btn btn-sm btn-outline-primary dropdown-toggle mt-1 mt-lg-0"
+                            id="themeDropdown"
+                            data-bs-toggle="dropdown"
+                            aria-expanded="false"
+                            aria-label="Переключить тему интерфейса"
+                        >
+                            <i class="fas fa-circle-half-stroke me-1"></i>
+                            <span id="activeThemeLabel">Тема</span>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end theme-menu">
+                            <li><button class="dropdown-item theme-option" type="button" data-theme="light">Светлая</button></li>
+                            <li><button class="dropdown-item theme-option" type="button" data-theme="dark">Тёмная</button></li>
+                            <li><button class="dropdown-item theme-option" type="button" data-theme="contrast">Высокий контраст</button></li>
+                        </ul>
+                    </li>
+                    {% if current_user.is_authenticated %}
+                        <li class="nav-item dropdown">
+                            <a class="nav-link dropdown-toggle" href="#" id="userDropdown" role="button" data-bs-toggle="dropdown">
+                                <i class="fas fa-user"></i> {{ current_user.username }}
+                                {% if current_user.role == 'admin' %}
+                                    <span class="badge bg-warning">Admin</span>
+                                {% endif %}
+                            </a>
+                            <ul class="dropdown-menu dropdown-menu-end">
+                                <li><a class="dropdown-item" href="#"><i class="fas fa-user-cog"></i> Профиль</a></li>
+                                <li><a class="dropdown-item" href="#"><i class="fas fa-question-circle"></i> Поддержка</a></li>
+                                <li><hr class="dropdown-divider"></li>
+                                <li><a class="dropdown-item" href="{{ url_for('logout') }}">
+                                    <i class="fas fa-sign-out-alt"></i> Выйти
+                                </a></li>
+                            </ul>
+                        </li>
+                    {% else %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('login') }}">
+                                <i class="fas fa-sign-in-alt"></i> Войти
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('register') }}">
+                                <i class="fas fa-user-plus"></i> Создать аккаунт
+                            </a>
+                        </li>
+                    {% endif %}
+                </ul>
+            </div>
+        </div>
+    </nav>
+    {% include "_onboarding_progress.html" %}
+
+    <!-- Уведомления -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            <div class="container mt-3">
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category if category != 'message' else 'info' }} alert-dismissible fade show">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                {% endfor %}
+            </div>
+        {% endif %}
+    {% endwith %}
+
+    <!-- Основной контент -->
+    <main class="container main-shell" id="appMainContent">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Футер -->
+    <footer class="app-footer py-4 mt-5">
+        <div class="container">
+            <div class="row">
+                <div class="col-md-6">
+                    <h5><i class="fas fa-robot"></i> {{ app_brand_name }}</h5>
+                    <p class="mb-0">Сервис автопостинга для блогеров и малого бизнеса.</p>
+                    <small class="text-muted">Простой запуск: каналы → темы → календарь → публикация.</small>
+                </div>
+                <div class="col-md-3">
+                    <h6>Где публикуем</h6>
+                    <ul class="list-unstyled">
+                        <li><i class="fab fa-telegram"></i> Telegram</li>
+                        <li><i class="fab fa-vk"></i> ВКонтакте</li>
+                    </ul>
+                </div>
+                <div class="col-md-3">
+                    <h6>Контакты</h6>
+                    <ul class="list-unstyled">
+                        <li><i class="fas fa-envelope"></i> support@snoomi.ru</li>
+                        <li><i class="fab fa-telegram"></i> @snoomi_support</li>
+                        <li><i class="fas fa-globe"></i> snoomi.ru</li>
+                    </ul>
+                </div>
+            </div>
+            <hr class="bg-light">
+            <div class="text-center">
+                <small>&copy; 2026 {{ app_brand_name }}. Все права защищены.</small>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Custom JS -->
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+
+    <script>
+        (function () {
+            function cleanupOrphanedModalBackdrop() {
+                const hasVisibleModal = !!document.querySelector(".modal.show");
+                if (hasVisibleModal) {
+                    return;
+                }
+
+                // Bootstrap иногда может оставить backdrop/modal-open после переходов.
+                document.querySelectorAll(".modal-backdrop").forEach((node) => node.remove());
+                document.body.classList.remove("modal-open");
+                document.body.style.removeProperty("overflow");
+                document.body.style.removeProperty("padding-right");
+            }
+
+            const MAX_EVENTS_PER_PAGE = 120;
+            let sentEvents = 0;
+
+            function buildEvent(eventType, payload) {
+                return {
+                    event_type: eventType,
+                    path: window.location.pathname,
+                    payload: payload || {}
+                };
+            }
+
+            function safeText(text, maxLength) {
+                return (text || "").toString().trim().slice(0, maxLength);
+            }
+
+            function sendClientEvent(eventType, payload) {
+                if (sentEvents >= MAX_EVENTS_PER_PAGE) return;
+                sentEvents += 1;
+
+                const body = JSON.stringify(buildEvent(eventType, payload));
+
+                if (navigator.sendBeacon) {
+                    const blob = new Blob([body], { type: "application/json" });
+                    navigator.sendBeacon("/api/client-events", blob);
+                    return;
+                }
+
+                fetch("/api/client-events", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: body,
+                    keepalive: true
+                }).catch(() => {});
+            }
+
+            window.__sendClientEvent = sendClientEvent;
+
+            document.addEventListener("DOMContentLoaded", function () {
+                cleanupOrphanedModalBackdrop();
+                sendClientEvent("page_view", {
+                    title: safeText(document.title, 120),
+                    referrer: safeText(document.referrer, 200)
+                });
+            });
+
+            // Для сценариев BFCache/возврата страницы.
+            window.addEventListener("pageshow", function () {
+                cleanupOrphanedModalBackdrop();
+            });
+
+            document.addEventListener("hidden.bs.modal", function () {
+                setTimeout(cleanupOrphanedModalBackdrop, 0);
+            });
+
+            document.addEventListener("submit", function (event) {
+                const form = event.target;
+                if (!form || !form.tagName || form.tagName.toLowerCase() !== "form") return;
+                sendClientEvent("form_submit", {
+                    form_id: safeText(form.id, 80),
+                    form_action: safeText(form.getAttribute("action"), 200),
+                    form_method: safeText(form.getAttribute("method") || "get", 20)
+                });
+            }, true);
+
+            document.addEventListener("click", function (event) {
+                const target = event.target.closest("button, a, [data-track-click]");
+                if (!target) return;
+
+                sendClientEvent("ui_click", {
+                    tag: safeText(target.tagName.toLowerCase(), 20),
+                    id: safeText(target.id, 80),
+                    classes: safeText(target.className, 120),
+                    text: safeText(target.innerText || target.textContent, 120),
+                    href: safeText(target.getAttribute("href"), 220)
+                });
+            }, true);
+
+            window.addEventListener("error", function (event) {
+                sendClientEvent("js_error", {
+                    message: safeText(event.message, 240),
+                    source: safeText(event.filename, 260),
+                    line: event.lineno || 0,
+                    column: event.colno || 0
+                });
+            });
+
+            window.addEventListener("unhandledrejection", function (event) {
+                sendClientEvent("js_unhandled_rejection", {
+                    reason: safeText(String(event.reason || "unknown"), 400)
+                });
+            });
+        })();
+    </script>
+
+    <script>
+        (function () {
+            const themeNames = {
+                light: "Светлая",
+                dark: "Тёмная",
+                contrast: "Контраст",
+            };
+
+            function getCurrentTheme() {
+                return document.documentElement.getAttribute("data-theme") || "light";
+            }
+
+            function updateThemeUi() {
+                const current = getCurrentTheme();
+                const label = document.getElementById("activeThemeLabel");
+                if (label) {
+                    label.textContent = themeNames[current] || "Тема";
+                }
+
+                document.querySelectorAll(".theme-option").forEach((button) => {
+                    const isActive = button.dataset.theme === current;
+                    button.classList.toggle("active", isActive);
+                    button.setAttribute("aria-pressed", isActive ? "true" : "false");
+                });
+            }
+
+            function setTheme(theme) {
+                document.documentElement.setAttribute("data-theme", theme);
+                try {
+                    localStorage.setItem("snoomi-theme", theme);
+                } catch (e) {}
+                updateThemeUi();
+
+                if (typeof window.__sendClientEvent === "function") {
+                    window.__sendClientEvent("theme_changed", { theme: theme });
+                }
+            }
+
+            document.addEventListener("DOMContentLoaded", function () {
+                updateThemeUi();
+                document.querySelectorAll(".theme-option").forEach((button) => {
+                    button.addEventListener("click", function () {
+                        setTheme(this.dataset.theme || "light");
+                    });
+                });
+            });
+        })();
+    </script>
+    
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

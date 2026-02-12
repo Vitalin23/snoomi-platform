@@ -4,11 +4,31 @@
 """
 import sys
 import os
-import threading
-import time
+import glob
+import importlib
+from datetime import datetime
 
 # Добавляем пути
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _resolve_bot_entrypoint():
+    """
+    Находит точку входа Telegram-бота для разных вариантов имени папки:
+    Bot/main.py (текущее) или bot/main.py (legacy).
+    """
+    for module_name in ("Bot.main", "bot.main"):
+        try:
+            module = importlib.import_module(module_name)
+            return module.main
+        except ModuleNotFoundError as e:
+            # Игнорируем только ошибку отсутствия самого пакета Bot/bot.
+            package_name = module_name.split(".")[0]
+            if e.name == package_name:
+                continue
+            raise
+
+    raise ImportError("Не найден модуль бота: ожидается Bot/main.py или bot/main.py")
 
 def setup_environment():
     """Настройка окружения"""
@@ -17,9 +37,17 @@ def setup_environment():
     print("="*60)
     
     # Проверяем структуру
-    folders = ['bot', 'posting', 'ai', 'database']
-    for folder in folders:
-        if os.path.exists(folder):
+    folder_groups = [
+        ("Bot", "bot"),  # исторически встречаются оба варианта
+        ("posting",),
+        ("ai",),
+        ("database",),
+        ("web",),
+    ]
+    for group in folder_groups:
+        existing = next((folder for folder in group if os.path.exists(folder)), None)
+        folder = existing or group[0]
+        if existing:
             print(f"✅ Папка {folder}/")
         else:
             print(f"❌ Папка {folder}/ отсутствует")
@@ -49,7 +77,7 @@ def run_bot_safe():
             print("❌ TELEGRAM_BOT_TOKEN не настроен, бот не запускается")
             return
         
-        from bot.main import main as bot_main
+        bot_main = _resolve_bot_entrypoint()
         
         print("🤖 Telegram-бот запущен")
         bot_main()
@@ -61,14 +89,17 @@ def run_bot_safe():
         import traceback
         traceback.print_exc()
 
-def run_multi_scheduler_safe():
+def run_multi_scheduler_safe(test_mode=False):
     """Безопасный запуск мультиканального планировщика"""
     try:
         from posting.multi_scheduler import MultiChannelScheduler
         print("📢 Запуск мультиканального планировщика...")
         
         scheduler = MultiChannelScheduler()
-        scheduler.run_test_publication()  # Тестовый запуск
+        if test_mode:
+            scheduler.run_test_publication()
+        else:
+            scheduler.run()
         
     except ImportError as e:
         print(f"❌ Не удалось импортировать планировщик: {e}")
@@ -76,6 +107,28 @@ def run_multi_scheduler_safe():
         traceback.print_exc()
     except Exception as e:
         print(f"❌ Ошибка планировщика: {e}")
+        import traceback
+        traceback.print_exc()
+
+def run_web_safe():
+    """Безопасный запуск веб-панели"""
+    try:
+        from config import Config
+        from web.app import app
+
+        host = getattr(Config, "WEB_HOST", "0.0.0.0")
+        port = int(getattr(Config, "WEB_PORT", 5000))
+
+        print("🌐 Запуск веб-панели монетизации...")
+        print(f"   URL: http://localhost:{port}")
+        print(f"   Хост: {host}:{port}")
+        app.run(debug=True, host=host, port=port)
+
+    except ImportError as e:
+        print(f"❌ Не удалось импортировать веб-панель: {e}")
+        print("   Установите зависимости: pip install flask flask-login")
+    except Exception as e:
+        print(f"❌ Ошибка веб-панели: {e}")
         import traceback
         traceback.print_exc()
 
@@ -168,65 +221,41 @@ def main():
     print("\n" + "="*60)
     print("🎯 ВЫБЕРИТЕ РЕЖИМ РАБОТЫ")
     print("="*60)
-    print("1. 🤖 Только Telegram-бот (консультант)")
-    print("2. 📢 Мультиканальный планировщик (тест)")
-    print("3. ⚡ Полная система (бот + мультиканальность)")
-    print("4. 🧪 Тест системы управления каналами")
-    print("5. 🏪 Монетизация: клиентский портал (заглушка)")
+    print("1. 🤖 Сайтовый Telegram-бот")
+    print("2. 📢 Монетизация: планировщик (боевой режим)")
+    print("3. 🧪 Монетизация: планировщик (тест)")
+    print("4. 🌐 Монетизация: веб-панель (Flask)")
+    print("5. 🧪 Тест системы управления каналами")
     print("6. 📊 Статистика системы")
     print("7. 🚪 Выход")
+    print("\nℹ️ Контуры разделены: бот и монетизация запускаются отдельно.")
     
     while True:
         choice = input("\nВаш выбор (1-7): ").strip()
         
         if choice == "1":
-            print("\n🤖 ЗАПУСК БОТА-КОНСУЛЬТАНТА...")
+            print("\n🤖 ЗАПУСК САЙТОВОГО БОТА...")
             run_bot_safe()
             break
             
         elif choice == "2":
-            print("\n📢 ТЕСТ МУЛЬТИКАНАЛЬНОГО ПЛАНИРОВЩИКА...")
-            run_multi_scheduler_safe()
+            print("\n📢 ЗАПУСК ПЛАНИРОВЩИКА МОНЕТИЗАЦИИ...")
+            run_multi_scheduler_safe(test_mode=False)
             break
             
         elif choice == "3":
-            print("\n⚡ ЗАПУСК ПОЛНОЙ СИСТЕМЫ...")
-            
-            # Запускаем в отдельных потоках
-            bot_thread = threading.Thread(target=run_bot_safe, daemon=True)
-            scheduler_thread = threading.Thread(target=run_multi_scheduler_safe, daemon=True)
-            
-            bot_thread.start()
-            scheduler_thread.start()
-            
-            print("✅ Система запущена в фоне")
-            print("🤖 Бот-консультант + 📢 Мультиканальный планировщик")
-            print("🛑 Нажмите Ctrl+C для остановки")
-            
-            try:
-                bot_thread.join()
-                scheduler_thread.join()
-            except KeyboardInterrupt:
-                print("\n🛑 Остановка...")
-                sys.exit(0)
+            print("\n🧪 ТЕСТ ПЛАНИРОВЩИКА МОНЕТИЗАЦИИ...")
+            run_multi_scheduler_safe(test_mode=True)
             break
             
         elif choice == "4":
-            print("\n🧪 ТЕСТ СИСТЕМЫ УПРАВЛЕНИЯ КАНАЛАМИ...")
-            run_channel_manager_test()
+            print("\n🌐 ЗАПУСК ВЕБ-ПАНЕЛИ МОНЕТИЗАЦИИ...")
+            run_web_safe()
             break
             
         elif choice == "5":
-            print("\n🏪 КЛИЕНТСКИЙ ПОРТАЛ ДЛЯ МОНЕТИЗАЦИИ")
-            print("=" * 50)
-            print("🚧 В РАЗРАБОТКЕ")
-            print("\nЗапланированные функции:")
-            print("• Личный кабинет клиента")
-            print("• Управление каналами через веб-интерфейс")
-            print("• Просмотр статистики и аналитики")
-            print("• Система оплаты и тарифы")
-            print("• Поддержка и уведомления")
-            print("\n💡 Пока используйте Telegram-бота для управления")
+            print("\n🧪 ТЕСТ СИСТЕМЫ УПРАВЛЕНИЯ КАНАЛАМИ...")
+            run_channel_manager_test()
             break
             
         elif choice == "6":
@@ -234,16 +263,12 @@ def main():
             print("=" * 50)
             
             try:
-                # Проверяем основные БД
-                import glob
-                
                 print("📁 Файлы баз данных:")
                 db_files = glob.glob("*.db")
                 for db_file in db_files:
                     if os.path.exists(db_file):
                         size = os.path.getsize(db_file) // 1024
                         modified = os.path.getmtime(db_file)
-                        from datetime import datetime
                         modified_str = datetime.fromtimestamp(modified).strftime('%Y-%m-%d %H:%M')
                         print(f"  • {db_file}: {size} KB, изменен: {modified_str}")
                 

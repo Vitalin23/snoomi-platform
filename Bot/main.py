@@ -324,6 +324,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admin_panel_enabled = bool(context.application.bot_data.get("admin_panel_enabled"))
+    admin_line = "• /admin - панель администратора\n" if admin_panel_enabled else ""
+
     await update.message.reply_text(
         "🤖 <b>Бот-консультант Snoomi</b>\n\n"
         "📍 <b>Как это работает:</b>\n"
@@ -334,7 +337,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /start - начать подбор\n"
         "• /help - эта справка\n"
         "• /cancel - отменить диалог\n"
-        "• /admin - панель администратора",
+        f"{admin_line}",
         parse_mode='HTML'
     )
 
@@ -423,15 +426,28 @@ async def admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ===================== ЗАПУСК =====================
+def _load_bot_runtime_settings():
+    """Читает runtime-настройки без жесткой связки с монетизационным контуром."""
+    from config import Config
+
+    token = Config.TELEGRAM_BOT_TOKEN
+    if not token:
+        raise ValueError("TELEGRAM_BOT_TOKEN не настроен")
+
+    admin_enabled = bool(getattr(Config, "ENABLE_MONETIZATION_ADMIN_PANEL", False))
+    return token, admin_enabled
+
+
 def main():
-    TOKEN = "8487257181:AAGUKolhnJ8y1XaQq_TFzhxTRKEh9x2KC-U"
+    token, admin_panel_enabled = _load_bot_runtime_settings()
     
     print("=" * 50)
-    print("🚀 БОТ SNOMI - С АДМИН-ПАНЕЛЬЮ")
+    print("🚀 БОТ SNOMI - САЙТОВЫЙ КОНТУР")
     print("=" * 50)
     
     try:
-        application = Application.builder().token(TOKEN).build()
+        application = Application.builder().token(token).build()
+        application.bot_data["admin_panel_enabled"] = admin_panel_enabled
         
         print("✅ Application создана успешно!")
         
@@ -463,19 +479,22 @@ def main():
         # Обработчик для callback кнопок внутри ConversationHandler
         application.add_handler(CallbackQueryHandler(button_callback, pattern="^new_search$"))
         
-        # 🔥 Пытаемся загрузить полную админ-панель
-        admin_loaded = load_admin_panel(application)
-        
-        if not admin_loaded:
-            print("⚠️ Админ-панель не загрузилась, добавляем базовые функции")
-            # Добавляем базовые админ-команды
-            application.add_handler(CommandHandler("admin", admin_fallback))
-            application.add_handler(CommandHandler("status", admin_status))
+        if admin_panel_enabled:
+            print("🔐 Включена монетизационная админ-панель (/admin)")
+            admin_loaded = load_admin_panel(application)
+
+            if not admin_loaded:
+                print("⚠️ Админ-панель не загрузилась, добавляем базовые функции")
+                application.add_handler(CommandHandler("admin", admin_fallback))
+                application.add_handler(CommandHandler("status", admin_status))
+        else:
+            print("ℹ️ Монетизационная админ-панель отключена (ENABLE_MONETIZATION_ADMIN_PANEL=False)")
         
         print("\n" + "=" * 50)
         print("✅ Бот запущен!")
         print("🤖 Основные команды: /start, /help")
-        print("👑 Админ-панель: /admin")
+        if admin_panel_enabled:
+            print("👑 Админ-панель: /admin")
         print("=" * 50 + "\n")
         
         # Запускаем бота

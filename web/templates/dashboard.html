@@ -1,7 +1,7 @@
 <!-- web/templates/dashboard.html -->
 {% extends "layout.html" %}
 
-{% block title %}Snoomi Platform - Панель управления{% endblock %}
+{% block title %}{{ app_brand_name }} - Панель управления{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -18,24 +18,89 @@
     .stat-card.likes { border-left-color: #f6c23e; }
     .stat-card.clients { border-left-color: #e74a3b; }
     .stat-card.users { border-left-color: #858796; }
+    .publish-channel-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+        gap: 0.5rem 0.75rem;
+    }
+    .publish-channel-item {
+        border: 1px solid var(--color-border, #e3e6f0);
+        border-radius: 0.5rem;
+        padding: 0.45rem 0.65rem;
+        background: var(--color-surface, #fff);
+    }
+    .trial-status-card {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        background: color-mix(in srgb, var(--color-info-soft) 45%, var(--color-surface));
+    }
+    .trial-kpi-chip {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-pill);
+        padding: 0.35rem 0.7rem;
+        font-size: 0.85rem;
+        color: var(--color-text-muted);
+        background: var(--color-surface);
+    }
+    .trial-visual {
+        max-width: 220px;
+        width: 100%;
+        margin-left: auto;
+    }
 </style>
 {% endblock %}
 
 {% block content %}
+{% set has_any_channels = (publish_channels | default([]) | length) > 0 %}
 <!-- Заголовок -->
-<div class="d-flex justify-content-between align-items-center mb-4">
+<div class="page-header">
     <div>
-        <h1 class="h3 mb-0 text-gray-800">
+        <h1 class="page-title">
             <i class="fas fa-tachometer-alt me-2"></i>Панель управления
         </h1>
-        <p class="mb-0">Добро пожаловать, {{ user.username }}!</p>
-    </div>
-    <div>
-        <button class="btn btn-primary" onclick="publishNow()">
-            <i class="fas fa-paper-plane me-2"></i>Опубликовать сейчас
-        </button>
+        <p class="page-subtitle">Добро пожаловать, {{ user.username }}!</p>
     </div>
 </div>
+
+{% if user.role != 'admin' and client_info and client_info.plan == 'trial' %}
+<div class="card trial-status-card shadow-sm mb-4">
+    <div class="card-body">
+        <div class="row g-3 align-items-center">
+            <div class="col-lg-8">
+                <h6 class="fw-bold mb-2">
+                    <i class="fas fa-gift me-1 text-primary"></i>Бесплатный период активен
+                </h6>
+                <p class="text-muted mb-2">
+                    До {{ client_info.trial_ends_at[:10] if client_info.trial_ends_at else 'окончания trial' }}:
+                    фокус на первые результаты без оплаты и без привязки карты.
+                </p>
+                <div class="d-flex flex-wrap gap-2 mb-2">
+                    <span class="trial-kpi-chip">
+                        Автопубликации: {{ client_info.trial_auto_posts_used }}/{{ client_info.trial_auto_posts_limit }}
+                    </span>
+                    <span class="trial-kpi-chip">
+                        Ручные публикации: {{ client_info.trial_manual_posts_used }}/{{ client_info.trial_manual_posts_limit }}
+                    </span>
+                    <span class="trial-kpi-chip">
+                        Темы в плане: до {{ client_info.trial_topics_limit }}
+                    </span>
+                </div>
+                <a href="{{ url_for('request_tariff') }}" class="btn btn-outline-primary btn-sm">
+                    <i class="fas fa-paper-plane me-1"></i>Запросить тарифы
+                </a>
+            </div>
+            <div class="col-lg-4 text-lg-end">
+                <img
+                    class="trial-visual"
+                    src="{{ url_for('static', filename='media/cabinet-trial.svg') }}"
+                    alt="Иллюстрация бесплатного периода"
+                    loading="lazy"
+                >
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
 
 <!-- Карточки статистики -->
 <div class="row mb-4">
@@ -226,23 +291,126 @@
                         <i class="fas fa-plus-circle text-success me-2"></i>
                         Добавить канал
                     </a>
+                    <a href="{{ url_for('posting_setup') }}" class="list-group-item list-group-item-action">
+                        <i class="fas fa-sliders-h text-primary me-2"></i>
+                        Шаг 2: настройка постинга
+                    </a>
+                    <a href="{{ url_for('posting_plan') }}" class="list-group-item list-group-item-action">
+                        <i class="fas fa-calendar-check text-secondary me-2"></i>
+                        Шаг 3: календарь публикаций
+                    </a>
                     <a href="#" class="list-group-item list-group-item-action" data-bs-toggle="modal" data-bs-target="#addTopicModal">
                         <i class="fas fa-tags text-info me-2"></i>
                         Добавить тему
-                    </a>
-                    <a href="#" class="list-group-item list-group-item-action" onclick="publishNow()">
-                        <i class="fas fa-paper-plane text-primary me-2"></i>
-                        Опубликовать сейчас
                     </a>
                     <a href="{{ url_for('statistics') }}" class="list-group-item list-group-item-action">
                         <i class="fas fa-chart-bar text-warning me-2"></i>
                         Подробная статистика
                     </a>
+                    {% if user.role == 'admin' %}
                     <a href="{{ url_for('billing') }}" class="list-group-item list-group-item-action">
                         <i class="fas fa-credit-card text-danger me-2"></i>
                         Управление подпиской
                     </a>
+                    {% else %}
+                    <a href="{{ url_for('request_tariff') }}" class="list-group-item list-group-item-action">
+                        <i class="fas fa-paper-plane text-danger me-2"></i>
+                        Запросить тарифы
+                    </a>
+                    {% endif %}
                 </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Блок ручного запуска публикации (временный, до отдельного сценария) -->
+<div class="row mt-2 mb-4">
+    <div class="col-12">
+        <div class="card shadow">
+            <div class="card-header py-3">
+                <h6 class="m-0 fw-bold text-primary">
+                    <i class="fas fa-paper-plane me-1"></i>Ручной запуск публикации
+                </h6>
+            </div>
+            <div class="card-body">
+                {% if has_any_channels %}
+                    <div class="d-flex flex-column gap-3">
+                        <p class="mb-0 text-muted">
+                            Выберите один или несколько каналов. Можно задать одну тему, а текст будет адаптирован
+                            отдельно под платформу и специфику каждого канала.
+                        </p>
+                        {% if client_info and client_info.plan == 'trial' %}
+                        <div class="alert alert-light border mb-0 py-2">
+                            На trial осталось ручных публикаций: <strong>{{ client_info.trial_manual_posts_remaining }}</strong>
+                            из {{ client_info.trial_manual_posts_limit }}.
+                        </div>
+                        {% endif %}
+
+                        <div class="row g-3">
+                            <div class="col-12">
+                                <label for="publishNowTopic" class="form-label mb-1">Тема публикации (опционально)</label>
+                                <input
+                                    type="text"
+                                    class="form-control"
+                                    id="publishNowTopic"
+                                    placeholder="Например: 5 ошибок при выборе матраса для боли в спине"
+                                >
+                                <div class="form-text">
+                                    Если поле пустое, система возьмет тему из сохраненных шагов 2/3.
+                                    Для Telegram пост публикуется единым сообщением вместе с картинкой (без продолжений).
+                                </div>
+                            </div>
+                            <div class="col-12">
+                                <div class="d-flex align-items-center gap-3 mb-2">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" id="publishNowSelectAll" checked>
+                                        <label class="form-check-label" for="publishNowSelectAll">Отметить все каналы</label>
+                                    </div>
+                                    <small class="text-muted" id="publishNowSelectedCount"></small>
+                                </div>
+                                <div class="publish-channel-grid" id="publishNowChannelsGrid">
+                                    {% for channel in publish_channels %}
+                                    <label class="publish-channel-item form-check mb-0">
+                                        <input
+                                            class="form-check-input publish-now-channel-checkbox"
+                                            type="checkbox"
+                                            value="{{ channel.id }}"
+                                            checked
+                                        >
+                                        <span class="form-check-label">
+                                            <strong>{{ channel.name }}</strong>
+                                            <span class="badge bg-{{ 'info' if channel.platform == 'telegram' else 'primary' }} ms-1">
+                                                {{ channel.platform | upper }}
+                                            </span>
+                                            {% if channel.client_name %}
+                                            <span class="d-block text-muted small">{{ channel.client_name }}</span>
+                                            {% endif %}
+                                        </span>
+                                    </label>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="d-flex flex-wrap gap-2">
+                            <button class="btn btn-primary" onclick="publishNow(this)">
+                                <i class="fas fa-paper-plane me-2"></i>Опубликовать сейчас
+                            </button>
+                            <button class="btn btn-outline-warning" onclick="publishTestTriplet(this)">
+                                <i class="fas fa-flask me-2"></i>Тест: 3 поста из плана
+                            </button>
+                        </div>
+                        <div class="form-text">
+                            Временная тестовая кнопка: публикует по 3 поста из сохраненного плана для каждого выбранного канала.
+                        </div>
+                    </div>
+                {% else %}
+                    <div class="alert alert-info mb-0">
+                        <i class="fas fa-info-circle me-1"></i>
+                        Кнопка публикации появится после добавления хотя бы одного активного канала.
+                    </div>
+                {% endif %}
             </div>
         </div>
     </div>
@@ -463,13 +631,68 @@ function loadRecentPublications() {
         });
 }
 
-// Немедленная публикация
-function publishNow() {
-    if (!confirm('Запустить публикацию сейчас? Будет создан новый контент и опубликован во все активные каналы.')) {
+function getSelectedPublishChannelIds() {
+    return Array.from(document.querySelectorAll('.publish-now-channel-checkbox:checked'))
+        .map((checkbox) => Number(checkbox.value))
+        .filter((value) => Number.isFinite(value));
+}
+
+function updatePublishNowSelectionState() {
+    const checkboxes = Array.from(document.querySelectorAll('.publish-now-channel-checkbox'));
+    const selected = checkboxes.filter((item) => item.checked).length;
+    const total = checkboxes.length;
+    const selectAll = document.getElementById('publishNowSelectAll');
+    const selectedLabel = document.getElementById('publishNowSelectedCount');
+
+    if (selectedLabel) {
+        selectedLabel.textContent = `Выбрано: ${selected} из ${total}`;
+    }
+    if (selectAll) {
+        selectAll.checked = total > 0 && selected === total;
+        selectAll.indeterminate = selected > 0 && selected < total;
+    }
+}
+
+function initPublishNowSelectors() {
+    const selectAll = document.getElementById('publishNowSelectAll');
+    const checkboxes = Array.from(document.querySelectorAll('.publish-now-channel-checkbox'));
+    if (!checkboxes.length) {
         return;
     }
-    
-    const button = event.target.closest('button');
+    if (selectAll) {
+        selectAll.addEventListener('change', function() {
+            checkboxes.forEach((checkbox) => {
+                checkbox.checked = selectAll.checked;
+            });
+            updatePublishNowSelectionState();
+        });
+    }
+    checkboxes.forEach((checkbox) => {
+        checkbox.addEventListener('change', updatePublishNowSelectionState);
+    });
+    updatePublishNowSelectionState();
+}
+
+// Немедленная публикация
+function publishNow(buttonElement) {
+    const selectedChannelIds = getSelectedPublishChannelIds();
+    if (!selectedChannelIds.length) {
+        showNotification('warning', 'Выберите каналы', 'Отметьте хотя бы один канал для публикации');
+        return;
+    }
+    const topicInput = document.getElementById('publishNowTopic');
+    const manualTopic = topicInput ? topicInput.value.trim() : '';
+    const confirmText = manualTopic
+        ? `Запустить публикацию в ${selectedChannelIds.length} канал(а/ов) по теме «${manualTopic}»? Текст будет адаптирован под каждый канал.`
+        : `Запустить публикацию в ${selectedChannelIds.length} канал(а/ов)? Тексты будут адаптированы под каналы и платформы.`;
+    if (!confirm(confirmText)) {
+        return;
+    }
+
+    const button = buttonElement || document.querySelector('button[onclick*="publishNow"]');
+    if (!button) {
+        return;
+    }
     const originalText = button.innerHTML;
     button.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Публикую...';
     button.disabled = true;
@@ -479,14 +702,26 @@ function publishNow() {
         headers: {
             'Content-Type': 'application/json',
         },
-        body: JSON.stringify({})
+        body: JSON.stringify({
+            channel_ids: selectedChannelIds,
+            topic: manualTopic,
+            shared_article: true
+        })
     })
     .then(response => response.json())
     .then(data => {
         if (data.success) {
+            const published = Number(data.published || 0);
+            const failed = Number(data.failed || 0);
+            const generatedImages = Number(data.generated_images || 0);
+            const detailSuffix = generatedImages > 0
+                ? ` Иллюстраций сгенерировано: ${generatedImages}.`
+                : '';
             showNotification('success', 
-                `Опубликовано в ${data.successful_posts} каналов!`, 
-                'Новый контент успешно создан и опубликован.'
+                `Опубликовано в ${published} каналов`,
+                failed > 0
+                    ? `Часть каналов не прошла: ${failed}. Проверьте журнал публикации.${detailSuffix}`
+                    : `Новый контент успешно создан и опубликован.${detailSuffix}`
             );
             loadRecentPublications(); // Обновляем список публикаций
         } else {
@@ -498,6 +733,68 @@ function publishNow() {
     })
     .catch(error => {
         showNotification('danger', 'Ошибка', 'Не удалось выполнить публикацию');
+        console.error('Error:', error);
+    })
+    .finally(() => {
+        button.innerHTML = originalText;
+        button.disabled = false;
+    });
+}
+
+function publishTestTriplet(buttonElement) {
+    const selectedChannelIds = getSelectedPublishChannelIds();
+    if (!selectedChannelIds.length) {
+        showNotification('warning', 'Выберите каналы', 'Отметьте хотя бы один канал для тестового прогона');
+        return;
+    }
+
+    const confirmText =
+        `Запустить тестовый прогон? Будут сразу опубликованы 3 поста из плана для каждого выбранного канала (${selectedChannelIds.length}).`;
+    if (!confirm(confirmText)) {
+        return;
+    }
+
+    const button = buttonElement || document.querySelector('button[onclick*="publishTestTriplet"]');
+    if (!button) {
+        return;
+    }
+    const originalText = button.innerHTML;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Тестирую...';
+    button.disabled = true;
+
+    fetch('/api/publish_test_triplet', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            channel_ids: selectedChannelIds,
+            posts_per_channel: 3
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            const attempted = Number(data.attempted_posts || 0);
+            const published = Number(data.published || 0);
+            const failed = Number(data.failed || 0);
+            const generatedImages = Number(data.generated_images || 0);
+            showNotification(
+                'success',
+                'Тестовый прогон завершен',
+                `Попыток: ${attempted}. Успешно: ${published}. Ошибок: ${failed}. Картинок: ${generatedImages}.`
+            );
+            loadRecentPublications();
+        } else {
+            showNotification(
+                'danger',
+                'Ошибка тестового прогона',
+                data.error || 'Не удалось выполнить тестовую публикацию'
+            );
+        }
+    })
+    .catch(error => {
+        showNotification('danger', 'Ошибка', 'Не удалось выполнить тестовый прогон');
         console.error('Error:', error);
     })
     .finally(() => {
@@ -580,6 +877,7 @@ function showNotification(type, title, message) {
 document.addEventListener('DOMContentLoaded', function() {
     initChart();
     loadRecentPublications();
+    initPublishNowSelectors();
     
     // Обновляем каждые 5 минут
     setInterval(loadRecentPublications, 300000);

@@ -1,7 +1,7 @@
 <!-- web/templates/register.html -->
 {% extends "layout.html" %}
 
-{% block title %}Snoomi Platform - Регистрация{% endblock %}
+{% block title %}{{ app_brand_name }} - Регистрация{% endblock %}
 
 {% block content %}
 <div class="row justify-content-center">
@@ -54,6 +54,19 @@
                             <div class="form-text">Повторите пароль</div>
                         </div>
                     </div>
+
+                    <div class="mb-3">
+                        <label for="client_name" class="form-label">
+                            <i class="fas fa-building me-1"></i> Название клиента/проекта *
+                        </label>
+                        <input type="text" class="form-control" id="client_name" name="client_name" required>
+                        <div class="form-text">Это имя будет использоваться в системе автопостинга</div>
+                    </div>
+
+                    <div class="alert alert-info mb-3">
+                        <strong><i class="fas fa-hourglass-half me-1"></i> Бесплатный период: 30 дней</strong><br>
+                        На старте без привязки карты. Включено: до 15 авто-публикаций, до 5 ручных публикаций и до 15 тем в плане.
+                    </div>
                     
                     <div class="mb-4">
                         <div class="form-check">
@@ -69,6 +82,9 @@
                         <button type="submit" class="btn btn-primary btn-lg">
                             <i class="fas fa-user-plus me-2"></i> Зарегистрироваться
                         </button>
+                        <a href="{{ specialist_telegram_link }}" target="_blank" class="btn btn-warning">
+                            <i class="fab fa-telegram me-2"></i> Вызов специалиста для настройки
+                        </a>
                         <a href="{{ url_for('login') }}" class="btn btn-outline-secondary">
                             <i class="fas fa-sign-in-alt me-2"></i> Уже есть аккаунт? Войти
                         </a>
@@ -79,7 +95,7 @@
         
         <div class="card border-0 shadow-sm mt-4">
             <div class="card-body text-center">
-                <h5 class="card-title mb-3">Почему выбирают Snoomi?</h5>
+                <h5 class="card-title mb-3">Почему выбирают {{ app_brand_name }}?</h5>
                 <div class="row">
                     <div class="col-4">
                         <i class="fas fa-bolt text-warning fa-2x mb-2"></i>

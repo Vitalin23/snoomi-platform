@@ -1,0 +1,75 @@
+{% extends "layout.html" %}
+
+{% block title %}{{ app_brand_name }} - Запрос тарифов{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title"><i class="fas fa-paper-plane me-2"></i>Запросить тарифы</h1>
+        <p class="page-subtitle">
+            Тарифная сетка сейчас открывается по запросу: поможем подобрать вариант под ваши каналы и частоту публикаций.
+        </p>
+    </div>
+</div>
+
+<div class="row g-4">
+    <div class="col-lg-7">
+        <div class="card content-card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="fas fa-envelope-open-text me-1"></i>Отправить запрос</h5>
+            </div>
+            <div class="card-body">
+                {% if client_info and client_info.plan == "trial" %}
+                <div class="alert alert-info">
+                    Ваш бесплатный период: до {{ client_info.trial_ends_at[:10] if client_info.trial_ends_at else "окончания trial" }}.
+                    Использовано: авто {{ client_info.trial_auto_posts_used }}/{{ client_info.trial_auto_posts_limit }},
+                    ручные {{ client_info.trial_manual_posts_used }}/{{ client_info.trial_manual_posts_limit }}.
+                </div>
+                {% endif %}
+                <form method="post" action="{{ url_for('request_tariff') }}">
+                    <div class="mb-3">
+                        <label class="form-label" for="tariffComment">Комментарий (опционально)</label>
+                        <textarea
+                            class="form-control"
+                            id="tariffComment"
+                            name="comment"
+                            rows="4"
+                            placeholder="Например: 3 Telegram-канала, 1 VK, публикации через день, нужен бюджетный вариант"
+                        ></textarea>
+                        <div class="form-text">Можно оставить детали, чтобы быстрее получить релевантное предложение.</div>
+                    </div>
+                    <div class="d-flex flex-wrap gap-2">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-paper-plane me-1"></i>Отправить запрос
+                        </button>
+                        <a href="{{ specialist_telegram_link }}" target="_blank" class="btn btn-outline-primary">
+                            <i class="fab fa-telegram me-1"></i>Написать специалисту
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-5">
+        <div class="card content-card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="fas fa-circle-info me-1"></i>Что важно сейчас</h5>
+            </div>
+            <div class="card-body">
+                <ul class="mb-3">
+                    <li>На старте доступен бесплатный период на 30 дней.</li>
+                    <li>Подключение без карты и без сложной оплаты.</li>
+                    <li>Тариф подбирается под ваш реальный объем каналов и график публикаций.</li>
+                </ul>
+                <img
+                    src="{{ url_for('static', filename='media/cabinet-trial.svg') }}"
+                    alt="Иллюстрация тарифа по запросу"
+                    class="img-fluid"
+                    loading="lazy"
+                >
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+

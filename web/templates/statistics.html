@@ -1,45 +1,70 @@
 <!-- web/templates/statistics.html -->
 {% extends "layout.html" %}
 
-{% block title %}Snoomi Platform - Статистика{% endblock %}
+{% block title %}{{ app_brand_name }} - Статистика{% endblock %}
 
 {% block extra_css %}
 <style>
     .stat-tab {
-        border-bottom: 3px solid transparent;
-        padding: 10px 15px;
+        border: 1px solid transparent;
+        border-radius: var(--radius-pill);
+        padding: 0.45rem 0.9rem;
         cursor: pointer;
-        transition: all 0.3s;
+        white-space: nowrap;
+        transition: all 0.2s ease;
     }
     .stat-tab.active {
-        border-bottom-color: #4e73df;
-        color: #4e73df;
-        font-weight: bold;
+        border-color: color-mix(in srgb, var(--color-primary) 28%, var(--color-border));
+        color: var(--color-primary);
+        background: var(--color-primary-soft);
+        font-weight: 700;
     }
     .stat-tab:hover:not(.active) {
-        border-bottom-color: #ddd;
+        border-color: var(--color-border-strong);
+        color: var(--color-text);
     }
     .metric-card {
-        transition: transform 0.3s;
+        transition: transform 0.2s ease;
     }
     .metric-card:hover {
         transform: translateY(-3px);
     }
+    .stat-tabs-scroller {
+        display: flex;
+        gap: var(--space-2);
+        flex-wrap: wrap;
+    }
     .chart-container {
         position: relative;
         height: 300px;
+    }
+    .statistics-range-group .btn.active {
+        background: var(--color-primary);
+        border-color: var(--color-primary);
+        color: #fff;
+    }
+    .statistics-filter-sticky {
+        position: sticky;
+        top: 138px;
+        z-index: 1020;
+        margin-bottom: var(--space-3);
+    }
+    @media (max-width: 992px) {
+        .statistics-filter-sticky {
+            top: 126px;
+        }
     }
 </style>
 {% endblock %}
 
 {% block content %}
 <!-- Заголовок -->
-<div class="d-flex justify-content-between align-items-center mb-4">
+<div class="page-header">
     <div>
-        <h1 class="h3 mb-0 text-gray-800">
+        <h1 class="page-title">
             <i class="fas fa-chart-line me-2"></i>Статистика и аналитика
         </h1>
-        <p class="mb-0">
+        <p class="page-subtitle">
             {% if current_user.role == 'admin' %}
                 Статистика по всем клиентам системы
             {% else %}
@@ -47,23 +72,33 @@
             {% endif %}
         </p>
     </div>
-    <div class="d-flex align-items-center">
-        <div class="btn-group me-3" role="group">
-            <a href="{{ url_for('statistics', range='7days') }}" 
+</div>
+
+<div class="operator-action-bar">
+    <div class="operator-action-meta">
+        <span class="badge">Операторский режим</span>
+        <span>Диапазон анализа:
+            {% if time_range == '7days' %}7 дней{% elif time_range == '90days' %}90 дней{% else %}30 дней{% endif %}
+        </span>
+        <span class="d-none d-lg-inline">Быстрый переход: Обзор → Публикации → Каналы</span>
+    </div>
+    <div class="operator-action-controls">
+        <div class="btn-group statistics-range-group" role="group" aria-label="Диапазон статистики">
+            <a href="{{ url_for('statistics', range='7days') }}"
                class="btn btn-outline-primary {% if time_range == '7days' %}active{% endif %}">
                 7 дней
             </a>
-            <a href="{{ url_for('statistics', range='30days') }}" 
+            <a href="{{ url_for('statistics', range='30days') }}"
                class="btn btn-outline-primary {% if time_range == '30days' %}active{% endif %}">
                 30 дней
             </a>
-            <a href="{{ url_for('statistics', range='90days') }}" 
+            <a href="{{ url_for('statistics', range='90days') }}"
                class="btn btn-outline-primary {% if time_range == '90days' %}active{% endif %}">
                 90 дней
             </a>
         </div>
         <button class="btn btn-primary" onclick="exportStatistics()">
-            <i class="fas fa-download me-2"></i>Экспорт
+            <i class="fas fa-download me-2"></i>Экспорт CSV
         </button>
     </div>
 </div>
@@ -71,21 +106,21 @@
 <!-- Вкладки -->
 <div class="card shadow mb-4">
     <div class="card-header bg-white border-0">
-        <div class="d-flex overflow-auto" id="statTabs">
-            <div class="stat-tab active" onclick="showTab('overview')">
+        <div class="stat-tabs-scroller overflow-auto" id="statTabs">
+            <div class="stat-tab active" data-tab="overview" onclick="showTab('overview')">
                 <i class="fas fa-home me-2"></i>Обзор
             </div>
-            <div class="stat-tab" onclick="showTab('publications')">
+            <div class="stat-tab" data-tab="publications" onclick="showTab('publications')">
                 <i class="fas fa-newspaper me-2"></i>Публикации
             </div>
-            <div class="stat-tab" onclick="showTab('engagement')">
+            <div class="stat-tab" data-tab="engagement" onclick="showTab('engagement')">
                 <i class="fas fa-heart me-2"></i>Вовлеченность
             </div>
-            <div class="stat-tab" onclick="showTab('channels')">
+            <div class="stat-tab" data-tab="channels" onclick="showTab('channels')">
                 <i class="fas fa-broadcast-tower me-2"></i>Каналы
             </div>
             {% if current_user.role == 'admin' %}
-            <div class="stat-tab" onclick="showTab('clients')">
+            <div class="stat-tab" data-tab="clients" onclick="showTab('clients')">
                 <i class="fas fa-users me-2"></i>Клиенты
             </div>
             {% endif %}
@@ -215,23 +250,25 @@
                         </h6>
                     </div>
                     <div class="card-body">
-                        <div class="table-responsive">
-                            <table class="table table-hover" id="topPublications">
-                                <thead>
-                                    <tr>
-                                        <th>Рейтинг</th>
-                                        <th>Тема</th>
-                                        <th>Канал</th>
-                                        <th>Просмотры</th>
-                                        <th>Лайки</th>
-                                        <th>Репосты</th>
-                                        <th>ER%</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="topPublicationsBody">
-                                    <!-- Заполнится через JavaScript -->
-                                </tbody>
-                            </table>
+                        <div class="table-shell">
+                            <div class="table-responsive">
+                                <table class="table table-hover mb-0 responsive-data-table" id="topPublications">
+                                    <thead>
+                                        <tr>
+                                            <th>Рейтинг</th>
+                                            <th>Тема</th>
+                                            <th>Канал</th>
+                                            <th>Просмотры</th>
+                                            <th>Лайки</th>
+                                            <th>Репосты</th>
+                                            <th>ER%</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="topPublicationsBody">
+                                        <!-- Заполнится через JavaScript -->
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -241,66 +278,59 @@
     
     <!-- Вкладка Публикации -->
     <div id="publicationsTab" class="tab-pane" style="display: none;">
-        <div class="row">
-            <div class="col-12">
-                <div class="card shadow mb-4">
-                    <div class="card-header">
-                        <h6 class="m-0 fw-bold text-primary">
-                            <i class="fas fa-filter me-1"></i>Фильтры
-                        </h6>
-                    </div>
-                    <div class="card-body">
-                        <div class="row g-3">
-                            <div class="col-md-3">
-                                <label class="form-label">Платформа</label>
-                                <select class="form-select" id="filterPlatform">
-                                    <option value="">Все платформы</option>
-                                    <option value="telegram">Telegram</option>
-                                    <option value="vk">ВКонтакте</option>
-                                    <option value="ok">Одноклассники</option>
-                                </select>
-                            </div>
-                            <div class="col-md-3">
-                                <label class="form-label">Статус</label>
-                                <select class="form-select" id="filterStatus">
-                                    <option value="">Все статусы</option>
-                                    <option value="success">Успешно</option>
-                                    <option value="failed">Ошибка</option>
-                                </select>
-                            </div>
-                            <div class="col-md-3">
-                                <label class="form-label">Дата с</label>
-                                <input type="date" class="form-control" id="filterDateFrom">
-                            </div>
-                            <div class="col-md-3">
-                                <label class="form-label">Дата по</label>
-                                <input type="date" class="form-control" id="filterDateTo">
-                            </div>
-                        </div>
-                        <div class="mt-3">
-                            <button class="btn btn-primary" onclick="loadPublications()">
-                                <i class="fas fa-search me-2"></i>Применить фильтры
-                            </button>
-                            <button class="btn btn-outline-secondary" onclick="resetFilters()">
-                                <i class="fas fa-redo me-2"></i>Сбросить
-                            </button>
-                        </div>
-                    </div>
+        <div class="statistics-filter-sticky">
+            <div class="operator-action-bar mb-0">
+                <div class="operator-action-meta">
+                    <span class="badge">Фильтры публикаций</span>
+                    <span id="publicationsTotalLabel">Показываем: 0 записей</span>
                 </div>
-                
-                <div class="card shadow">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h6 class="m-0 fw-bold text-primary">
-                            <i class="fas fa-list me-1"></i>Все публикации
-                        </h6>
-                        <div class="d-flex align-items-center">
-                            <div class="input-group input-group-sm me-2" style="width: 200px;">
-                                <input type="text" class="form-control" placeholder="Поиск..." id="searchPublications">
-                                <button class="btn btn-outline-secondary" type="button">
-                                    <i class="fas fa-search"></i>
-                                </button>
-                            </div>
-                            <select class="form-select form-select-sm w-auto" id="publicationsPerPage">
+                <div class="operator-action-controls">
+                    <button class="btn btn-primary" onclick="loadPublications(1)">
+                        <i class="fas fa-search me-2"></i>Применить
+                    </button>
+                    <button class="btn btn-outline-secondary" onclick="resetFilters()">
+                        <i class="fas fa-redo me-2"></i>Сбросить
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="card shadow mb-4">
+            <div class="card-body">
+                <div class="operator-filter-shell">
+                    <div class="operator-filter-grid">
+                        <div>
+                            <label class="form-label">Платформа</label>
+                            <select class="form-select" id="filterPlatform">
+                                <option value="">Все платформы</option>
+                                <option value="telegram">Telegram</option>
+                                <option value="vk">ВКонтакте</option>
+                                <option value="ok">Одноклассники</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="form-label">Статус</label>
+                            <select class="form-select" id="filterStatus">
+                                <option value="">Все статусы</option>
+                                <option value="success">Успешно</option>
+                                <option value="failed">Ошибка</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="form-label">Дата с</label>
+                            <input type="date" class="form-control" id="filterDateFrom">
+                        </div>
+                        <div>
+                            <label class="form-label">Дата по</label>
+                            <input type="date" class="form-control" id="filterDateTo">
+                        </div>
+                        <div>
+                            <label class="form-label">Поиск по теме</label>
+                            <input type="text" class="form-control" placeholder="Например: стоматология" id="searchPublications">
+                        </div>
+                        <div>
+                            <label class="form-label">Записей на страницу</label>
+                            <select class="form-select" id="publicationsPerPage">
                                 <option value="10">10</option>
                                 <option value="25" selected>25</option>
                                 <option value="50">50</option>
@@ -308,34 +338,50 @@
                             </select>
                         </div>
                     </div>
-                    <div class="card-body">
-                        <div class="table-responsive">
-                            <table class="table table-hover" id="allPublications">
-                                <thead>
-                                    <tr>
-                                        <th>ID</th>
-                                        <th>Дата</th>
-                                        <th>Канал</th>
-                                        <th>Тема</th>
-                                        <th>Платформа</th>
-                                        <th>Статус</th>
-                                        <th>Просмотры</th>
-                                        <th>ER</th>
-                                        <th>Действия</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="allPublicationsBody">
-                                    <!-- Заполнится через JavaScript -->
-                                </tbody>
-                            </table>
-                        </div>
-                        <nav aria-label="Навигация по страницам">
-                            <ul class="pagination justify-content-center" id="publicationsPagination">
-                                <!-- Заполнится через JavaScript -->
-                            </ul>
-                        </nav>
+                    <div class="operator-filter-actions">
+                        <span class="table-status-line">
+                            Enter в поле поиска сразу применит фильтры.
+                        </span>
                     </div>
                 </div>
+            </div>
+        </div>
+
+        <div class="card shadow">
+            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <h6 class="m-0 fw-bold text-primary">
+                    <i class="fas fa-list me-1"></i>Все публикации
+                </h6>
+                <span class="table-status-line">Подробные действия доступны по каждой записи</span>
+            </div>
+            <div class="card-body">
+                <div class="table-shell">
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0 responsive-data-table" id="allPublications">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Дата</th>
+                                    <th>Канал</th>
+                                    <th>Тема</th>
+                                    <th>Платформа</th>
+                                    <th>Статус</th>
+                                    <th>Просмотры</th>
+                                    <th>ER</th>
+                                    <th>Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody id="allPublicationsBody">
+                                <!-- Заполнится через JavaScript -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <nav class="mt-3" aria-label="Навигация по страницам">
+                    <ul class="pagination justify-content-center" id="publicationsPagination">
+                        <!-- Заполнится через JavaScript -->
+                    </ul>
+                </nav>
             </div>
         </div>
     </div>
@@ -446,25 +492,27 @@
                         </div>
                     </div>
                     <div class="card-body">
-                        <div class="table-responsive">
-                            <table class="table table-hover" id="channelsRanking">
-                                <thead>
-                                    <tr>
-                                        <th>#</th>
-                                        <th>Канал</th>
-                                        <th>Платформа</th>
-                                        <th>Публикации</th>
-                                        <th>Просмотры</th>
-                                        <th>Лайки</th>
-                                        <th>Репосты</th>
-                                        <th>ER%</th>
-                                        <th>Рост</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="channelsRankingBody">
-                                    <!-- Заполнится через JavaScript -->
-                                </tbody>
-                            </table>
+                        <div class="table-shell">
+                            <div class="table-responsive">
+                                <table class="table table-hover mb-0 responsive-data-table" id="channelsRanking">
+                                    <thead>
+                                        <tr>
+                                            <th>#</th>
+                                            <th>Канал</th>
+                                            <th>Платформа</th>
+                                            <th>Публикации</th>
+                                            <th>Просмотры</th>
+                                            <th>Лайки</th>
+                                            <th>Репосты</th>
+                                            <th>ER%</th>
+                                            <th>Рост</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="channelsRankingBody">
+                                        <!-- Заполнится через JavaScript -->
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -501,53 +549,65 @@
                         </h6>
                     </div>
                     <div class="card-body">
-                        <div class="table-responsive">
-                            <table class="table table-hover" id="clientsActivity">
-                                <thead>
-                                    <tr>
-                                        <th>Клиент</th>
-                                        <th>Тариф</th>
-                                        <th>Каналы</th>
-                                        <th>Публикации</th>
-                                        <th>Средний ER</th>
-                                        <th>Статус</th>
-                                        <th>Доход</th>
-                                        <th>Действия</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="clientsActivityBody">
-                                    {% if stats.top_clients %}
-                                        {% for client in stats.top_clients %}
+                        <div class="table-shell">
+                            <div class="table-responsive">
+                                <table class="table table-hover mb-0 responsive-data-table" id="clientsActivity">
+                                    <thead>
                                         <tr>
-                                            <td>{{ client.client_name }}</td>
-                                            <td>
-                                                <span class="badge bg-info">Премиум</span>
-                                            </td>
-                                            <td>{{ client.channels }}</td>
-                                            <td>{{ client.posts }}</td>
-                                            <td>
-                                                {% if client.views and client.posts %}
-                                                    {{ ((client.views / client.posts) * 100)|round(1) }}%
-                                                {% else %}
-                                                    0%
-                                                {% endif %}
-                                            </td>
-                                            <td>
-                                                <span class="badge bg-success">Активен</span>
-                                            </td>
-                                            <td>
-                                                <strong>{{ (client.posts * 10)|int }}₽</strong>
-                                            </td>
-                                            <td>
-                                                <button class="btn btn-sm btn-outline-primary">
-                                                    <i class="fas fa-eye"></i>
-                                                </button>
-                                            </td>
+                                            <th>Клиент</th>
+                                            <th>Тариф</th>
+                                            <th>Каналы</th>
+                                            <th>Публикации</th>
+                                            <th>Средний ER</th>
+                                            <th>Статус</th>
+                                            <th>Доход</th>
+                                            <th>Действия</th>
                                         </tr>
-                                        {% endfor %}
-                                    {% endif %}
-                                </tbody>
-                            </table>
+                                    </thead>
+                                    <tbody id="clientsActivityBody">
+                                        {% if stats.top_clients %}
+                                            {% for client in stats.top_clients %}
+                                            <tr>
+                                                <td data-label="Клиент">{{ client.client_name }}</td>
+                                                <td data-label="Тариф">
+                                                    <span class="badge bg-info">Премиум</span>
+                                                </td>
+                                                <td data-label="Каналы">{{ client.channels }}</td>
+                                                <td data-label="Публикации">{{ client.posts }}</td>
+                                                <td data-label="Средний ER">
+                                                    {% if client.views and client.posts %}
+                                                        {{ ((client.views / client.posts) * 100)|round(1) }}%
+                                                    {% else %}
+                                                        0%
+                                                    {% endif %}
+                                                </td>
+                                                <td data-label="Статус">
+                                                    <span class="badge bg-success">Активен</span>
+                                                </td>
+                                                <td data-label="Доход">
+                                                    <strong>{{ (client.posts * 10)|int }}₽</strong>
+                                                </td>
+                                                <td data-label="Действия">
+                                                    <button class="btn btn-sm btn-outline-primary">
+                                                        <i class="fas fa-eye"></i>
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                            {% endfor %}
+                                        {% else %}
+                                            <tr>
+                                                <td colspan="8">
+                                                    <div class="operator-empty-state">
+                                                        <i class="fas fa-users-slash"></i>
+                                                        <h6>Нет данных по клиентской активности</h6>
+                                                        <p>Подключите клиентов и каналы, чтобы увидеть распределение и доходность.</p>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        {% endif %}
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -583,6 +643,21 @@ let currentPage = 1;
 let totalPages = 1;
 let publicationsData = [];
 
+function buildTableEmptyRow(colspan, icon, title, message, ctaButton = '') {
+    return `
+        <tr>
+            <td colspan="${colspan}">
+                <div class="operator-empty-state">
+                    <i class="fas ${icon}"></i>
+                    <h6>${title}</h6>
+                    <p>${message}</p>
+                    ${ctaButton}
+                </div>
+            </td>
+        </tr>
+    `;
+}
+
 // Переключение вкладок
 function showTab(tabName) {
     // Скрываем все вкладки
@@ -600,9 +675,7 @@ function showTab(tabName) {
     
     // Добавляем активный класс выбранной вкладке
     document.querySelectorAll('.stat-tab').forEach(tab => {
-        if (tab.textContent.includes(getTabTitle(tabName))) {
-            tab.classList.add('active');
-        }
+        tab.classList.toggle('active', tab.dataset.tab === tabName);
     });
     
     currentTab = tabName;
@@ -625,17 +698,6 @@ function showTab(tabName) {
             loadClientsData();
             break;
     }
-}
-
-function getTabTitle(tabName) {
-    const titles = {
-        'overview': 'Обзор',
-        'publications': 'Публикации',
-        'engagement': 'Вовлеченность',
-        'channels': 'Каналы',
-        'clients': 'Клиенты'
-    };
-    return titles[tabName] || tabName;
 }
 
 // Загрузка данных для обзора
@@ -791,25 +853,36 @@ function loadTopPublications() {
         .then(data => {
             const tbody = document.getElementById('topPublicationsBody');
             tbody.innerHTML = '';
-            
+
+            if (!data || data.length === 0) {
+                tbody.innerHTML = buildTableEmptyRow(
+                    7,
+                    'fa-inbox',
+                    'Пока нет публикаций в рейтинге',
+                    'Как только система зафиксирует первые посты, здесь появится топ по вовлеченности.',
+                    '<button class="btn btn-sm btn-outline-primary" onclick="showTab(\'publications\')">Открыть публикации</button>'
+                );
+                return;
+            }
+
             data.forEach((pub, index) => {
                 const er = pub.views > 0 ? ((pub.likes + pub.shares + pub.comments) / pub.views * 100).toFixed(1) : 0;
                 
                 tbody.innerHTML += `
                     <tr>
-                        <td>
+                        <td data-label="Рейтинг">
                             <span class="badge bg-${index < 3 ? 'warning' : 'secondary'}">
                                 ${index + 1}
                             </span>
                         </td>
-                        <td class="text-truncate" style="max-width: 200px;" title="${pub.topic}">
-                            ${pub.topic}
+                        <td data-label="Тема">
+                            <span class="table-topic" title="${pub.topic}">${pub.topic}</span>
                         </td>
-                        <td>${pub.channel_name}</td>
-                        <td>${pub.views.toLocaleString()}</td>
-                        <td>${pub.likes.toLocaleString()}</td>
-                        <td>${pub.shares.toLocaleString()}</td>
-                        <td>
+                        <td data-label="Канал">${pub.channel_name}</td>
+                        <td data-label="Просмотры">${pub.views.toLocaleString()}</td>
+                        <td data-label="Лайки">${pub.likes.toLocaleString()}</td>
+                        <td data-label="Репосты">${pub.shares.toLocaleString()}</td>
+                        <td data-label="ER%">
                             <span class="badge bg-${er > 5 ? 'success' : er > 2 ? 'warning' : 'danger'}">
                                 ${er}%
                             </span>
@@ -851,7 +924,10 @@ function loadPublications(page = 1) {
             publicationsData = data.publications;
             currentPage = data.page;
             totalPages = data.total_pages;
-            
+            const totalLabel = document.getElementById('publicationsTotalLabel');
+            if (totalLabel) {
+                totalLabel.textContent = `Показываем: ${publicationsData.length} из ${data.total} записей`;
+            }
             updatePublicationsTable();
             updatePagination();
         })
@@ -867,14 +943,13 @@ function updatePublicationsTable() {
     tbody.innerHTML = '';
     
     if (publicationsData.length === 0) {
-        tbody.innerHTML = `
-            <tr>
-                <td colspan="9" class="text-center text-muted py-4">
-                    <i class="fas fa-inbox fa-2x mb-3"></i><br>
-                    Публикации не найдены
-                </td>
-            </tr>
-        `;
+        tbody.innerHTML = buildTableEmptyRow(
+            9,
+            'fa-filter-circle-xmark',
+            'Публикации не найдены',
+            'Попробуйте расширить фильтры или сбросить поиск, чтобы увидеть все записи.',
+            '<button class="btn btn-sm btn-outline-primary" onclick="resetFilters()">Сбросить фильтры</button>'
+        );
         return;
     }
     
@@ -884,30 +959,30 @@ function updatePublicationsTable() {
         
         tbody.innerHTML += `
             <tr>
-                <td>${pub.id}</td>
-                <td>${date.toLocaleDateString()}</td>
-                <td>${pub.channel_name}</td>
-                <td class="text-truncate" style="max-width: 150px;" title="${pub.topic}">
-                    ${pub.topic}
+                <td data-label="ID">${pub.id}</td>
+                <td data-label="Дата">${date.toLocaleDateString()}</td>
+                <td data-label="Канал">${pub.channel_name}</td>
+                <td data-label="Тема">
+                    <span class="table-topic" title="${pub.topic}">${pub.topic}</span>
                 </td>
-                <td>
+                <td data-label="Платформа">
                     <span class="badge bg-${pub.platform === 'telegram' ? 'info' : 'primary'}">
                         ${pub.platform.toUpperCase()}
                     </span>
                 </td>
-                <td>
+                <td data-label="Статус">
                     <span class="badge bg-${pub.success ? 'success' : 'danger'}">
                         <i class="fas fa-${pub.success ? 'check' : 'times'} me-1"></i>
                         ${pub.success ? 'Успешно' : 'Ошибка'}
                     </span>
                 </td>
-                <td>${pub.views.toLocaleString()}</td>
-                <td>
+                <td data-label="Просмотры">${pub.views.toLocaleString()}</td>
+                <td data-label="ER">
                     <span class="badge bg-${er > 5 ? 'success' : er > 2 ? 'warning' : 'danger'}">
                         ${er}%
                     </span>
                 </td>
-                <td>
+                <td data-label="Действия">
                     <button class="btn btn-sm btn-outline-primary" onclick="viewPublicationDetail(${pub.id})">
                         <i class="fas fa-eye"></i>
                     </button>
@@ -926,7 +1001,7 @@ function updatePagination() {
     const prevItem = document.createElement('li');
     prevItem.className = `page-item ${currentPage === 1 ? 'disabled' : ''}`;
     prevItem.innerHTML = `
-        <a class="page-link" href="#" onclick="loadPublications(${currentPage - 1})">
+        <a class="page-link" href="#" onclick="loadPublications(${currentPage - 1}); return false;">
             <i class="fas fa-chevron-left"></i>
         </a>
     `;
@@ -940,7 +1015,7 @@ function updatePagination() {
         const pageItem = document.createElement('li');
         pageItem.className = `page-item ${i === currentPage ? 'active' : ''}`;
         pageItem.innerHTML = `
-            <a class="page-link" href="#" onclick="loadPublications(${i})">
+            <a class="page-link" href="#" onclick="loadPublications(${i}); return false;">
                 ${i}
             </a>
         `;
@@ -951,7 +1026,7 @@ function updatePagination() {
     const nextItem = document.createElement('li');
     nextItem.className = `page-item ${currentPage === totalPages ? 'disabled' : ''}`;
     nextItem.innerHTML = `
-        <a class="page-link" href="#" onclick="loadPublications(${currentPage + 1})">
+        <a class="page-link" href="#" onclick="loadPublications(${currentPage + 1}); return false;">
             <i class="fas fa-chevron-right"></i>
         </a>
     `;
@@ -1261,30 +1336,40 @@ function buildChannelsPerformanceChart(performanceData) {
 function updateChannelsRanking(rankingData) {
     const tbody = document.getElementById('channelsRankingBody');
     tbody.innerHTML = '';
-    
+
+    if (!rankingData || rankingData.length === 0) {
+        tbody.innerHTML = buildTableEmptyRow(
+            9,
+            'fa-broadcast-tower',
+            'Нет данных по каналам',
+            'Добавьте каналы и запустите публикации, чтобы увидеть рейтинг эффективности.'
+        );
+        return;
+    }
+
     rankingData.forEach((channel, index) => {
         const growthClass = channel.growth > 0 ? 'success' : channel.growth < 0 ? 'danger' : 'secondary';
         const growthIcon = channel.growth > 0 ? 'arrow-up' : channel.growth < 0 ? 'arrow-down' : 'minus';
         
         tbody.innerHTML += `
             <tr>
-                <td>${index + 1}</td>
-                <td>${channel.channel_name}</td>
-                <td>
+                <td data-label="#">${index + 1}</td>
+                <td data-label="Канал">${channel.channel_name}</td>
+                <td data-label="Платформа">
                     <span class="badge bg-${channel.platform === 'telegram' ? 'info' : 'primary'}">
                         ${channel.platform.toUpperCase()}
                     </span>
                 </td>
-                <td>${channel.posts}</td>
-                <td>${channel.views.toLocaleString()}</td>
-                <td>${channel.likes.toLocaleString()}</td>
-                <td>${channel.shares.toLocaleString()}</td>
-                <td>
+                <td data-label="Публикации">${channel.posts}</td>
+                <td data-label="Просмотры">${channel.views.toLocaleString()}</td>
+                <td data-label="Лайки">${channel.likes.toLocaleString()}</td>
+                <td data-label="Репосты">${channel.shares.toLocaleString()}</td>
+                <td data-label="ER%">
                     <span class="badge bg-${channel.er > 5 ? 'success' : channel.er > 2 ? 'warning' : 'danger'}">
                         ${channel.er.toFixed(1)}%
                     </span>
                 </td>
-                <td>
+                <td data-label="Рост">
                     <span class="text-${growthClass}">
                         <i class="fas fa-${growthIcon} me-1"></i>
                         ${Math.abs(channel.growth).toFixed(1)}%

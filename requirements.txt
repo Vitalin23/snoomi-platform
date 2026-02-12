@@ -1,29 +1,40 @@
-# requirements_compatible.txt
-# Бот
-python-telegram-bot==22.6
-pytz==2024.1
+# ====== 1. ЗАВИСИМОСТИ ДЛЯ ВЕБ-ЧАСТИ (Flask, БД) ======
+Flask==2.3.3
+Flask-SQLAlchemy==3.0.5
+SQLAlchemy==2.0.19
+Werkzeug==2.3.7
+jinja2==3.1.6
+gunicorn==21.2.0
+psycopg2-binary==2.9.7
+python-dotenv==1.0.0
 
-# Yandex AI
+# ====== 2. ЯДРО СИСТЕМЫ (Из СТАРОГО рабочего файла) ======
+# Бот и планирование
+python-telegram-bot==22.6
+schedule>=1.2.0
+pytz==2024.1
+APScheduler==3.10.4
+
+# Yandex AI SDK (САМОЕ ВАЖНОЕ - версии неизменны!)
 yandex-ai-studio-sdk==0.19.2
 yandexcloud>=0.376.0
-
-# Общие зависимости
-httpx==0.28.1  # Совместимо с ВСЕМИ пакетами
-requests==2.32.3  # Требуется yandexcloud
+# Ключевые зависимости для Yandex (версии фиксируем как в старом файле)
+requests==2.32.3      # Важно: именно эта версия
+httpx==0.28.1         # Важно: именно эта версия
 aiohttp>=3.9.0
 
-# Для работы с изображениями (если нужно)
-Pillow>=10.0.0
-
-# Для планировщика
-schedule>=1.2.0
-
-# Для VK API
+# VK API
 vk-api>=11.9.9
 
-# Для тестирования
+# ====== 3. ОБЩИЕ И ВСПОМОГАТЕЛЬНЫЕ ======
+# Работа с изображениями
+pillow>=10.0.0
+# Валидация данных
+pydantic>=2.0.0
+# Логирование и утилиты
+colorama==0.4.6
+psutil==5.9.6
+# Тестирование (опционально)
 pytest==7.4.3
 pytest-cov==4.1.0
 pytest-mock==3.11.1
-colorama==0.4.6
-psutil==5.9.6

@@ -1,0 +1,1 @@
+from ..yandex_art_final import YandexArtGenerator as ImageGenerator

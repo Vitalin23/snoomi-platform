@@ -179,7 +179,8 @@ class MultiChannelScheduler:
                             topic=topic_text,
                             content=article[:1500],
                             image_path=image_path,
-                            success=True
+                            success=True,
+                            publish_mode='auto',
                         )
                         successful += 1
                         
@@ -197,7 +198,8 @@ class MultiChannelScheduler:
                             topic=topic_text,
                             content=article[:500],
                             success=False,
-                            error_message=result.get('error', 'Unknown error')
+                            error_message=result.get('error', 'Unknown error'),
+                            publish_mode='auto',
                         )
                         self.logger.error(f"❌ Ошибка публикации в {channel['platform']}:{result.get('error')}")
                 

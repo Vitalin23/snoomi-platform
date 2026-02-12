@@ -1,0 +1,94 @@
+{% extends "layout.html" %}
+
+{% block title %}{{ page.title }} | {{ app_brand_name }}{% endblock %}
+
+{% block meta_tags %}
+<meta name="description" content="{{ page.description }}">
+<meta name="keywords" content="{{ page.title }}, автопостинг, контент-план, публикации по расписанию">
+<meta name="robots" content="index,follow">
+<meta property="og:type" content="article">
+<meta property="og:title" content="{{ page.h1 }}">
+<meta property="og:description" content="{{ page.description }}">
+<meta property="og:url" content="{{ request.base_url }}">
+<link rel="canonical" href="{{ request.base_url }}">
+{% endblock %}
+
+{% block content %}
+<section class="landing-section mt-3">
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">{{ page.h1 }}</h1>
+            <p class="page-subtitle">{{ page.description }}</p>
+        </div>
+    </div>
+
+    <div class="row g-3">
+        <div class="col-lg-8">
+            <div class="card shadow-sm h-100">
+                <div class="card-body">
+                    <h5 class="mb-3"><i class="fas fa-user-check me-2 text-primary"></i>Для кого это</h5>
+                    <p class="text-muted mb-4">{{ page.audience }}</p>
+
+                    <h5 class="mb-3"><i class="fas fa-check-circle me-2 text-success"></i>Что вы получите</h5>
+                    <ul class="mb-4">
+                        {% for item in page.benefits %}
+                        <li class="mb-2">{{ item }}</li>
+                        {% endfor %}
+                    </ul>
+
+                    <div class="alert alert-info mb-0">
+                        <i class="fas fa-circle-info me-2"></i>{{ page.faq }}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-4">
+            <div class="card shadow-sm mb-3">
+                <div class="card-body">
+                    <h6 class="fw-bold mb-2">Быстрый старт</h6>
+                    <p class="text-muted small mb-3">Подключите каналы и запустите первый рабочий план без сложной подготовки.</p>
+                    {% if current_user.is_authenticated %}
+                    <a href="{{ url_for('channels') }}" class="btn btn-primary w-100">
+                        <i class="fas fa-plug me-1"></i>Открыть шаг 1
+                    </a>
+                    {% else %}
+                    <a href="{{ url_for('register') }}" class="btn btn-primary w-100">
+                        <i class="fas fa-user-plus me-1"></i>Создать аккаунт
+                    </a>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <h6 class="fw-bold mb-2">Нужна помощь с запуском?</h6>
+                    <p class="text-muted small mb-3">Специалист поможет подключить канал и настроить публикации.</p>
+                    <a href="{{ specialist_telegram_link }}" target="_blank" class="btn btn-outline-primary w-100">
+                        <i class="fab fa-telegram me-1"></i>Написать специалисту
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+{% if related_pages %}
+<section class="landing-section">
+    <h2 class="page-title mb-2">Смотрите также</h2>
+    <div class="row g-3">
+        {% for item in related_pages %}
+        <div class="col-md-6 col-xl-4">
+            <a href="{{ url_for('seo_landing_page', slug=item.slug) }}" class="text-decoration-none">
+                <div class="card h-100 shadow-sm">
+                    <div class="card-body">
+                        <h6 class="mb-2">{{ item.h1 }}</h6>
+                        <p class="text-muted mb-0 small">{{ item.description }}</p>
+                    </div>
+                </div>
+            </a>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+{% endblock %}
