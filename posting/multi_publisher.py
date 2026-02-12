@@ -113,7 +113,7 @@ class MultiPlatformPublisher:
                 # Если токен не указан в канале, пробуем из конфига
                 try:
                     from config import Config
-                    bot_token = Config.TELEGRAM_CHANNEL_TOKEN
+                    bot_token = (Config.TELEGRAM_CHANNEL_TOKEN or Config.TELEGRAM_BOT_TOKEN or "").strip()
                 except:
                     return {'error': 'Не указан Telegram токен', 'success': False}
             
@@ -286,7 +286,7 @@ class MultiPlatformPublisher:
             if not bot_token:
                 try:
                     from config import Config
-                    bot_token = Config.TELEGRAM_CHANNEL_TOKEN
+                    bot_token = (Config.TELEGRAM_CHANNEL_TOKEN or Config.TELEGRAM_BOT_TOKEN or "").strip()
                 except:
                     return {'error': 'Не указан Telegram токен', 'connected': False}
             

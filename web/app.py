@@ -19,7 +19,7 @@ import logging
 from collections import Counter
 from datetime import datetime, timedelta
 from email.message import EmailMessage
-from functools import wraps
+from functools import lru_cache, wraps
 from html import escape, unescape
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -598,6 +598,8 @@ def inject_common_template_context():
         "app_brand_name": APP_BRAND_NAME,
         "public_base_url": _resolved_public_base_url(),
         "seo_landing_pages": SEO_LANDING_PAGES,
+        "service_telegram_bot_username": _service_telegram_bot_username(),
+        "service_telegram_bot_invite_link": _service_telegram_bot_invite_link(),
         "specialist_telegram_link": _specialist_telegram_link(),
         "token_help_links": _token_help_links(),
         "onboarding_progress": build_onboarding_progress(
@@ -767,6 +769,199 @@ def _count_words(text_value):
     return len(_word_tokens(text_value))
 
 
+def _resolve_telegram_publish_token(access_token=""):
+    direct_token = (access_token or "").strip()
+    if direct_token:
+        return direct_token
+
+    env_token = (
+        (os.environ.get("TELEGRAM_CHANNEL_TOKEN") or "").strip()
+        or (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+    )
+    if env_token:
+        return env_token
+
+    try:
+        from config import Config
+
+        return (
+            (getattr(Config, "TELEGRAM_CHANNEL_TOKEN", "") or "").strip()
+            or (getattr(Config, "TELEGRAM_BOT_TOKEN", "") or "").strip()
+        )
+    except Exception:
+        return ""
+
+
+def _resolve_vk_publish_token(access_token=""):
+    direct_token = (access_token or "").strip()
+    if direct_token:
+        return direct_token
+
+    env_token = (os.environ.get("VK_ACCESS_TOKEN") or "").strip()
+    if env_token:
+        return env_token
+
+    try:
+        from config import Config
+
+        return (getattr(Config, "VK_ACCESS_TOKEN", "") or "").strip()
+    except Exception:
+        return ""
+
+
+@lru_cache(maxsize=4)
+def _telegram_bot_identity_cached(bot_token):
+    token = (bot_token or "").strip()
+    if not token:
+        return {"ok": False, "bot_id": None, "username": "", "error": "TOKEN_EMPTY"}
+    try:
+        response = requests.get(
+            f"https://api.telegram.org/bot{token}/getMe",
+            timeout=(6, 12),
+        )
+        payload = response.json() if response.content else {}
+        if response.status_code == 200 and payload.get("ok"):
+            result = payload.get("result") or {}
+            username = str(result.get("username") or "").strip()
+            return {
+                "ok": True,
+                "bot_id": result.get("id"),
+                "username": f"@{username}" if username else "",
+                "error": "",
+            }
+        error_text = str(payload.get("description") or f"HTTP {response.status_code}")
+        return {"ok": False, "bot_id": None, "username": "", "error": error_text}
+    except Exception as e:
+        return {"ok": False, "bot_id": None, "username": "", "error": str(e)}
+
+
+def _service_telegram_bot_username():
+    explicit = (os.environ.get("SERVICE_TELEGRAM_BOT_USERNAME") or "").strip()
+    if explicit:
+        return explicit if explicit.startswith("@") else f"@{explicit}"
+    identity = _telegram_bot_identity_cached(_resolve_telegram_publish_token(""))
+    return str(identity.get("username") or "").strip()
+
+
+def _service_telegram_bot_invite_link():
+    username = _service_telegram_bot_username().lstrip("@")
+    if not username:
+        return ""
+    return f"https://t.me/{username}"
+
+
+def _telegram_publish_access_payload(channel_reference, access_token=""):
+    resolved_token = _resolve_telegram_publish_token(access_token)
+    service_bot_username = ""
+    raw_reference = str(channel_reference or "").strip()
+    if not raw_reference:
+        return {
+            "publish_ready": False,
+            "publish_hint": "Не передан идентификатор Telegram-канала для проверки прав бота.",
+            "service_bot_username": "",
+        }
+    if raw_reference.startswith("@") or raw_reference.startswith("-"):
+        chat_id = raw_reference
+    else:
+        chat_id = f"@{raw_reference}"
+
+    if not resolved_token:
+        return {
+            "publish_ready": False,
+            "publish_hint": (
+                "На сервере не настроен Telegram-бот для публикации. "
+                "Сообщите администратору сервиса, чтобы включить режим подключения без ключей."
+            ),
+            "service_bot_username": "",
+        }
+
+    identity = _telegram_bot_identity_cached(resolved_token)
+    service_bot_username = str(identity.get("username") or "").strip()
+    if not identity.get("ok") or not identity.get("bot_id"):
+        return {
+            "publish_ready": False,
+            "publish_hint": (
+                "Не удалось проверить сервисного Telegram-бота. "
+                f"Детали: {identity.get('error') or 'unknown'}"
+            ),
+            "service_bot_username": service_bot_username,
+        }
+
+    try:
+        response = requests.get(
+            f"https://api.telegram.org/bot{resolved_token}/getChatMember",
+            params={"chat_id": chat_id, "user_id": identity.get("bot_id")},
+            timeout=(6, 12),
+        )
+        payload = response.json() if response.content else {}
+        if response.status_code == 200 and payload.get("ok"):
+            member = payload.get("result") or {}
+            status = str(member.get("status") or "").strip().lower()
+            if status in {"administrator", "creator"}:
+                return {
+                    "publish_ready": True,
+                    "publish_hint": (
+                        f"Бот {service_bot_username or 'сервиса'} уже имеет права администратора в канале."
+                    ),
+                    "service_bot_username": service_bot_username,
+                }
+            if status == "member":
+                return {
+                    "publish_ready": False,
+                    "publish_hint": (
+                        f"Добавьте боту {service_bot_username or 'сервиса'} права администратора в канале "
+                        "и повторите проверку."
+                    ),
+                    "service_bot_username": service_bot_username,
+                }
+            return {
+                "publish_ready": False,
+                "publish_hint": (
+                    f"Бот {service_bot_username or 'сервиса'} пока не добавлен в канал. "
+                    "Добавьте его администратором и повторите проверку."
+                ),
+                "service_bot_username": service_bot_username,
+            }
+
+        error_text = str(payload.get("description") or f"HTTP {response.status_code}")
+        return {
+            "publish_ready": False,
+            "publish_hint": (
+                f"Не удалось подтвердить права бота {service_bot_username or 'сервиса'}: {error_text}. "
+                "Добавьте бота администратором и повторите проверку."
+            ),
+            "service_bot_username": service_bot_username,
+        }
+    except Exception as e:
+        return {
+            "publish_ready": False,
+            "publish_hint": (
+                f"Сбой проверки прав Telegram-бота: {e}. "
+                "Проверьте, что бот добавлен в канал как администратор."
+            ),
+            "service_bot_username": service_bot_username,
+        }
+
+
+def _vk_publish_access_payload(access_token=""):
+    resolved_token = _resolve_vk_publish_token(access_token)
+    if not resolved_token:
+        return {
+            "publish_ready": False,
+            "publish_hint": (
+                "На сервере не настроен VK-токен публикации. "
+                "Попросите администратора включить сервисный VK-доступ."
+            ),
+        }
+    return {
+        "publish_ready": True,
+        "publish_hint": (
+            "Публикация VK будет выполняться через сервисный доступ. "
+            "Убедитесь, что сервисный аккаунт имеет права в сообществе."
+        ),
+    }
+
+
 def _extract_keywords(text_value, limit=8):
     words = [w.lower() for w in _word_tokens(text_value)]
     stop_words = {
@@ -886,6 +1081,7 @@ def _fetch_telegram_channel_preview(channel_reference, access_token=None):
     recent_posts = []
     verification_errors = []
     verified = False
+    publish_token = _resolve_telegram_publish_token(access_token)
 
     headers = {
         "User-Agent": (
@@ -942,10 +1138,10 @@ def _fetch_telegram_channel_preview(channel_reference, access_token=None):
             )
 
     # После успешной публичной проверки можно дополнить данные через Bot API.
-    if verified and access_token and not channel_description:
+    if verified and publish_token and not channel_description:
         try:
             bot_resp = requests.get(
-                f"https://api.telegram.org/bot{access_token}/getChat",
+                f"https://api.telegram.org/bot{publish_token}/getChat",
                 params={"chat_id": f"@{username}"},
                 timeout=(6, 12),
             )
@@ -989,6 +1185,8 @@ def _fetch_telegram_channel_preview(channel_reference, access_token=None):
     if not channel_description:
         channel_description = ""
 
+    publish_access = _telegram_publish_access_payload(channel_reference=f"@{username}", access_token=access_token or "")
+
     return {
         "success": True,
         "platform": "telegram",
@@ -997,6 +1195,9 @@ def _fetch_telegram_channel_preview(channel_reference, access_token=None):
         "source_url": source_url,
         "channel_external_description": channel_description,
         "recent_posts": recent_posts[:10],
+        "publish_ready": bool(publish_access.get("publish_ready")),
+        "publish_hint": str(publish_access.get("publish_hint") or "").strip(),
+        "service_bot_username": str(publish_access.get("service_bot_username") or "").strip(),
     }
 
 def _fetch_vk_channel_preview(channel_reference, access_token):
@@ -1005,7 +1206,7 @@ def _fetch_vk_channel_preview(channel_reference, access_token):
         return {"success": False, "error": "Укажите корректную ссылку VK-группы или идентификатор"}
 
     # Верификация VK выполняется публично (без VK API).
-    _ = access_token
+    publish_access = _vk_publish_access_payload(access_token)
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (X11; Linux x86_64) "
@@ -1130,6 +1331,9 @@ def _fetch_vk_channel_preview(channel_reference, access_token):
             "source_url": source_url,
             "channel_external_description": channel_description,
             "recent_posts": recent_posts[:10],
+            "publish_ready": bool(publish_access.get("publish_ready")),
+            "publish_hint": str(publish_access.get("publish_hint") or "").strip(),
+            "service_bot_username": "",
         }
 
     error_hint = "Не удалось проверить публичную ссылку VK-сообщества. Проверьте адрес и повторите попытку."
@@ -1690,6 +1894,8 @@ def _serialize_channel(channel, include_client_name=True):
         "reference_channels_count": len(reference_channels),
         "channel_source_url": extra.get("source_url"),
         "style_summary": (extra.get("style_profile") or {}).get("summary", ""),
+        "auth_mode": extra.get("auth_mode") or ("custom_token" if channel.access_token else "service_token"),
+        "publish_hint": extra.get("publish_hint", ""),
         "publish_frequency": publish_frequency,
         "publish_frequency_label": _frequency_to_human(publish_frequency),
         "publish_hour": publish_hour,
@@ -3866,6 +4072,9 @@ def api_public_channel_preview():
             "style_profile": intelligence.get("style_profile", {}),
             "style_summary": intelligence.get("style_summary", ""),
             "auto_description": intelligence.get("auto_description", ""),
+            "publish_ready": intelligence.get("publish_ready", True),
+            "publish_hint": intelligence.get("publish_hint", ""),
+            "service_bot_username": intelligence.get("service_bot_username", ""),
         }
     )
 
@@ -3912,6 +4121,9 @@ def api_verify_channel():
             "style_profile": intelligence.get("style_profile", {}),
             "style_summary": intelligence.get("style_summary", ""),
             "auto_description": intelligence.get("auto_description", ""),
+            "publish_ready": intelligence.get("publish_ready", True),
+            "publish_hint": intelligence.get("publish_hint", ""),
+            "service_bot_username": intelligence.get("service_bot_username", ""),
         }
     )
 
@@ -4183,7 +4395,6 @@ def api_add_channel():
     required_fields = [
         "platform",
         "channel_reference",
-        "access_token",
         "channel_description",
         "publish_frequency",
     ]
@@ -4198,6 +4409,33 @@ def api_add_channel():
     access_token = (data.get("access_token") or "").strip()
     if not channel_reference:
         return jsonify({"success": False, "error": "Укажите ссылку или ник канала"}), 400
+
+    if platform == "telegram":
+        resolved_publish_token = _resolve_telegram_publish_token(access_token)
+        if not resolved_publish_token:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Для Telegram не нужен ключ клиента, но на сервере пока не настроен сервисный бот. "
+                        "Обратитесь к администратору сервиса."
+                    ),
+                }
+            ), 400
+        auth_mode = "custom_token" if access_token else "service_bot_token"
+    else:
+        resolved_publish_token = _resolve_vk_publish_token(access_token)
+        if not resolved_publish_token:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": (
+                        "Для VK не нужен ключ клиента, но на сервере пока не настроен сервисный VK-доступ. "
+                        "Обратитесь к администратору сервиса."
+                    ),
+                }
+            ), 400
+        auth_mode = "custom_token" if access_token else "service_vk_token"
 
     publish_frequency = _normalize_frequency(data.get("publish_frequency"))
     if not publish_frequency:
@@ -4278,6 +4516,17 @@ def api_add_channel():
             }
         ), 400
 
+    if platform == "telegram" and not intelligence.get("publish_ready", False):
+        return jsonify(
+            {
+                "success": False,
+                "error": intelligence.get(
+                    "publish_hint",
+                    "Добавьте сервисного Telegram-бота в канал как администратора и повторите проверку.",
+                ),
+            }
+        ), 400
+
     verified_channel_name = intelligence.get("channel_name")
     verified_channel_id = intelligence.get("channel_id")
     source_url = intelligence.get("source_url")
@@ -4302,11 +4551,14 @@ def api_add_channel():
         "channel_description": channel_description,
         "reference_channels": reference_channels,
         "publish_frequency": publish_frequency,
+        "auth_mode": auth_mode,
         "channel_reference": channel_reference,
         "source_url": source_url,
         "channel_external_description": intelligence.get("channel_external_description", ""),
         "recent_posts_preview": intelligence.get("recent_posts", [])[:10],
         "style_profile": style_profile,
+        "publish_hint": intelligence.get("publish_hint", ""),
+        "service_bot_username": intelligence.get("service_bot_username", ""),
         "source": "web_client_onboarding",
     }
     channel = ClientChannel(
@@ -4314,7 +4566,7 @@ def api_add_channel():
         platform=platform,
         channel_id=verified_channel_id,
         channel_name=verified_channel_name,
-        access_token=access_token,
+        access_token=access_token or None,
         additional_config=json.dumps(additional_config, ensure_ascii=False),
         is_active=bool(data.get("is_active", True)),
     )
@@ -4340,6 +4592,7 @@ def api_add_channel():
             "publish_hour": publish_hour,
             "reference_channels_count": len(reference_channels),
             "style_summary": style_profile.get("summary", ""),
+            "auth_mode": auth_mode,
         }
     )
 
@@ -4410,6 +4663,27 @@ def api_update_channel(channel_id):
     if "channel_id" in data:
         channel.channel_id = (data.get("channel_id") or "").strip()
 
+    resolved_platform = (channel.platform or "").strip().lower()
+    resolved_channel_token = (channel.access_token or "").strip()
+    if "access_token" in data:
+        resolved_channel_token = (data.get("access_token") or "").strip()
+    if resolved_platform == "telegram":
+        if not _resolve_telegram_publish_token(resolved_channel_token):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Для Telegram нужен сервисный или персональный токен публикации.",
+                }
+            ), 400
+    elif resolved_platform == "vk":
+        if not _resolve_vk_publish_token(resolved_channel_token):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Для VK нужен сервисный или персональный токен публикации.",
+                }
+            ), 400
+
     extra = _channel_extra_config(channel)
     if channel_description is not None:
         extra["channel_description"] = channel_description
@@ -4417,6 +4691,9 @@ def api_update_channel(channel_id):
         extra["publish_frequency"] = normalized_frequency
     if reference_channels is not None:
         extra["reference_channels"] = reference_channels
+    extra["auth_mode"] = "custom_token" if resolved_channel_token else (
+        "service_bot_token" if resolved_platform == "telegram" else "service_vk_token"
+    )
     channel.additional_config = json.dumps(extra, ensure_ascii=False)
 
     if "publish_hour" in data:
@@ -4463,17 +4740,31 @@ def api_delete_channel(channel_id):
 @login_required
 def api_test_channel(channel_id):
     channel = _get_accessible_channel(channel_id)
-    connected = bool(channel.access_token)
     error = None
-    if not connected:
-        error = "Не задан access_token для проверки подключения"
+    platform = (channel.platform or "").strip().lower()
+    if platform == "telegram":
+        access_payload = _telegram_publish_access_payload(
+            channel_reference=str(channel.channel_id or "").strip(),
+            access_token=(channel.access_token or "").strip(),
+        )
+        connected = bool(access_payload.get("publish_ready"))
+        if not connected:
+            error = access_payload.get("publish_hint") or "Бот сервиса не подтвержден как администратор канала"
+    elif platform == "vk":
+        connected = bool(_resolve_vk_publish_token((channel.access_token or "").strip()))
+        if not connected:
+            error = "Не найден VK-токен публикации (ни персональный, ни сервисный)"
+    else:
+        connected = bool(channel.access_token)
+        if not connected:
+            error = "Не задан access_token для проверки подключения"
 
     return jsonify(
         {
             "connected": connected,
             "channel_id": channel.channel_id,
             "channel_name": channel.channel_name,
-            "platform": channel.platform,
+            "platform": platform,
             "error": error,
         }
     )
@@ -4655,7 +4946,6 @@ def api_admin_create_connection():
         "platform",
         "channel_id",
         "channel_name",
-        "access_token",
         "channel_description",
         "publish_frequency",
     ]
@@ -4665,6 +4955,28 @@ def api_admin_create_connection():
     platform = (data.get("platform") or "").strip().lower()
     if platform not in SUPPORTED_PLATFORMS:
         return jsonify({"success": False, "error": "Сейчас поддерживаются только Telegram и VK"}), 400
+
+    admin_access_token = (data.get("access_token") or "").strip()
+    if platform == "telegram":
+        resolved_publish_token = _resolve_telegram_publish_token(admin_access_token)
+        if not resolved_publish_token:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Сервисный Telegram-бот не настроен. Добавьте TELEGRAM_CHANNEL_TOKEN/TELEGRAM_BOT_TOKEN.",
+                }
+            ), 400
+        auth_mode = "custom_token" if admin_access_token else "service_bot_token"
+    else:
+        resolved_publish_token = _resolve_vk_publish_token(admin_access_token)
+        if not resolved_publish_token:
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Сервисный VK-токен не настроен. Добавьте VK_ACCESS_TOKEN.",
+                }
+            ), 400
+        auth_mode = "custom_token" if admin_access_token else "service_vk_token"
 
     admin_description = (data.get("channel_description") or "").strip()
     if _count_words(admin_description) < 20:
@@ -4700,12 +5012,13 @@ def api_admin_create_connection():
         platform=platform,
         channel_id=(data["channel_id"] or "").strip(),
         channel_name=(data["channel_name"] or "").strip(),
-        access_token=data.get("access_token"),
+        access_token=admin_access_token or None,
         additional_config=json.dumps(
             {
                 "channel_description": admin_description,
                 "reference_channels": reference_channels,
                 "publish_frequency": admin_frequency,
+                "auth_mode": auth_mode,
                 "source": "admin_connection_form",
             },
             ensure_ascii=False,
@@ -4748,6 +5061,27 @@ def api_admin_update_connection(connection_id):
             return jsonify({"success": False, "error": "Клиент не найден"}), 404
         channel.client_id = client.id
 
+    resolved_platform = (channel.platform or "").strip().lower()
+    resolved_channel_token = (channel.access_token or "").strip()
+    if "access_token" in data:
+        resolved_channel_token = (data.get("access_token") or "").strip()
+    if resolved_platform == "telegram":
+        if not _resolve_telegram_publish_token(resolved_channel_token):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Для Telegram нужен сервисный или персональный токен публикации.",
+                }
+            ), 400
+    elif resolved_platform == "vk":
+        if not _resolve_vk_publish_token(resolved_channel_token):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "Для VK нужен сервисный или персональный токен публикации.",
+                }
+            ), 400
+
     if (
         "channel_description" in data
         or "publish_frequency" in data
@@ -4781,6 +5115,9 @@ def api_admin_update_connection(connection_id):
                     }
                 ), 400
             extra["reference_channels"] = reference_channels
+        extra["auth_mode"] = "custom_token" if resolved_channel_token else (
+            "service_bot_token" if resolved_platform == "telegram" else "service_vk_token"
+        )
         channel.additional_config = json.dumps(extra, ensure_ascii=False)
 
         publish_hour = data.get("publish_hour", 10)

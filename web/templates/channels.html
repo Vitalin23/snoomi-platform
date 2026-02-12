@@ -131,10 +131,21 @@
                 <div class="channels-steps">
                     <ol>
                         <li id="channelsStep1">Выберите платформу и вставьте ссылку/ник канала.</li>
-                        <li id="channelsStep2">Для Telegram используйте только `https://t.me/...` или `@username`, затем нажмите «Проверить канал».</li>
+                        <li id="channelsStep2">Для Telegram используйте `https://t.me/...` или `@username`, добавьте бота сервиса администратором и нажмите «Проверить канал».</li>
                         <li id="channelsStep3">После проверки сохраните подключение: имя и описание из канала фиксируются автоматически, а вы добавляете свое описание (20+ слов).</li>
                     </ol>
                 </div>
+                {% if service_telegram_bot_username %}
+                <div class="alert alert-info py-2">
+                    <strong>Подключение Telegram без ключей:</strong>
+                    добавьте бота <code>{{ service_telegram_bot_username }}</code> в канал/группу с правами администратора.
+                </div>
+                {% else %}
+                <div class="alert alert-warning py-2">
+                    Сервисный Telegram-бот еще не настроен на сервере.
+                    Для режима «без ключей» сначала настройте токен сервиса у администратора.
+                </div>
+                {% endif %}
                 <form id="autopostChannelForm" class="row g-3">
                     <input type="hidden" id="autopostPlatform" value="telegram">
                     <div class="col-12">
@@ -196,11 +207,11 @@
                         ></textarea>
                     </div>
                     <div class="col-md-6">
-                        <label class="form-label" id="autopostTokenLabel">Telegram bot token для публикации *</label>
-                        <input type="password" class="form-control" id="autopostAccessToken" required>
+                        <label class="form-label" id="autopostTokenLabel">Токен публикации (опционально)</label>
+                        <input type="password" class="form-control" id="autopostAccessToken">
                         <div class="form-text" id="autopostTokenHelpText">
                             <a href="{{ token_help_links.telegram }}" target="_blank" id="autopostTokenHelpLink">
-                                Как получить Telegram bot token?
+                                Инструкция по токену (резервный вариант)
                             </a>
                             <span class="d-block" id="autopostTokenHint"></span>
                         </div>
@@ -362,6 +373,7 @@
 {% block extra_js %}
     <script>
         let verifiedChannelState = null;
+        const serviceTelegramBotUsername = "{{ service_telegram_bot_username }}";
         const tokenHelpLinks = {
             telegram: "{{ token_help_links.telegram }}",
             vk: "{{ token_help_links.vk }}"
@@ -523,28 +535,30 @@
 
             if (platform === 'telegram') {
                 step1.textContent = 'Выберите Telegram и вставьте ссылку t.me или @username канала.';
-                step2.textContent = 'Публичная проверка Telegram работает по `https://t.me/...` или `@username`.';
-                step3.textContent = 'После проверки имя и описание из канала заполняются автоматически, а вы добавляете свое описание (20+ слов).';
+                step2.textContent = 'Добавьте бота сервиса администратором, затем выполните проверку Telegram.';
+                step3.textContent = 'После проверки имя/описание заполняются автоматически, далее сохраните подключение.';
                 tgBtn.className = 'btn btn-primary';
                 vkBtn.className = 'btn btn-outline-primary';
                 referenceLabel.textContent = 'Ссылка https://t.me/... или @username *';
                 referenceInput.placeholder = '@mag_snoomi или https://t.me/mag_snoomi';
-                tokenLabel.textContent = 'Telegram bot token для публикации *';
+                tokenLabel.textContent = 'Telegram token (опционально, резерв)';
                 tokenHelpLink.href = tokenHelpLinks.telegram;
-                tokenHelpLink.textContent = 'Как получить Telegram bot token?';
-                tokenHint.textContent = 'Проверка Telegram-канала выполняется публично без токена; токен обязателен при сохранении для публикации.';
+                tokenHelpLink.textContent = 'Инструкция по токену (если нужен резерв)';
+                tokenHint.textContent = serviceTelegramBotUsername
+                    ? `Основной режим без ключей: добавьте ${serviceTelegramBotUsername} администратором в канал.`
+                    : 'Основной режим без ключей включится после настройки сервисного Telegram-бота.';
             } else {
                 step1.textContent = 'Выберите VK и вставьте ссылку сообщества (или short name).';
-                step2.textContent = 'Проверка VK выполняется публично по адресу `https://vk.com/...` без API-токена.';
-                step3.textContent = 'После проверки имя и описание из VK фиксируются автоматически, а вы добавляете свое описание (20+ слов).';
+                step2.textContent = 'Проверка VK выполняется публично по адресу `https://vk.com/...` без ручного API-токена клиента.';
+                step3.textContent = 'После проверки сохраните подключение (публикация через сервисный доступ или ваш резервный токен).';
                 tgBtn.className = 'btn btn-outline-primary';
                 vkBtn.className = 'btn btn-primary';
                 referenceLabel.textContent = 'Ссылка VK-группы (или short name) *';
                 referenceInput.placeholder = 'https://vk.com/club123456 или shortname';
-                tokenLabel.textContent = 'VK access token для публикации *';
+                tokenLabel.textContent = 'VK access token (опционально, резерв)';
                 tokenHelpLink.href = tokenHelpLinks.vk;
-                tokenHelpLink.textContent = 'Как получить VK access token?';
-                tokenHint.textContent = 'Проверка VK-ссылки выполняется публично без токена; токен обязателен при сохранении для публикации.';
+                tokenHelpLink.textContent = 'Как получить VK access token (резерв)?';
+                tokenHint.textContent = 'Основной режим: публикация через сервисный доступ без ручного ключа клиента.';
             }
 
             restorePlatformDraft(platform);
@@ -590,13 +604,19 @@
                     return;
                 }
 
+                if (data.publish_ready === false) {
+                    const hintText = data.publish_hint ? ` ${data.publish_hint}` : '';
+                    showAutopostResult(`Канал найден, но публикация пока не готова.${hintText}`, false);
+                }
+
                 verifiedChannelState = {
                     platform: platform,
                     reference_key: referenceKey(platform, channelReference),
                     channel_name: data.channel_name,
                     channel_id: data.channel_id,
                     source_url: data.source_url,
-                    style_profile: data.style_profile || {}
+                    style_profile: data.style_profile || {},
+                    publish_ready: data.publish_ready !== false
                 };
 
                 document.getElementById('autopostVerifiedChannelName').value = data.channel_name || '';
@@ -612,8 +632,10 @@
 
                 showAutopostResult(
                     `Канал успешно проверен: <strong>${data.channel_name}</strong>. ` +
-                    `Можно сохранять в автопостинг.`,
-                    true
+                    (data.publish_ready === false
+                        ? `Подключение сохранится после устранения условия: ${data.publish_hint || 'проверка доступа публикации'}.`
+                        : `Можно сохранять в автопостинг.`),
+                    data.publish_ready !== false
                 );
             } catch (error) {
                 showAutopostResult('Ошибка сети при проверке канала: ' + error, false);
@@ -663,14 +685,14 @@
                     showAutopostResult('После изменения ссылки/платформы нужно повторно нажать «Проверить канал».', false);
                     return;
                 }
+                if (verifiedChannelState.publish_ready === false) {
+                    showAutopostResult('Публикация пока не готова: устраните замечание из результата проверки канала.', false);
+                    return;
+                }
 
                 const words = countWords(payload.channel_description);
                 if (words < 20) {
                     showAutopostResult('Описание канала должно содержать минимум 20 слов.', false);
-                    return;
-                }
-                if (!payload.access_token) {
-                    showAutopostResult('Для сохранения канала укажите access token для публикации.', false);
                     return;
                 }
 
